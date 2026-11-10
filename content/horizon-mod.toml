@@ -1,0 +1,12 @@
+# Port-owned content mod for Modular Routers 13.2.7 (desht/ModularRouters, MIT):
+# the router block and item, the blank module and the two Mk1 transfer modules,
+# their models, textures, lang, recipes, loot and tags. The buffer, the module
+# tick and the install path are the native half in ports/modularrouters/mixins.
+id = "modularrouters"
+name = "Modular Routers"
+version = "0.1.0"
+description = "A router that moves items between inventories with modules."
+authors = ["Des Herriott"]
+api = "0.2"
+side = "both"
+capabilities = ["registries"]

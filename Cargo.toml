@@ -1,0 +1,17 @@
+[package]
+# Ported from: Modular Routers 13.2.7 (desht/ModularRouters, MIT), Minecraft Java
+# 1.21.1 NeoForge. A published port travels under MIT with its source.
+name = "horizon-modularrouters"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "Modular Routers for Horizon: a router with puller and sender modules"
+
+[lib]
+# This exact source is also injected as a same-crate module by horizon-mixins.
+path = "mixins/modularrouters/runtime.rs"
+
+[workspace]
+members = ["tools/audit"]
+resolver = "2"
