@@ -1,69 +1,68 @@
-# Modular Routers for Horizon
+# Modular Routers — a Horizon port
 
-A router block that runs item-transfer modules every 20 ticks, and the two Mk1
-modules of the original mod: a **Puller Module Mk1** that takes items from the
-container beside the router into its one-slot buffer, and a **Sender Module Mk1**
-that pushes them into the first container along its facing (up to 8 blocks, 16
-with range upgrades — augments are not carried yet).
+**Modular Routers** is a Minecraft mod. A Forge Mod for item routers with pluggable modules. This repository is a **port of it to [Horizon](https://github.com/horizon-rust/horizon)**, the Rust engine for Minecraft Java 26.3. It carries the complete source of the port plus the content files it ships, and installs as a single `.hmod` package.
 
-Ported from Modular Routers 13.2.7 (`desht/ModularRouters`, MIT) as a
-clean-room rewrite for Horizon 26.3, built against SDK nightly `0b14f8a`
-(api 0.2). One `.hmod` carries **both** halves — the code in `src/` and the block,
-items, models, textures, recipes, loot, tags and lang in `assets/` and `data/` —
-so a single file installs everything.
+Upstream: [desht/ModularRouters](https://github.com/desht/ModularRouters) — licence **MIT**.
 
-## Install
+| | |
+|---|---|
+| Upstream mod | Modular Routers ([source](https://github.com/desht/ModularRouters)) |
+| Ported to | Horizon 0b14f8a, Minecraft Java 26.3, mod API `0.2` |
+| Package | `modularrouters.hmod` (install it with the Horizon launcher) |
+| Licence | **MIT** — the upstream mod's licence; see [Licence and credit](#licence-and-credit) |
 
-The package is a native mod: it is compiled into a game by the launcher.
+## What this port implements
 
-```sh
-horizon-launcher native-build . --instance <instance> --trust-native-code
+- **Containers are the `ITEMS` capability**, not `native_container_slots`/`native_extract_item`/
+- **`can_take` is always true** for that handler (it is already side-filtered), so the pure layer's
+- **The buffer is written through the tick's own checked view** (`event.entity.items`), which is
+- **The two clicks are one hook.** 0.1.0 had `use_item_on` claim the stack and
+- **The readout text is byte-identical to 0.1.0** (`Modular Router at 0,100,0: facing north, active
+- **Commands are typed**: `pos: block_pos`, `slot: integer`, `module|dir|mode|item: word`, read by
+- **`active` is written with `BlockUpdateFlags::CLIENTS`** from inside the tick (the same
+- **No logger.** The SDK exports none and a native mod may add no crate, so the 0.1.0
+
+## Not yet ported
+
+- **No in-game re-run in this environment.** A native package is compiled into the client by
+- **`can_take` is always true** on the `ITEMS` handler (it is side-filtered already): a container
+- **The two 0.1.0 clicks are one hook** (see above): a mod that wants `use_item_on`'s earlier
+- **No log line** on a failed write: a failed `merge_data`/`insert_any` is silent, and the readout
+- **Everything else is the 0.1.0 gap list** (the other 21 modules, upgrades, augments, smart
+- **Modules**: `puller_module_2` (ranged), `sender_module_2`/`_3`, `vacuum`,
+- **Upgrades**: the 10 upgrade items (Speed, Stack, Blast, Camouflage, Energy,
+- **Augments** (11) and **smart filters** (5: bulk item, mod, tag, regex,
+
+## Installing
+
+1. Install the [Horizon launcher](https://github.com/horizon-rust/horizon/releases) (0.2.70 or newer).
+2. Add `modularrouters.hmod` to the instance's mods.
+3. The package is pinned to a specific Horizon build; the launcher checks that pin.
+
+## Licence and credit
+
+Modular Routers was created by its upstream authors; the code, models and assets in the original mod
+remain theirs and are used here under **MIT**. The Rust in this repository is a clean-room
+rewrite for Horizon, not a translation of the original source.
+
+- `LICENSE` — the upstream licence text.
+- `LICENSE-NOTICE.md` — what this port carries and where it came from.
+- The upstream project: https://github.com/desht/ModularRouters
+
+## Technical details
+
+```
+horizon-mod.toml   package manifest (id, version, api, [native] pin)
+Cargo.toml         the crate; depends on `horizon-mod-api` from the fetched SDK
+src/               lib.rs (the one `impl Hooks`), runtime.rs (pure logic + tests), glue
+assets/ data/      the content the package ships
+tools/             content generators and the e2e scenario
 ```
 
-`cargo horizon-mod check modularrouters.hmod` validates the archive. A native
-package cannot be loaded by an unmodded game (there is no `--dev-mod` path for
-its code).
+- Build: `cargo horizon-mod build` (packages; it does not compile against the game).
+- Test: `cargo test`, `cargo clippy --all-targets -- -D warnings`.
+- In-game: `ports/tools/launcher-game.sh run modularrouters` in the campaign tree, or install the
+  `.hmod` and play; the harness scenario is `tools/e2e.sh`.
 
-## Use
-
-Craft the router (4 per recipe), a blank module (6), then a puller (blank module
-+ sticky piston) or a sender (blank module + bow + arrows).
-
-1. Place the router: it faces away from you.
-2. Right-click it with a module to install it (up to 9).
-3. Set each module's direction relative to the router:
-
-   ```
-   /modularrouters info <x> <y> <z>
-   /modularrouters direction <x> <y> <z> <slot> front|back|left|right|up|down
-   /modularrouters install <x> <y> <z> <slot> modularrouters:sender_module_1
-   /modularrouters remove <x> <y> <z> <slot>
-   /modularrouters filter <x> <y> <z> <slot> whitelist|blacklist|add|remove|clear <item>
-   ```
-
-4. Right-click with an empty hand for the router's state (facing, modules, buffer,
-   rate). Idle routers show `active=false`; working ones light their front face.
-
-A puller takes one item per second from the container it points at; a sender
-delivers one per second to the first container in its line of sight. The buffer
-is the block's item container on every side, so hoppers and pipes can fill or
-empty it.
-
-The screen, the other 21 modules, upgrades, augments and smart filters are not
-ported yet — see `notes.md`.
-
-## Build
-
-```sh
-cargo test                                     # the pure runtime + the glue's own tests
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check                              # never `--all`: that formats the fetched SDK
-rm -f Cargo.lock                               # a packed lock changes the artifact
-cargo horizon-mod build                        # -> target/horizon-mod/modularrouters.hmod
-cargo horizon-mod check modularrouters.hmod
-cargo horizon-mod fits modularrouters.hmod --build nightly
-tools/e2e.sh                                   # needs GAME=<launcher-built client>
-```
-
-Licence: MIT (see `LICENSE`). Local-only until the campaign's maintainer approves
-publishing.
+This repository is generated from the campaign's port at `ports/modularrouters/`; the port's own
+`notes.md` is the full record (decisions, traps, evidence).
