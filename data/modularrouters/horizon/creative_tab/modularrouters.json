@@ -1,0 +1,10 @@
+{
+  "title": "Modular Routers",
+  "icon": "modularrouters:modular_router",
+  "items": [
+    "modularrouters:modular_router",
+    "modularrouters:blank_module",
+    "modularrouters:puller_module_1",
+    "modularrouters:sender_module_1"
+  ]
+}

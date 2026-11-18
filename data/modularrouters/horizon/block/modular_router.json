@@ -1,0 +1,17 @@
+{
+  "template": "minecraft:stone",
+  "properties": {
+    "hardness": 1.5,
+    "requires_tool": true,
+    "sounds": "minecraft:iron_block",
+    "occludes": false,
+    "render_shape": "MODEL"
+  },
+  "state_properties": {
+    "active": { "type": "boolean" },
+    "facing": { "type": "enum", "values": ["north", "east", "south", "west"] }
+  },
+  "default_state": { "facing": "north" },
+  "shapes": { "default": [[0, 0, 0, 1, 1, 1]] },
+  "item": true
+}

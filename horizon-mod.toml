@@ -1,0 +1,24 @@
+id = "modularrouters"
+name = "Modular Routers"
+version = "0.2.0"
+description = """A port of Modular Routers for Horizon: a router block entity with nine module slots and a
+one-slot buffer that runs its installed modules every 20 ticks — a Puller Mk1 takes an item from the
+container beside it into the buffer, a Sender Mk1 pushes from the buffer into the first container
+along its facing. The router block and its items, models, textures, lang, recipes, loot and tags
+travel in this one package beside the code, so a single .hmod installs both halves."""
+authors = ["Des Herriott", "AdLf0208"]
+# A native mod: Rust in src/, compiled by the launcher against the game build [native] pins,
+# beside data/ and assets/. The id is the resource namespace and the only identity.
+api = "0.2"
+# "both" is the installation side, not the hook's: a router is placed and ticked by an integrated
+# server, which belongs to the client installation.
+side = "both"
+# The one shared value every manifest carries ("May add blocks, items, mob effects and entity
+# types"); this mod does add a block, four items and a block entity type, and the manifest's shape
+# is not negotiable.
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

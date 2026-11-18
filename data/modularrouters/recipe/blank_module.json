@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "G": { "item": "minecraft:gold_nugget" },
+    "P": { "item": "minecraft:paper" },
+    "R": { "item": "minecraft:redstone" }
+  },
+  "pattern": [
+    " R ",
+    "PPP",
+    "GGG"
+  ],
+  "result": { "count": 6, "id": "modularrouters:blank_module" }
+}
