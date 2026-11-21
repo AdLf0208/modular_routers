@@ -52,6 +52,23 @@ empty it.
 The screen, the other 21 modules, upgrades, augments and smart filters are not
 ported yet — see `notes.md`.
 
+### Modules from another mod
+
+Upstream marks a module with a class; Horizon's mod API has no cross-mod class
+check, so this port reads the item tag the jar already ships: an item in
+`#modularrouters:modules` is a module, whoever adds it. A module this port does
+not implement installs like any other, is listed by `/modularrouters info`,
+keeps its slot, direction and filter in the router's saved data across a
+relaunch, and `/modularrouters remove` takes it out; its behaviour is the owning
+mod's to run. A held item that is neither one of the two Mk1 modules nor in the
+tag is refused (`Unknown module '…'`).
+
+The tag is a data file (`data/modularrouters/tags/item/modules.json`). At SDK
+pin `0a875da` a content mod may only write its own namespace (plus `minecraft`
+and `c` tags), so another mod's module item joins the tag through a world data
+pack or by being part of the same game content — not through that mod's own
+`.hmod`.
+
 ## Build
 
 ```sh

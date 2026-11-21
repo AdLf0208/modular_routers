@@ -1,6 +1,5 @@
 {
   "values": [
-    "modularrouters:blank_module",
     "modularrouters:puller_module_1",
     "modularrouters:sender_module_1"
   ]

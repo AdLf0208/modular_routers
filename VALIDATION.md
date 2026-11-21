@@ -1,5 +1,62 @@
 # Modular Routers — validation ladder
 
+## 0.2.3 — the registered-module path (2026-11-21)
+
+Pin: SDK nightly **`0a875da91dbbf0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 3: `ModuleKind::Registered`,
+`read_modules` keeps a foreign id, the item tag is the module registry, and the carried tag no longer
+lists the blank base.
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` on the **unfixed** glue (red) | 2 failed: `left: 0, right: 1` and `left: 1, right: 2` | `slice3-test-red.log` |
+| 2 | `tools/e2e.sh` phase K on the **0.2.2** game (red) | `Unknown module 'minecraft:stick': modularrouters:puller_module_1 or modularrouters:sender_module_1`, `FAIL`, `EXIT:1` | `modularrouters-e2e/e2e-red-module.log` |
+| 3 | `cargo test --offline` | **30 passed**, 0 failed | `slice3-test.log` (= `sdk-test.log`) |
+| 4 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice3-clippy.log` (= `sdk-clippy.log`) |
+| 5 | `cargo fmt --check` (**not** `--all`) | exit 0, empty diff | `slice3-fmt.log` (= `sdk-fmt.log`) |
+| 6 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | `0a875da` build, second `cmp`-identical, **62,770 B** | `slice3-build.log`, `slice3-build-second.log` |
+| 7 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.3 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `62770 bytes, SHA-256 33461229…c72c`, **exit 0** | `sdk-check.log` |
+| 8 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 9 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 10 | `unzip -l modularrouters.hmod` | **48 entries**, no `Cargo.lock` | `slice3-entries.txt` |
+| 11 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** | `verify-sdk-package.log` |
+| 12 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, J1–J4, K | `modularrouters-e2e/e2e-launcher-0.2.3.log` |
+| 13 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.3.log` |
+| 14 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.3.log` |
+| 15 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, every log ends with its verdict's `EXIT:` | — |
+| 16 | `python3 ports/tools/check-skills.py --notes ports/modularrouters --strict` | PASS | — |
+
+### What phase K proves (parity rule)
+
+| Step | Assertion |
+|---|---|
+| K, refused | `minecraft:dirt` and `modularrouters:blank_module` are not modules: the reply says `Unknown module '…'` and `info` still says `0 of 9` |
+| K, installed | `/modularrouters install … minecraft:stick` (the world pack's tag makes it a module) replies `Modular Router: minecraft:stick in slot 0`; `info` names `module 0 … minecraft:stick` and `1 of 9` |
+| K, settings | `/modularrouters direction … left` replies `slot 0 points left` and `info` says `dir=left target=east` |
+| K, right-click | holding the stick and right-clicking the router installs it (`module 0 … minecraft:stick`) |
+| K, save | quit + relaunch: `info` still names `module 0 … minecraft:stick` and `1 of 9` |
+| K, removed | `/modularrouters remove` replies `removed minecraft:stick` and `info` says `0 of 9` |
+| K, rewrite | `/data merge` writes `example:foreign_module` into the entity, an install rewrites the list, and `info` still names it in slot 0 (`2 of 9`) |
+
+### Delivered package (0.2.3)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 62,770 B | `33461229aba38b7da9b2d9522ba9bf915bae94a3869c28fa0702a4c4d5e6c72c` | 48 |
+
+### Platform limit measured while proving it
+
+A **content mod** loaded with `--dev-mod` cannot extend `modularrouters:modules`: it may write only
+its own namespace (plus `minecraft`/`c` tags), and `horizon-mods::content::check` refuses the file.
+A **world data pack** (`<world>/datapacks/<pack>`, `pack_format` 121) is merged over the resource
+root by `content_overlay`, so its tag reaches the table — that is what phase K uses
+(`datapack list` → `[file/mr-harness (world)]`). The port's own side is tag-independent for a saved
+id, which the `/data merge` step proves.
+
 ## 0.2.2 — the slice-2 repair (2026-11-21)
 
 Pin: SDK nightly **`0a875da91dbbfdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

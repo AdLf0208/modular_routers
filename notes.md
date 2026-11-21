@@ -6,10 +6,10 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.2** — 0.2.0 was the SDK
-migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes and
-0.2.2 the recipe/loot repair of 2026-11-21. Pin: SDK nightly
-`0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.3** — 0.2.0 was the SDK
+migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
+the recipe/loot repair of 2026-11-21, and 0.2.3 the registered-module path of 2026-11-21. Pin: SDK
+nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
 `horizon-mixin.toml` plan, the 10 hook helpers, `support.rs`, `runtime.rs`, the content `hmod`, the
@@ -462,6 +462,158 @@ Skills: superpowers/using-superpowers, writing-plans, test-driven-development, s
 
 Package 0.2.2: **60,567 B**, SHA-256 `28892b6a3e074d0f1da71a633d9c3fec769706436f7cc9057c995411708debbc`.
 
+## Slice 3 (2026-11-21) — a module kind this port does not implement is carried, not destroyed (0.2.3)
+
+Slice chosen from this file's gap list, item 1 — *"**Modules**: … and their settings screens"* — and from
+the blocker that stopped `ports/mekanisticrouters` on the same day:
+`blocked(no-parent-module-api,no-chemical-capability)`, because its four module items could not be
+installed, saved or read back. That is the **extension point** an add-on needs, and it is a
+`machines`-tier job: this is the router's own block entity and saved data, not a new renderer or a
+new machine. The other 18 modules remain unported; what changes here is that a module **this port
+does not implement** stops being erased.
+
+**The defect, measured.** `ModuleKind` was a closed enum (`PullerMk1`, `SenderMk1`), `from_item`
+returned `None` for anything else, `read_modules` therefore dropped the entry on the next read, and
+`write_modules` erased it from the save on the next edit. A save from a newer build, or a router with
+an add-on's module in it, lost that module silently.
+
+### TDD, in the order the ruling asks for
+
+**Unit red, on the untouched glue** (`slice3-test-red.log`): two tests added first, both about a
+foreign entry surviving the read and the rewrite.
+
+```
+---- support::tests::a_module_the_port_does_not_implement_is_carried_not_dropped stdout ----
+assertion `left == right` failed: a foreign module must survive the read
+  left: 0
+ right: 1
+---- support::tests::a_foreign_module_survives_the_rewrite_an_install_performs stdout ----
+assertion `left == right` failed: the install must not erase the foreign entry
+  left: 1
+ right: 2
+test result: FAILED. 26 passed; 2 failed; 0 ignored
+```
+
+**In-game red, the same package the campaign shipped (0.2.2)** — phase K run on the launcher-built
+game that was already exported, no source change (`e2e-red-module.log`):
+
+```
+  Unknown module 'minecraft:stick': modularrouters:puller_module_1 or modularrouters:sender_module_1
+FAIL: expected the reply to say 'Modular Router: minecraft:stick in slot 0'
+EXIT:1
+```
+
+That is the refusal the brief asked to quote: the install is refused and, because `read_modules`
+dropped the id, the `Modules` entry is gone by the next rewrite. `tools/e2e.sh`'s phase K is the
+assertion; it failed on 0.2.2 and passes on 0.2.3.
+
+### The change
+
+- **`src/runtime.rs`** — `ModuleKind` gains `Registered(String)`: the two Mk1 variants stay, anything
+  else is kept **by id**. `ModuleKind::of(&str)` never rejects an id, `is_known()` says whether this
+  port runs it, and `item()` returns the id (`Registered`'s own string). The enum is no longer `Copy`
+  (it now owns a `String`); it is still `Clone`, `PartialEq`, `Eq`.
+- **`src/support.rs`** — `read_modules` maps every entry through `ModuleKind::of` (only an entry with
+  no id is dropped), `write_modules` writes `kind.item()`, the tick matches `&module.kind` and a
+  `Registered` module does nothing (its behaviour is its own mod's), and **the registry is the item
+  tag the jar already ships**: `registered_module(host, item)` is true for the two Mk1 modules or for
+  an item in `#modularrouters:modules` (read with `registry_entry("minecraft:item", id)` +
+  `registry_entry_in_tag`). Both the right-click install and `/modularrouters install` use it, so an
+  item the port does not implement installs, reads back by `/modularrouters info`, keeps its
+  direction/filter, survives a relaunch and is removed; dirt and a blank module are still refused.
+- **Carried data fix**: `data/modularrouters/tags/item/modules.json` listed `blank_module`. The jar's
+  own tag (`unzip -p … data/modularrouters/tags/item/modules.json`) lists the 22 real modules and
+  **not** the blank base (`BlankModule` is a plain item, not a `ModuleItem`). The tag is now
+  load-bearing, so the port lists the two modules it ships and not the crafting base; `/modularrouters
+  install … modularrouters:blank_module` is refused in game (phase K).
+- No new dependency, no new hook, no manifest field: `uses.json` gains the two `KeysHost` reads.
+
+### The registry surface, and the platform limit measured while proving it
+
+Upstream's check is `item instanceof ModuleItem`; Horizon has no cross-mod class check, so the port
+reads the tag upstream itself ships for the job. Two harness routes were tried in game:
+
+1. **A content mod loaded with `--dev-mod`** carrying `data/modularrouters/tags/item/modules.json`:
+   the game logs `content from 1 mod(s)` and the pack's files are refused by
+   `horizon-mods::content::check` — a content mod may write only its own namespace (plus
+   `minecraft`/`c` tags), and the log names the clash. Its tag never reached the table
+   (`modules=Some(false)` for `minecraft:stick`, while `minecraft:planks` for `oak_planks` read
+   `Some(true)`, so the read itself was fine).
+2. **A world data pack** (`<world>/datapacks/mr-harness`, `pack_format` 121) whose tag file is merged
+   over the resource root by `content_overlay`: `/reload` lists it (`file/mr-harness (world)`) and
+   `minecraft:stick` becomes a module. That is the route phase K uses.
+
+So at pin `0a875da` an add-on's **content** mod cannot add to `modularrouters:modules` from its own
+`.hmod`; the item joins through a world data pack or by being part of the same game content. Recorded
+as a platform limit, not a port gap — the port's side (a tag is the registry; a carried id needs no
+tag at all) is proven both ways in phase K.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.3.log`)
+
+```
+  package: 33461229aba38b7da9b2d9522ba9bf915bae94a3869c28fa0702a4c4d5e6c72c  modularrouters.hmod
+  harness pack: There are 2 data pack(s) enabled: [vanilla (built-in)], [file/mr-harness (world)]
+== K: a module id this port does not implement is carried, not destroyed ==
+  Unknown module 'minecraft:dirt': modularrouters:puller_module_1, modularrouters:sender_module_1 or an item in #modularrouters:modules
+  Modular Router at 4,100,4: facing north, active false, 0 of 9 module(s), …
+  Unknown module 'modularrouters:blank_module': modularrouters:puller_module_1, modularrouters:sender_module_1 or an item in #modularrouters:modules
+  Modular Router: minecraft:stick in slot 0
+  module 0 at 4,100,4: minecraft:stick dir=none target=none filter blacklist none
+  Modular Router at 4,100,4: facing north, active false, 1 of 9 module(s), …
+  Modular Router: slot 0 points left
+  module 0 at 4,100,4: minecraft:stick dir=left target=east filter blacklist none
+  Modular Router: removed minecraft:stick
+  Modular Router at 4,100,4: facing north, active false, 0 of 9 module(s), …
+  … relaunch …
+  module 0 at 4,100,4: minecraft:stick dir=none target=none filter blacklist none
+  Modular Router at 4,100,4: facing north, active false, 1 of 9 module(s), …
+  Modular Router: removed minecraft:stick
+  Modular Router at 4,100,4: facing north, active false, 0 of 9 module(s), …
+  module 0 at 8,100,4: example:foreign_module dir=front target=north filter blacklist none
+  Modular Router: modularrouters:puller_module_1 in slot 1
+  module 0 at 8,100,4: example:foreign_module dir=front target=north filter blacklist none
+  Modular Router at 8,100,4: facing north, active false, 2 of 9 module(s), …
+  Modular Router: removed example:foreign_module
+  Modular Router at 8,100,4: facing north, active false, 1 of 9 module(s), …
+PASS: … EXIT:0
+```
+
+The last block is the "next rewrite" proof without any tag: `/data merge block` writes a foreign id
+straight into the block entity, `install` rewrites the whole `Modules` list, and the foreign entry is
+still slot 0 afterwards (0.2.2 read it as nothing and erased it on that rewrite).
+
+**Why the assertions can fail:** the 0.2.2 run above is the same phase K on the shipped package
+(`EXIT:1`); `minecraft:dirt` and `modularrouters:blank_module` are in-run differentials (existing
+items that are *not* modules, refused by the same code path that accepts the stick); and the
+`/data merge` block proves the read/rewrite keeps an id no tag mentions.
+`SELFTEST=1` fails phase A (`FAIL: SELFTEST: the target chest holds stone, so the check is alive`,
+`EXIT:1`), and the unmodded control game exits 1 at phase G
+(`FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)`, `EXIT:1`).
+
+### Ladder (every command in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the change | **2 failed** (`left: 0, right: 1`; `left: 1, right: 2`) | `slice3-test-red.log` |
+| red, in game | `tools/e2e.sh` phase K on the 0.2.2 game | `Unknown module 'minecraft:stick': …`, `FAIL`, `EXIT:1` | `modularrouters-e2e/e2e-red-module.log` |
+| tests | `cargo test --offline` | **30 passed**, 0 failed | `slice3-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice3-clippy.log` (= `sdk-clippy.log`) |
+| format | `cargo fmt --check` | exit 0 | `slice3-fmt.log` (= `sdk-fmt.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | `0a875da` build, second `cmp`-identical, **62,770 B** | `slice3-build.log`, `slice3-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.3 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `62770 bytes, SHA-256 33461229…c72c`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, `EXIT:0` | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` | `sdk-fits-0b14f8a.log` |
+| package contents | `unzip -l modularrouters.hmod` | **48 entries**, no `Cargo.lock` | `slice3-entries.txt` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` | `modularrouters-e2e/e2e-launcher-0.2.3.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.3.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `modularrouters-e2e/e2e-control-0.2.3.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | see `VALIDATION.md` | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.3: **62,770 B**, SHA-256 `33461229aba38b7da9b2d9522ba9bf915bae94a3869c28fa0702a4c4d5e6c72c`.
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -481,8 +633,9 @@ Every family the jar carries, against what this port does with it. `tested` name
 | the four items (blank module, router, puller, sender) | tested | E2E J2 (give + read back) |
 | the router's loot table | tested | E2E J3 (iron pickaxe, with a vanilla block as the differential) |
 | the `minecraft:mineable/pickaxe` + `needs_iron_tool` block tags | tested | E2E J3 (the router breaks with an iron pickaxe and drops) |
-| the `modularrouters:modules` item tag | not ported (nothing reads it yet) | declared in `data/`; the jar's smart filters would be its consumer — gap 3 |
-| the other 18 modules | not ported | gap 1 |
+| the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused) |
+| a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
+| the other 18 modules | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
 | the 10 upgrades + 5 upgrade slots | not ported (the tick-rate/stack formulas are implemented and unit-tested) | gap 2 |
 | 11 augments, 5 smart filters, RegexMatcher | not ported | gap 3 |
 | the router screen and every module screen | not ported | gap 4 (commands + a right-click readout stand in) |

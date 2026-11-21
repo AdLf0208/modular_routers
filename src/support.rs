@@ -49,6 +49,11 @@ const MODULE_WHITELIST: &str = "whitelist";
 const MODULE_FILTER: &str = "filter";
 /// The buffer slot in the block entity's item list.
 const BUFFER_SLOT: usize = 0;
+/// The item registry a module id is looked up in (`BuiltInRegistries.ITEM`).
+const ITEM_REGISTRY: &str = "minecraft:item";
+/// The item tag that declares a module: the jar ships it, and a mod's own module
+/// item joins it with a data pack. It is the port's module registry.
+const MODULE_TAG: &str = "modularrouters:modules";
 /// A block a sender's scan counts as passable: the three airs. Upstream also
 /// sends through any non-solid-render block (glass, torches, water) — a gap.
 const AIRS: [&str; 3] = ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"];
@@ -163,6 +168,11 @@ fn count(nbt: &Compound, name: &str) -> u32 {
 }
 
 /// The installed modules, in slot order (`Modules`).
+///
+/// An entry whose id this port does not implement is kept as
+/// [`ModuleKind::Registered`]: a save from a newer build, or a module another mod
+/// registered, must survive being read and rewritten. Only an entry with no item
+/// id at all is dropped.
 fn read_modules(nbt: &Compound) -> Vec<Module> {
     let Some(Tag::List(entries)) = nbt.get(&KEY_MODULES.into()) else {
         return Vec::new();
@@ -173,7 +183,7 @@ fn read_modules(nbt: &Compound) -> Vec<Module> {
             let Tag::Compound(entry) = entry else {
                 return None;
             };
-            let kind = ModuleKind::from_item(&string(entry, MODULE_ITEM)?)?;
+            let kind = ModuleKind::of(&string(entry, MODULE_ITEM)?);
             let direction = string(entry, MODULE_DIR)
                 .and_then(|name| Relative::from_name(&name))
                 .unwrap_or(Relative::None);
@@ -486,9 +496,12 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
         let Some(face) = module.direction.resolve(facing) else {
             continue;
         };
-        let ran = match module.kind {
+        let ran = match &module.kind {
             ModuleKind::PullerMk1 => pull(host, level, pos, face, module, &mut event.entity, items),
             ModuleKind::SenderMk1 => send(host, level, pos, face, module, &mut event.entity, items),
+            // A registered module's operation belongs to the mod that owns it;
+            // this port keeps it installed and leaves it alone.
+            ModuleKind::Registered(_) => false,
         };
         worked |= ran;
     }
@@ -531,7 +544,7 @@ pub(crate) fn right_click(host: HostSide<'_>, event: &mut RightClickBlockEvent<'
     if !is_router(&*host, level, click.pos) {
         return Flow::Continue;
     }
-    if !is_module(&held.item().id(&*host)) {
+    if !registered_module(&*host, &held.item().id(&*host)) {
         return Flow::Continue;
     }
     let installed = install_from_hand(host, level, click.pos, held, click.player);
@@ -542,12 +555,27 @@ pub(crate) fn right_click(host: HostSide<'_>, event: &mut RightClickBlockEvent<'
     }
 }
 
-fn is_module(item: &str) -> bool {
-    ModuleKind::from_item(item).is_some()
+/// Whether `item` is a module: one this port runs, or one the [`MODULE_TAG`] item
+/// tag lists. The tag is the registry — the jar ships it, and a data pack (or the
+/// same game's content) adds a module item to it — so this port keeps no id list
+/// of its own to fall behind anyone else's mod.
+fn registered_module(host: &dyn Host, item: &str) -> bool {
+    if ModuleKind::of(item).is_known() {
+        return true;
+    }
+    if Identifier::parse(item).is_err() {
+        return false;
+    }
+    let Some(entry) = host.registry_entry(ITEM_REGISTRY, item) else {
+        return false;
+    };
+    host.registry_entry_in_tag(&entry, MODULE_TAG)
+        .unwrap_or(false)
 }
 
 /// Install the held module into the router's first free slot, as dragging it
-/// into the router GUI does upstream (the GUI is this slice's gap).
+/// into the router GUI does upstream (the GUI is this slice's gap). A registered
+/// module is installed inert: its behaviour is its own mod's.
 fn install_from_hand(
     host: &mut dyn ServerHost,
     level: LevelRef,
@@ -556,15 +584,19 @@ fn install_from_hand(
     player: u128,
 ) -> bool {
     let item = stack.item().id(&*host);
-    let Some(kind) = ModuleKind::from_item(&item) else {
+    if !registered_module(&*host, &item) {
         return false;
-    };
+    }
     let installed = edit_router(host, level, pos, |nbt| {
         let mut modules = read_modules(nbt);
         if modules.len() >= MODULE_SLOTS {
             return false;
         }
-        modules.push(Module::new(kind, Relative::None, Filter::any()));
+        modules.push(Module::new(
+            ModuleKind::of(&item),
+            Relative::None,
+            Filter::any(),
+        ));
         write_modules(nbt, &modules);
         true
     });
@@ -922,19 +954,19 @@ fn install(
         return "Usage: /modularrouters install <x> <y> <z> <slot> <module id>".to_string();
     };
     let item = namespaced(module);
-    let Some(kind) = ModuleKind::from_item(&item) else {
+    if !registered_module(&*host, &item) {
         return format!(
-            "Unknown module '{module}': {} or {}",
+            "Unknown module '{module}': {}, {} or an item in #{MODULE_TAG}",
             ModuleKind::PULLER,
             ModuleKind::SENDER
         );
-    };
+    }
     let installed = edit_router(host, level, pos, |nbt| {
         let mut modules = read_modules(nbt);
         if slot >= MODULE_SLOTS || slot > modules.len() {
             return false;
         }
-        let module = Module::new(kind, Relative::None, Filter::any());
+        let module = Module::new(ModuleKind::of(&item), Relative::None, Filter::any());
         if slot == modules.len() {
             modules.push(module);
         } else {
@@ -944,7 +976,7 @@ fn install(
         true
     });
     if installed {
-        format!("Modular Router: {} in slot {slot}", kind.item())
+        format!("Modular Router: {item} in slot {slot}")
     } else {
         format!("Modular Router: no free slot {slot} (max {MODULE_SLOTS})")
     }
@@ -1100,24 +1132,62 @@ mod tests {
                 Relative::Back,
                 Filter::new(true, vec!["minecraft:dirt".to_string()]),
             ),
+            Module::new(
+                ModuleKind::of("mekanisticrouters:chemical_puller_module"),
+                Relative::Left,
+                Filter::any(),
+            ),
         ];
         let mut nbt = Compound::new();
         write_modules(&mut nbt, &modules);
-        assert_eq!(read_modules(&nbt), modules);
+        assert_eq!(
+            read_modules(&nbt),
+            modules,
+            "the registered id, its direction and its filter all round-trip"
+        );
     }
 
     #[test]
-    fn a_module_the_port_does_not_implement_is_dropped_not_guessed() {
-        // A save from a later build, or a hand-written file: an unknown module id
-        // must not become "some module".
+    fn a_module_the_port_does_not_implement_is_carried_not_dropped() {
+        // A save from a newer build, or a module another mod registered in
+        // `modularrouters:modules`: the id is kept verbatim, so
+        // `/modularrouters info` can show it and `remove` can take it.
         let mut entry = Compound::new();
         entry.insert(
             MODULE_ITEM.into(),
-            Tag::String("modularrouters:vacuum_module".into()),
+            Tag::String("example:foreign_module".into()),
         );
         let mut nbt = Compound::new();
         nbt.insert(KEY_MODULES.into(), Tag::List(vec![Tag::Compound(entry)]));
-        assert!(read_modules(&nbt).is_empty());
+        let modules = read_modules(&nbt);
+        assert_eq!(modules.len(), 1, "a foreign module must survive the read");
+        assert_eq!(modules[0].kind.item(), "example:foreign_module");
+    }
+
+    #[test]
+    fn a_foreign_module_survives_the_rewrite_an_install_performs() {
+        // Installing a module rewrites the whole `Modules` list from what
+        // `read_modules` returned. A foreign entry must come back out of that
+        // rewrite unchanged, not be dropped the way 0.2.2 dropped it.
+        let mut foreign = Compound::new();
+        foreign.insert(
+            MODULE_ITEM.into(),
+            Tag::String("example:foreign_module".into()),
+        );
+        foreign.insert(MODULE_DIR.into(), Tag::String("left".into()));
+        let mut nbt = Compound::new();
+        nbt.insert(KEY_MODULES.into(), Tag::List(vec![Tag::Compound(foreign)]));
+        let mut modules = read_modules(&nbt);
+        modules.push(puller(Relative::Front, Filter::any()));
+        write_modules(&mut nbt, &modules);
+        let rewritten = read_modules(&nbt);
+        assert_eq!(
+            rewritten.len(),
+            2,
+            "the install must not erase the foreign entry"
+        );
+        assert_eq!(rewritten[0].kind.item(), "example:foreign_module");
+        assert_eq!(rewritten[0].direction, Relative::Left);
     }
 
     #[test]
@@ -1206,10 +1276,12 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_mk1_transfer_modules_are_installed_by_hand() {
-        assert!(is_module(ModuleKind::PULLER));
-        assert!(is_module(ModuleKind::SENDER));
-        assert!(!is_module("modularrouters:blank_module"));
-        assert!(!is_module("minecraft:dirt"));
+    fn only_an_id_this_port_runs_or_the_module_tag_names_is_a_module() {
+        // The pure half: the two transfer modules are this port's, anything else
+        // is registered by id and gated by the item tag at the glue boundary.
+        assert!(ModuleKind::of(ModuleKind::PULLER).is_known());
+        assert!(ModuleKind::of(ModuleKind::SENDER).is_known());
+        assert!(!ModuleKind::of("modularrouters:blank_module").is_known());
+        assert!(!ModuleKind::of("minecraft:dirt").is_known());
     }
 }

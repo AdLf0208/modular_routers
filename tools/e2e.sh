@@ -31,6 +31,16 @@
 #     id is refused, the router's loot table drops it when broken (with a
 #     vanilla block as the harness's differential), and no carried recipe or
 #     loot table is in the 1.21.1 dialect the 26.3 parser rejects.
+#  K  a module id this port does not implement is *registered*: through the
+#     harness pack (minecraft:stick added to modularrouters:modules) it installs
+#     by command and by right-click, is read back by `/modularrouters info`,
+#     keeps its settings, survives a save and relaunch, and is removed; the
+#     blank module and dirt (not in the tag) are still refused; and a foreign id
+#     written straight into the block entity's Modules list survives the
+#     read/rewrite an install performs.
+#
+# The harness pack is the only data this script adds to the game: a world data
+# pack, not part of the package (see `harness_pack`).
 #
 # The leg launches `--offscreen` (not `--headless`): `click-slot`, which phase J
 # needs, requires a renderer.
@@ -43,6 +53,12 @@
 # same build>` is the negative control — both ids must be unknown there, so the
 # block, the items and the transfer demonstrably come from this package. Without
 # it the control is skipped and the log says so.
+#
+# Phase K's foreign module id comes from a **world data pack** the script writes
+# into the save (`<world>/datapacks/mr-harness`): a content mod cannot write
+# `data/modularrouters/…` (a mod owns only its own namespace, plus `minecraft`/`c`
+# tags), but a world pack's `tags/` files are merged over the resource root by
+# `content_overlay`, so its `modularrouters:modules` file reaches the tag table.
 #
 # The in-game run was NOT re-done in the SDK migration: `horizon-launcher` is not
 # installed in this environment (see `notes.md`). The 0.1.0 run stands as the
@@ -161,15 +177,62 @@ block_at() { # block_at X Z BLOCK[props]
     ctl command "execute in minecraft:the_end run setblock $1 100 $2 $3"
 }
 
+# A world data pack that puts minecraft:stick in modularrouters:modules: a module
+# id this port implements nothing for. A content mod may not write
+# `data/modularrouters/…` (it owns only its own namespace, plus `minecraft`/`c`
+# tags), but a world pack's tags are merged over the resource root by
+# `content_overlay`; `/reload` picks a new pack up (`PackRepository.reload`).
+harness_pack() {
+    local pack=$SCRATCH/saves/$WORLD/datapacks/mr-harness
+    mkdir -p "$pack/data/modularrouters/tags/item"
+    cat >"$pack/pack.mcmeta" <<'JSON'
+{ "pack": { "pack_format": 121, "description": "modularrouters e2e harness" } }
+JSON
+    cat >"$pack/data/modularrouters/tags/item/modules.json" <<'JSON'
+{ "values": ["minecraft:stick"] }
+JSON
+    ctl command "reload" >/dev/null
+    ctl wait 20 >/dev/null
+    local packs
+    packs=$(ctl command "datapack list" | jq -r '.chat[]' | grep "data pack(s) enabled" | head -1)
+    echo "  harness pack: $packs"
+    case "$packs" in
+        *"file/mr-harness"*) ;;
+        *) fail "the harness world pack did not load: $packs" ;;
+    esac
+}
+
+# wait_chat TEXT PATTERN TAIL: poll the newest chat lines (bounded, ~5 s) until
+# one matching TEXT appears; print that window. `ctl messages` returns the newest
+# lines first (`recent_lines` takes from the front), so the window is `head`, not
+# `tail`. `say` runs a player-chat command and the reply lands a server tick or
+# two later, so a fixed short wait is a race.
+wait_chat() { # wait_chat TEXT PATTERN TAIL
+    local text=$1 pattern=$2 count=$3 lines=""
+    for _ in $(seq 1 20); do
+        lines=$(ctl messages 16 | jq -r '.chat[]' | grep -E -- "$pattern" | head -"$count")
+        if echo "$lines" | grep -q -- "$text"; then
+            echo "$lines" | sed 's/^/  /'
+            return 0
+        fi
+        ctl wait 5 >/dev/null
+    done
+    echo "$lines" | sed 's/^/  /'
+    return 1
+}
+
 # /modularrouters info X Y Z, echoed and matched by TEXT.
 expect_info() { # expect_info X Y Z TEXT
     say "modularrouters info $1 $2 $3"
-    ctl wait 3 >/dev/null
-    local lines
-    lines=$(ctl messages 14 | jq -r '.chat[]' \
-        | grep "Modular Router at $1,$2,$3:\|module [0-9]* at $1,$2,$3:" | tail -6)
-    echo "$lines" | sed 's/^/  /'
-    echo "$lines" | grep -q -- "$4" || fail "expected /modularrouters info to say '$4'"
+    wait_chat "$4" "Modular Router at $1,$2,$3:|module [0-9]+ at $1,$2,$3:" 6 \
+        || fail "expected /modularrouters info to say '$4'"
+}
+
+# expect_chat TEXT: the reply to the command just sent contains TEXT. `say` runs a
+# player chat command, so the reply is a chat line like any other; `ctl command`
+# exits 0 even on a refusal, which is why the *parsed* reply is what is asserted.
+expect_chat() { # expect_chat TEXT
+    wait_chat "$1" "." 4 || fail "expected the reply to say '$1'"
 }
 
 # The negative control: an unmodded client of the same build. Both ids must be
@@ -205,9 +268,12 @@ control_leg() {
 }
 
 echo "== launch (The End arena; one package, code and content together) =="
+echo "  package: $(sha256sum "$HMOD" | cut -d' ' -f1)  $(basename "$HMOD")"
+echo "  game:    $GAME"
 control_leg
 launch
 arena
+harness_pack
 
 echo "== build the arena: A (working router), B (puller only), C (filter), D (blocked) =="
 # A: router at (0,100,0) facing north; source chest north of it, target 5 south.
@@ -465,4 +531,67 @@ echo "== J4: every carried recipe and loot table is in the 26.3 dialect =="
 python3 "$PORT/tools/data_shape.py" "$HMOD" \
     || fail "a carried recipe or loot table is in the 1.21.1 dialect (see the lines above)"
 
-echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; the four carried recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, two wrong-ingredient controls craft nothing, all four items read back from the inventory, an unknown id is refused, the router's loot table drops it, and one .hmod carries the code and the content"
+echo "== K: a module id this port does not implement is carried, not destroyed =="
+# The harness pack put minecraft:stick in modularrouters:modules: a module id
+# this port implements nothing for. modularrouters:blank_module and dirt are not
+# in the tag (the jar's tag lists only real modules), so they stay refused.
+block_at 4 4 "$ROUTER[facing=north]"
+ctl wait 4
+ctl command "gamemode creative @s" >/dev/null
+ctl command "clear @s" >/dev/null
+
+say "modularrouters install 4 100 4 0 minecraft:dirt"
+expect_chat "Unknown module 'minecraft:dirt'"
+expect_info 4 100 4 "0 of 9 module(s)"
+say "modularrouters install 4 100 4 0 modularrouters:blank_module"
+expect_chat "Unknown module 'modularrouters:blank_module'"
+expect_info 4 100 4 "0 of 9 module(s)"
+
+say "modularrouters install 4 100 4 0 minecraft:stick"
+expect_chat "Modular Router: minecraft:stick in slot 0"
+expect_info 4 100 4 "module 0 at 4,100,4: minecraft:stick"
+expect_info 4 100 4 "1 of 9 module(s)"
+say "modularrouters direction 4 100 4 0 left"
+expect_chat "Modular Router: slot 0 points left"
+expect_info 4 100 4 "module 0 at 4,100,4: minecraft:stick dir=left"
+say "modularrouters remove 4 100 4 0"
+expect_chat "Modular Router: removed minecraft:stick"
+expect_info 4 100 4 "0 of 9 module(s)"
+
+# The right-click path: the same foreign item, held in the hand.
+ctl give minecraft:stick 1 >/dev/null
+ctl wait 4
+ctl tp 4.5 100 6.5 >/dev/null
+ctl select minecraft:stick >/dev/null || fail "no stick in the hotbar"
+ctl look-at-block 4 100 4 south >/dev/null
+ctl interact 4 100 4 south >/dev/null || fail "the right-click on the router failed"
+ctl wait 4 >/dev/null
+expect_info 4 100 4 "module 0 at 4,100,4: minecraft:stick"
+
+# Save and relaunch: the module is in the block entity's saved compound.
+ctl quit >/dev/null
+sleep 2
+launch
+expect_info 4 100 4 "module 0 at 4,100,4: minecraft:stick"
+expect_info 4 100 4 "1 of 9 module(s)"
+say "modularrouters remove 4 100 4 0"
+expect_chat "Modular Router: removed minecraft:stick"
+expect_info 4 100 4 "0 of 9 module(s)"
+
+# A foreign id written straight into the block entity's list: the read/rewrite
+# an install performs must keep it (0.2.2 dropped it on the read, and the next
+# install erased it from the save).
+block_at 8 4 "$ROUTER[facing=north]"
+ctl wait 4
+ctl command 'data merge block 8 100 4 {Modules:[{item:"example:foreign_module",dir:"front",whitelist:0b,filter:[]}]}' >/dev/null
+ctl wait 3
+expect_info 8 100 4 "module 0 at 8,100,4: example:foreign_module dir=front"
+say "modularrouters install 8 100 4 1 $PULLER"
+expect_chat "Modular Router: $PULLER in slot 1"
+expect_info 8 100 4 "module 0 at 8,100,4: example:foreign_module"
+expect_info 8 100 4 "2 of 9 module(s)"
+say "modularrouters remove 8 100 4 0"
+expect_chat "Modular Router: removed example:foreign_module"
+expect_info 8 100 4 "1 of 9 module(s)"
+
+echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; the four carried recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, two wrong-ingredient controls craft nothing, all four items read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused"

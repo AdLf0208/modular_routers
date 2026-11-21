@@ -202,31 +202,52 @@ impl Relative {
     }
 }
 
-/// Which transfer module is installed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which module is installed: one of the two transfer modules this port runs,
+/// or any other module id a save or an add-on carries.
+///
+/// The second case is the **registered** path: `modularrouters:modules` is the
+/// item tag the jar ships, and an item in it is a module whatever port
+/// implements it. This port keeps such a module — its id, direction and filter
+/// — and leaves its behaviour to the mod that owns it; what it must never do is
+/// drop it from the router's saved list.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleKind {
     /// `modularrouters:puller_module_1`: container → buffer.
     PullerMk1,
     /// `modularrouters:sender_module_1`: buffer → container.
     SenderMk1,
+    /// A module this port does not implement, carried by its id.
+    Registered(String),
 }
 
 impl ModuleKind {
     pub const PULLER: &'static str = "modularrouters:puller_module_1";
     pub const SENDER: &'static str = "modularrouters:sender_module_1";
 
-    pub fn from_item(item: &str) -> Option<Self> {
+    /// The kind an item id names: one of the two transfer modules this port
+    /// runs, or a registered kind that keeps the id unchanged.
+    #[must_use]
+    pub fn of(item: &str) -> Self {
         match item {
-            Self::PULLER => Some(ModuleKind::PullerMk1),
-            Self::SENDER => Some(ModuleKind::SenderMk1),
-            _ => None,
+            Self::PULLER => ModuleKind::PullerMk1,
+            Self::SENDER => ModuleKind::SenderMk1,
+            other => ModuleKind::Registered(other.to_string()),
         }
     }
 
-    pub const fn item(self) -> &'static str {
+    /// Whether this port runs the module itself rather than only carrying it.
+    #[must_use]
+    pub fn is_known(&self) -> bool {
+        matches!(self, ModuleKind::PullerMk1 | ModuleKind::SenderMk1)
+    }
+
+    /// The item id this module is.
+    #[must_use]
+    pub fn item(&self) -> &str {
         match self {
             ModuleKind::PullerMk1 => Self::PULLER,
             ModuleKind::SenderMk1 => Self::SENDER,
+            ModuleKind::Registered(item) => item,
         }
     }
 }
@@ -596,6 +617,43 @@ mod tests {
             assert_eq!(Relative::from_name(name).map(Relative::name), Some(name));
         }
         assert_eq!(Relative::from_name("sideways"), None);
+    }
+
+    #[test]
+    fn an_unknown_module_id_is_a_registered_kind_that_keeps_its_id() {
+        // The two transfer modules this port runs…
+        let puller = ModuleKind::of("modularrouters:puller_module_1");
+        assert_eq!(puller, ModuleKind::PullerMk1);
+        assert!(puller.is_known());
+        assert_eq!(puller.item(), "modularrouters:puller_module_1");
+        let sender = ModuleKind::of("modularrouters:sender_module_1");
+        assert_eq!(sender, ModuleKind::SenderMk1);
+        assert!(sender.is_known());
+        // …and anything else is registered by id, not rejected: an add-on's
+        // module and a newer save's module both reach the router this way.
+        for id in [
+            "mekanisticrouters:chemical_puller_module",
+            "modularrouters:vacuum_module",
+            "example:foreign_module",
+        ] {
+            let kind = ModuleKind::of(id);
+            assert_eq!(kind, ModuleKind::Registered(id.to_string()));
+            assert!(!kind.is_known(), "{id} is not this port's to run");
+            assert_eq!(kind.item(), id, "the id is kept verbatim");
+        }
+    }
+
+    #[test]
+    fn a_module_keeps_its_kind_direction_and_filter() {
+        let module = Module::new(
+            ModuleKind::of("example:foreign_module"),
+            Relative::Left,
+            Filter::new(true, vec!["minecraft:stone".to_string()]),
+        );
+        assert_eq!(module.kind.item(), "example:foreign_module");
+        assert_eq!(module.direction, Relative::Left);
+        assert!(module.filter.whitelist());
+        assert_eq!(module.clone(), module);
     }
 
     #[test]
