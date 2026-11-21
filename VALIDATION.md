@@ -1,5 +1,55 @@
 # Modular Routers — validation ladder
 
+## 0.2.2 — the slice-2 repair (2026-11-21)
+
+Pin: SDK nightly **`0a875da91dbbfdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Re-pinned from `0b14f8a` with
+`cargo horizon-mod update --horizon 0a875da…` (*"none of the 390 items it uses changed"*).
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`. **No Rust changed** (the defect was in the carried
+`data/*.json`), so the unit/clippy/fmt rows re-run the ladder on the untouched tree.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `tools/craft_check.py` on the **unfixed** package (red) | 4 recipes → `null` in a real table; `FAIL … expected 6 modularrouters:blank_module, got None` | `modularrouters-e2e/e2e-red-recipes.log` |
+| 2 | `tools/e2e.sh` J3 on the **unfixed** loot table (red) | the vanilla control drops, the router drops nothing → `FAIL: the router dropped 0 of itself`, `EXIT:1` | `modularrouters-e2e/e2e-loot-red.log` |
+| 3 | `tools/data_shape.py` on the artifact built before the loot fix (red) | `FAIL …: loot pool condition in the 1.21.1 array form …` | `data-shape-loot-red.log` |
+| 4 | `cargo test --offline` | **27 passed**, 0 failed | `slice2-test.log` (= `sdk-test.log`) |
+| 5 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice2-clippy.log` (= `sdk-clippy.log`) |
+| 6 | `cargo fmt --check` (**not** `--all`) | exit 0, empty diff | `slice2-fmt.log` |
+| 7 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | `0a875da` build, second `cmp`-identical, **60,567 B** | `slice2-build.log`, `slice2-build-second.log` |
+| 8 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.2 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `60567 bytes, SHA-256 28892b6a…debbc`, **exit 0** | `slice2-check.log` |
+| 9 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 10 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 11 | `unzip -l modularrouters.hmod` | **48 entries**, 11 `data/modularrouters/`, **no `Cargo.lock`** | `slice2-entries.txt` |
+| 12 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (27 tests, clippy 0, check, fits, skills) | `verify-sdk-package.log` |
+| 13 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I plus J1–J4 | `modularrouters-e2e/e2e-launcher.log` |
+| 14 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest.log` |
+| 15 | `GAME=$CONTROL_GAME tools/e2e.sh` (the unmodded client of the same Nightly) | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)`, `Unknown block type 'modularrouters:modular_router'` | `modularrouters-e2e/e2e-control.log` |
+| 16 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=6 ok=6`, 0 missing/bad exit lines | — |
+| 17 | `python3 ports/tools/check-skills.py --notes ports/modularrouters --strict` | PASS | — |
+
+### What J1–J4 prove (parity rule)
+
+| Phase | Assertion |
+|---|---|
+| J1 | each of the four carried recipes crafts its declared **id and count** in a real crafting table (`6` blank modules, `4` routers, `1` puller, `1` sender), the grid empties, the recipe's distinctive ingredient is **consumed**, and two wrong-ingredient controls craft **nothing** |
+| J2 | all four items are give-able and read back from the inventory; `modularrouters:not_a_module` is refused (`Unknown item`) |
+| J3 | breaking the router with an iron pickaxe drops exactly one `modularrouters:modular_router`; a vanilla crafting table broken the same way drops its own item first (the harness's differential) |
+| J4 | no carried recipe or loot table is in the 1.21.1 dialect (the static net for the two defects above) |
+
+`e2e-launcher-control.log` in that folder is the **0.2.1 / `0b14f8a`** control run of the same
+scenario; it is superseded by `e2e-control.log` at this pin and is kept as history (it ended `EXIT:1`
+silently at the same `give`, before the leg said why — which is why phase G now reports it).
+
+### Delivered package (0.2.2)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 60,567 B | `28892b6a3e074d0f1da71a633d9c3fec769706436f7cc9057c995411708debbc` | 48 |
+
 ## 0.2.0 — the SDK package (2026-11-18)
 
 Pin: SDK nightly **`0b14f8acfd97fa2c750e42795249dcc981178ca4`** (2026-11-18; `package_format` 6,

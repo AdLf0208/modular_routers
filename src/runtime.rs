@@ -239,6 +239,10 @@ pub struct Filter {
     items: Vec<String>,
 }
 
+/// The most item ids one filter lists. Upstream's filter GUI is a fixed row of
+/// slots; this slice's list is what a save can grow, so the bound lives here.
+pub const MAX_FILTER_ITEMS: usize = 16;
+
 impl Filter {
     /// The default: blacklist mode with no entries, which `Filter.test` lets
     /// every item through.
@@ -250,6 +254,11 @@ impl Filter {
     }
 
     pub fn new(whitelist: bool, items: Vec<String>) -> Self {
+        let mut items = items;
+        // The saved list is scanned on every router tick: an edit must not be able
+        // to grow it without bound, and a save with more entries keeps the first
+        // ones rather than being refused whole.
+        items.truncate(MAX_FILTER_ITEMS);
         Filter { whitelist, items }
     }
 
@@ -596,6 +605,21 @@ mod tests {
         assert!(any.is_empty());
         assert!(any.accepts("minecraft:stone"));
         assert!(any.accepts("modularrouters:blank_module"));
+    }
+
+    #[test]
+    fn a_filter_list_is_capped() {
+        let items: Vec<String> = (0..MAX_FILTER_ITEMS + 8)
+            .map(|n| format!("minecraft:item_{n}"))
+            .collect();
+        let filter = Filter::new(true, items);
+        assert_eq!(
+            filter.items().len(),
+            MAX_FILTER_ITEMS,
+            "an unbounded list is rebuilt on every edit and scanned on every router tick"
+        );
+        assert!(filter.accepts("minecraft:item_0"));
+        assert!(!filter.accepts("minecraft:item_20"));
     }
 
     #[test]

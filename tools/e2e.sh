@@ -25,6 +25,15 @@
 #  G  a placed router faces the opposite of its placer (real placement, not a
 #     setblock), and one package carries the code and the content.
 #  H  the modules and the buffer survive a relaunch.
+#  J  the four carried recipes craft in a real crafting table (id, count, grid
+#     emptied, the distinctive ingredient consumed; two wrong-ingredient
+#     controls craft nothing), every carried item is give-able and an unknown
+#     id is refused, the router's loot table drops it when broken (with a
+#     vanilla block as the harness's differential), and no carried recipe or
+#     loot table is in the 1.21.1 dialect the 26.3 parser rejects.
+#
+# The leg launches `--offscreen` (not `--headless`): `click-slot`, which phase J
+# needs, requires a renderer.
 #
 # How it is launched (the SDK format, 2026-11-18): a native mod is compiled into
 # the client by the launcher, so this script takes
@@ -61,6 +70,7 @@ KEEP=${KEEP:-0}
 WORLD=ModularRoutersE2E
 CONTROL_WORLD=ModularRoutersControl
 ROUTER=modularrouters:modular_router
+BLANK=modularrouters:blank_module
 PULLER=modularrouters:puller_module_1
 SENDER=modularrouters:sender_module_1
 
@@ -84,7 +94,15 @@ rm -f "$SOCK"
 
 ctl() { "$CTL" --socket "$SOCK" "$@"; }
 say() { ctl chat "/$1" >/dev/null; }
-fail() { echo "FAIL: $*" >&2; ctl logs --lines 80 >&2 || true; exit 1; }
+fail() {
+    echo "FAIL: $*" >&2
+    ctl logs --lines 80 >&2 || true
+    # The startup log is where the server says why a recipe did not load; a run
+    # that fails keeps it beside the transcript.
+    cp "$HORIZON_HOME/logs/latest.log" \
+       "$CLONE/ports/_shared/evidence/modularrouters-e2e/game-latest.log" 2>/dev/null || true
+    exit 1
+}
 
 # The full state of a block in the End (`modularrouters:modular_router[...]`).
 state() { ctl block "$1" "$2" "$3" | jq -r '.state // .block // "unknown"'; }
@@ -115,7 +133,7 @@ launch() { # launch [WORLD]
     local game=${LAUNCH_GAME:-$GAME}
     echo "  launch: $(basename "$game"), no --dev-mod: the package carries its content" >&2
     "$CTL" --socket "$SOCK" launch \
-        --game "$game" --world "$world" --seed 20261105 --creative --headless --wait \
+        --game "$game" --world "$world" --seed 20261105 --creative --offscreen --wait \
         --resources "$RES" >/dev/null
     ctl wait-ready 120 >/dev/null
     ctl wait 40
@@ -219,7 +237,7 @@ ctl wait 4
 [ "$(count 0 100 -1 minecraft:stone)" = 6 ] || fail "the phase A source chest did not take 6 stone"
 
 echo "== G: a placed router faces the opposite of its placer =="
-ctl give "$ROUTER" 1 >/dev/null
+ctl give "$ROUTER" 1 >/dev/null || fail "give $ROUTER failed (is the package loaded in this game?)"
 ctl wait 4
 ctl select "$ROUTER" >/dev/null || fail "the router item is not in the hotbar"
 ctl tp 3.5 100 9.5 >/dev/null
@@ -372,4 +390,79 @@ with zipfile.ZipFile(package) as archive:
           f' + data/{len(data)} + src/ 3')
 PY
 
-echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; one .hmod carries the code and the content"
+echo "== J1: the four carried recipes craft in a real crafting table =="
+# A carried recipe whose ingredient is in the 1.21.1 object form
+# (`{"item": "..."}`) is rejected by the 26.3 parser at load, so the recipe is
+# dead data. The server names it once, at startup: print those lines as the
+# explanation, then let the crafting table be the assertion (and check the log
+# again afterwards, so a rejected recipe is a failure even if no craft below
+# happens to cover it).
+rejected=$(grep -a "recipes: invalid ingredient" "$HORIZON_HOME/logs/latest.log" || true)
+if [ -n "$rejected" ]; then
+    echo "  the server rejected these ingredients at load:" >&2
+    echo "$rejected" | sed 's/^/  /' >&2
+fi
+block_at 22 -8 minecraft:crafting_table
+ctl tp 21.5 100 -7.5 >/dev/null
+ctl wait 4
+ctl command "gamemode survival @s" >/dev/null
+ctl wait 3
+python3 "$PORT/tools/craft_check.py" "$SOCK" "$CTL" 22 100 -8 \
+    || fail "the crafting-table recipe check failed"
+ctl close >/dev/null 2>&1 || true
+ctl command "gamemode creative @s" >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 3
+[ -z "$rejected" ] || fail "the server rejected a carried recipe ingredient (see the lines above)"
+
+echo "== J2: every carried item is give-able, and an unknown id is refused =="
+for id in "$BLANK" "$PULLER" "$SENDER" "$ROUTER"; do
+    ctl command "clear @s" >/dev/null
+    ctl give "$id" 1 >/dev/null || fail "give $id failed"
+    ctl wait 3
+    held=$(ctl inventory | jq -r --arg i "$id" '.counts[$i] // 0')
+    [ "$held" -ge 1 ] || fail "$id is not in the inventory after give ($held)"
+done
+echo "  blank module, puller, sender and router each read back from the inventory"
+unknown=$(ctl command "give @s modularrouters:not_a_module 1" | jq -r '.chat[]?' | tr '\n' ' ')
+echo "  give modularrouters:not_a_module: $unknown"
+case "$unknown" in
+    *"Unknown item"*) ;;
+    *) fail "an unknown modularrouters item was accepted: $unknown" ;;
+esac
+ctl command "clear @s" >/dev/null
+
+echo "== J3: the router's loot table drops it, with a vanilla block as the control =="
+ctl command "gamemode survival @s" >/dev/null
+ctl command "clear @s" >/dev/null
+ctl give minecraft:iron_pickaxe 1 >/dev/null
+ctl wait 4
+ctl select minecraft:iron_pickaxe >/dev/null || fail "no pickaxe in the hotbar"
+block_at 22 -10 "$ROUTER[facing=north]"
+block_at 24 -10 minecraft:crafting_table
+# The vanilla block first: a break that reports no drop at all would make the
+# router's assertion meaningless, so the harness proves itself on a block whose
+# loot table ships with the game.
+ctl tp 24.5 100 -8.5 >/dev/null
+ctl wait 5
+ctl look-at-block 24 100 -10 >/dev/null 2>&1 || true
+reply=$(ctl break 24 100 -10) || fail "cannot break the crafting table: $reply"
+echo "  vanilla crafting table: $reply"
+got=$(jq -r '.drops["minecraft:crafting_table"] // 0' <<<"$reply")
+[ "$got" -ge 1 ] || fail "the vanilla control block dropped $got of itself: $reply"
+ctl tp 22.5 100 -8.5 >/dev/null
+ctl wait 4
+ctl look-at-block 22 100 -10 >/dev/null 2>&1 || true
+reply=$(ctl break 22 100 -10) || fail "cannot break the router: $reply"
+echo "  router: $reply"
+got=$(jq -r --arg d "$ROUTER" '.drops[$d] // 0' <<<"$reply")
+[ "$got" -ge 1 ] || fail "the router dropped $got of itself: $reply"
+[ "$(state 22 100 -10)" = "minecraft:air" ] || fail "the broken router is still there: $(state 22 100 -10)"
+ctl command "gamemode creative @s" >/dev/null
+ctl command "clear @s" >/dev/null
+
+echo "== J4: every carried recipe and loot table is in the 26.3 dialect =="
+python3 "$PORT/tools/data_shape.py" "$HMOD" \
+    || fail "a carried recipe or loot table is in the 1.21.1 dialect (see the lines above)"
+
+echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; the four carried recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, two wrong-ingredient controls craft nothing, all four items read back from the inventory, an unknown id is refused, the router's loot table drops it, and one .hmod carries the code and the content"

@@ -6,10 +6,12 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.0**, which supersedes the
-closed `.hnmod` submission **PR #870**. Pin: SDK nightly
-`0b14f8acfd97fa2c750e42795249dcc981178ca4`, horizon-mixins
-`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3. The retired 0.1.0 tree — the
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.2** — 0.2.0 was the SDK
+migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes and
+0.2.2 the recipe/loot repair of 2026-11-21. Pin: SDK nightly
+`0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
+package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
 `horizon-mixin.toml` plan, the 10 hook helpers, `support.rs`, `runtime.rs`, the content `hmod`, the
 `.hnmod` and the old tools — is kept as evidence under
 [`../_shared/evidence/modularrouters/retired-hnmod-0.1.0/`](../_shared/evidence/modularrouters/retired-hnmod-0.1.0/);
@@ -312,8 +314,205 @@ no `--target-dir`); logs in `ports/_shared/evidence/modularrouters/`.
 
 ## Upstream defects fixed
 
-None found in this slice: the jar's router constants, the module filters and the two Mk1 operations
-agree with their own data, and nothing here reproduced a defect.
+**None of the jar's own behaviour was broken** in slice 1: the router constants, the module filters
+and the two Mk1 operations agree with their own data, and nothing reproduced an upstream defect.
+
+**Three carry errors of the same class were found and fixed in slice 2** (2026-11-21). They are not
+upstream defects: the Java mod is correct, and the **data this port carried was written in the
+NeoForge 1.21.1 dialect**, which the 26.3 parser refuses. `check`, `fits` and every unit test pass on
+such a package, which is exactly the class the parity rule (2026-11-20) exists for.
+
+| # | Artefact | 1.21.1 form that shipped | 26.3 form | What a player saw |
+|---|---|---|---|---|
+| 1 | all four `data/modularrouters/recipe/*.json` | `{"item": "minecraft:gold_nugget"}`, `{"tag": "minecraft:arrows"}` | `"minecraft:gold_nugget"`, `"#minecraft:arrows"` | the whole crafting progression was dead: filling the grid exactly as the recipe declares left the result slot empty, and the server logged `recipes: invalid ingredient (unresolved tag or malformed input)` for each ingredient |
+| 2 | `data/modularrouters/loot_table/blocks/modular_router.json` | `"conditions": [ { "condition": "minecraft:survives_explosion" } ]` (and `"bonus_rolls"`, a field no 26.3 table uses) | `"condition": { "type": "minecraft:survives_explosion" }` | breaking a router with an iron pickaxe destroyed it and dropped **nothing** |
+
+Evidence for "the 26.3 form is the bare string / the singular `condition`", measured against the
+prepared 26.3 resources, not guessed:
+
+- `data/minecraft/recipe/dispenser.json` — `"key": {"#": "minecraft:cobblestone"}`, and
+  `data/minecraft/recipe/acacia_planks.json` — `"ingredients": ["#minecraft:acacia_logs"]`.
+- **0 of 1139** block loot tables under `data/minecraft/loot_table/blocks/` use `"conditions"`; all
+  their pools use `"condition"` (`data/minecraft/loot_table/blocks/barrel.json`). `"bonus_rolls"`
+  appears in none of them.
+
+The pin's own carry documentation says the same, which is why the campaign's carry step has to
+rewrite both: `horizon/docs/modpacks.md:401` — *"It upgrades from 1.21.1 to 26.3: vanilla-type
+recipes (ingredients), loot tables (`conditions` lists become one `condition`, …)"*. This port's
+carry shipped the 1.21.1 side of both upgrades.
+
+The parser's own words, from the red run (`../_shared/evidence/modularrouters-e2e/e2e-red-recipes.log`):
+
+```
+  [03:29:33] [load-items/ERROR]: recipes: invalid ingredient (unresolved tag or malformed input): {"item":"minecraft:redstone"}
+  [03:29:33] [load-items/ERROR]: recipes: invalid ingredient (unresolved tag or malformed input): {"item":"minecraft:paper"}
+  [03:29:33] [load-items/ERROR]: recipes: invalid ingredient (unresolved tag or malformed input): {"item":"minecraft:gold_nugget"}
+  ...
+  FAIL blank module: redstone over 3 paper over 3 gold nuggets, six at a time: expected 6 modularrouters:blank_module, got None
+  FAIL router: 4 iron + 4 iron bars around a blank module, four at a time: expected 4 modularrouters:modular_router, got None
+  FAIL puller module: a blank module and a sticky piston, shapeless: expected 1 modularrouters:puller_module_1, got None
+  FAIL sender module: a blank module, a bow and an arrow from #minecraft:arrows: expected 1 modularrouters:sender_module_1, got None
+FAIL: the crafting-table recipe check failed
+EXIT:1
+```
+
+The grids printed by that run hold exactly the declared ingredients in exactly the declared slots, and
+the result slot is empty — so the recipe, not the harness, was the problem.
+
+The loot table's red run (`e2e-loot-red.log`) puts a vanilla block and the router side by side in one
+game, which isolates the loot table from the break itself:
+
+```
+  vanilla crafting table: {"block":"minecraft:air","block_before":"minecraft:crafting_table","drops":{"minecraft:crafting_table":1},...,"items_left_on_ground":1,...}
+  router: {"block":"minecraft:air","block_before":"modularrouters:modular_router[active=false,facing=north]","drops":{},"items_left_on_ground":0,...}
+FAIL: the router dropped 0 of itself: ...
+EXIT:1
+```
+
+Both are proven fixed in game (see the slice 2 transcript below), and `tools/data_shape.py` now fails
+the leg on either form before a game is needed.
+
+## Slice 2 (2026-11-21) — the carried recipes and the loot table, proven in game (0.2.2)
+
+Slice chosen from this file's own gap list, item 10 — *"the four carried recipes use the vanilla items
+they stand for … `#minecraft:arrows` is kept"* — plus item 11, *"the router drops a plain block item"*.
+It is the highest-value remaining family: the four recipes are the mod's whole crafting progression
+(blank module → router / puller / sender), so until they craft the port cannot be obtained by a player
+at all, and the parity rule calls a carried recipe that is never crafted *dead data*. Tier fit:
+**machines**, the port's ledger row — this is carried content *of* a machines port, so no tier is
+exceeded (the brief's "deep" is stale; the ledger and `horizon/docs/modpacks.md` put this port at
+`machines`). No Rust changed: the defect was in the carried `.json`, the runtime and the glue stand.
+
+**Re-pinned** to the campaign pin, SDK nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a`
+(2026-11-20) + horizon-mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`. `cargo horizon-mod update
+--horizon 0a875da…` printed *"none of the 390 items it uses changed"*, and both `fits` runs agree (below).
+
+**TDD, in the order the ruling asks for.** The family's rule cannot live in `runtime.rs` (a recipe is
+data, and the crate's only dependency is `horizon-mod-api`), so the fail-capable test is the harness
+assertion, written first and run red on the untouched package:
+
+| Red | Assertion | Verbatim |
+|---|---|---|
+| recipes | `tools/craft_check.py` — craft each declared recipe in a real table | `FAIL blank module: … expected 6 modularrouters:blank_module, got None` (and the other three) — `e2e-red-recipes.log` |
+| loot | `tools/e2e.sh` J3 — break it with an iron pickaxe, with a vanilla block as the control | `FAIL: the router dropped 0 of itself: …"drops":{}…` — `e2e-loot-red.log` |
+| static | `tools/data_shape.py` — no recipe/loot file in the 1.21.1 dialect | `FAIL …: loot pool condition in the 1.21.1 array form ([{"condition": "minecraft:survives_explosion"}]); 26.3 uses "condition": {...}` — `data-shape-loot-red.log` |
+
+Then the minimal fix (the four recipes and the one loot table, above), then the same assertions green.
+
+**In game, at 0a875da** (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher.log`):
+
+```
+== J1: the four carried recipes craft in a real crafting table ==
+  blank module: redstone over 3 paper over 3 gold nuggets, six at a time -> {"count": 6, "item": "modularrouters:blank_module", "slot": 200}
+  router: 4 iron + 4 iron bars around a blank module, four at a time -> {"count": 4, "item": "modularrouters:modular_router", "slot": 200}
+  puller module: a blank module and a sticky piston, shapeless -> {"count": 1, "item": "modularrouters:puller_module_1", "slot": 200}
+  sender module: a blank module, a bow and an arrow from #minecraft:arrows -> {"count": 1, "item": "modularrouters:sender_module_1", "slot": 200}
+  router with sticks where the iron bars go -> null
+  sender module with a stick where the arrow goes -> null
+  four carried recipes craft their declared id and count, the grid empties,
+  each distinctive ingredient is consumed, and two wrong-ingredient controls craft nothing
+== J2: every carried item is give-able, and an unknown id is refused ==
+  blank module, puller, sender and router each read back from the inventory
+  give modularrouters:not_a_module: Unknown item 'modularrouters:not_a_module' give @s modularrouters:not_a_module 1<--[HERE]
+== J3: the router's loot table drops it, with a vanilla block as the control ==
+  vanilla crafting table: {"block":"minecraft:air","block_before":"minecraft:crafting_table","drops":{"minecraft:crafting_table":1},...,"items_left_on_ground":1,...}
+  router: {"block":"minecraft:air","block_before":"modularrouters:modular_router[active=false,facing=north]","drops":{"modularrouters:modular_router":1},...,"items_left_on_ground":1,...}
+== J4: every carried recipe and loot table is in the 26.3 dialect ==
+  ok   modularrouters.hmod:data/modularrouters/loot_table/blocks/modular_router.json: loot pool uses the 26.3 condition form
+  ok   modularrouters.hmod:data/modularrouters/recipe/blank_module.json: crafting_shaped, bare item/tag strings
+  ok   modularrouters.hmod:data/modularrouters/recipe/modular_router.json: crafting_shaped, bare item/tag strings
+  ok   modularrouters.hmod:data/modularrouters/recipe/puller_module_1.json: crafting_shapeless, bare item/tag strings
+  ok   modularrouters.hmod:data/modularrouters/recipe/sender_module_1.json: crafting_shapeless, bare item/tag strings
+data shape: 5 recipe/loot file(s), every one in the 26.3 dialect
+PASS: … EXIT:0
+```
+
+The leg's phases A–I (the router moving items, the placement facing, the click-install, the relaunch,
+the package contents) are unchanged and still pass; the log records `0` `invalid ingredient` lines.
+
+**Why the assertion can fail, three ways:** the two red logs above are real `EXIT:1` runs of the same
+assertions against the package that carried the defect; J3's vanilla block is an in-run differential
+(the harness drops a block whose loot table ships with the game, so an empty router drop is the loot
+table and not the break); and the two wrong-ingredient controls prove the table is not crafting
+whatever it is handed. `SELFTEST=1` fails phase A (`FAIL: SELFTEST: the target chest holds stone, so
+the check is alive`, `EXIT:1`), and running the same scenario on the unmodded control game exits 1 at
+the first modded-only step (`FAIL: give modularrouters:modular_router failed (is the package loaded in
+this game?)`, `EXIT:1`).
+
+**Ladder (all in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`; logs in
+`../_shared/evidence/modularrouters/`):**
+
+| Step | Command | Result |
+|---|---|---|
+| tests | `cargo test --offline` | **27 passed**, 0 failed (`slice2-test.log`, copied to `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** (`slice2-clippy.log`) |
+| format | `cargo fmt --check` | exit 0, empty diff (`slice2-fmt.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | built against `0a875da`, second build `cmp`-identical (`slice2-build.log`, `slice2-build-second.log`) |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.2 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **60,567 B**, sha256 `28892b6a…debbc`, `EXIT:0` (`slice2-check.log`) |
+| fits the pin | `cargo horizon-mod fits modularrouters.hmod --build 0a875da` | `0a875da  made for`, `EXIT:0` (`sdk-fits.log`) |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` (`sdk-fits-0b14f8a.log`) |
+| package contents | `unzip -l modularrouters.hmod` | **48 entries**, 11 `data/modularrouters/`, **no `Cargo.lock`** (`slice2-entries.txt`) |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (`verify-sdk-package.log`) |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` (`modularrouters-e2e/e2e-launcher.log`) |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` (`e2e-selftest.log`) |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` (`e2e-control.log`) |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=6 ok=6` |
+
+Skills: superpowers/using-superpowers, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/none (no Rust change — the ladder was re-run on the untouched tree)
+
+Package 0.2.2: **60,567 B**, SHA-256 `28892b6a3e074d0f1da71a633d9c3fec769706436f7cc9057c995411708debbc`.
+
+## Family coverage (parity rule, ruling 2026-11-20)
+
+Every family the jar carries, against what this port does with it. `tested` names the phase of
+`tools/e2e.sh` (or the unit test) that exercises it.
+
+| Family (jar) | Status | Proof |
+|---|---|---|
+| the router block: place, facing, `active`, break | tested | E2E G (placement facing), A (active), J3 (loot); `runtime::tests` |
+| the router block entity: 9 module slots, 1 buffer slot, ticks | tested | E2E A/B/F/H; `support::tests` readouts; relaunch in H |
+| the router container (`ITEMS`, every face) | tested (as a party to the move) | E2E A/B — a puller extracts from a chest through the capability and a sender inserts into one; the per-face declaration itself is not separately probed |
+| Puller Mk1 (container → buffer, 1 item / 20 ticks, range/filter) | tested | E2E A (6 items, one per operation), B, C, D |
+| Sender Mk1 (buffer → first container along the facing) | tested | E2E A, B (no sender ⇒ no delivery), D (wall stops it) |
+| module install by right-click and by command | tested | E2E F (click), A/C (commands) |
+| placement facing | tested | E2E G (a real placement, not a setblock) |
+| state + persistence across relaunch | tested | E2E H |
+| the four carried recipes (blank module, router, puller, sender) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, two wrong-ingredient controls empty) |
+| the four items (blank module, router, puller, sender) | tested | E2E J2 (give + read back) |
+| the router's loot table | tested | E2E J3 (iron pickaxe, with a vanilla block as the differential) |
+| the `minecraft:mineable/pickaxe` + `needs_iron_tool` block tags | tested | E2E J3 (the router breaks with an iron pickaxe and drops) |
+| the `modularrouters:modules` item tag | not ported (nothing reads it yet) | declared in `data/`; the jar's smart filters would be its consumer — gap 3 |
+| the other 18 modules | not ported | gap 1 |
+| the 10 upgrades + 5 upgrade slots | not ported (the tick-rate/stack formulas are implemented and unit-tested) | gap 2 |
+| 11 augments, 5 smart filters, RegexMatcher | not ported | gap 3 |
+| the router screen and every module screen | not ported | gap 4 (commands + a right-click readout stand in) |
+| item beams, particles, sounds | not ported | gap 5 |
+| redstone modes, eco mode, security upgrade | not ported | gap 6 |
+| buffer components / `copy_components` on the drop | not ported | gap 7 (`runtime` keeps `Stack::extra`; the drop is a plain block item) |
+| sender through non-solid blocks | not ported | gap 8 |
+| Template Frame, camouflage | not ported | gap 9 |
+| the jar's `c:` common tags | not ported (Horizon has no `c:` tags) | gap 10 — the recipes use the vanilla items they stand for |
+| `copy_name`/`copy_components` on the router drop | not ported | gap 11 |
+| Patchouli guide, advancements, JEI/Jade/TOP | not ported | gap 12 |
+
+## Review fixes (2026-11-18) — registry review #1237
+
+| Finding | Fix | Test / proof |
+|---|---|---|
+| `src/support.rs:777` — install/remove/direction/filter were public for any loaded router (and `install` created a free module) | the four mutations are registered with `Command::op(usage, 2)`; `info` stays level 0 | `support::tests::the_readout_is_open_and_every_mutation_is_operator_gated` |
+| `src/support.rs:628` — the write path accepted any block entity and merged a `Modules` list into it | `edit_router` verifies the block is a `modularrouters:modular_router` before reading or writing | `is_router` guard in `edit_router`; the port's readout tests keep the shape |
+| `src/support.rs:988` — filter edits took unbounded unique words and the list is rebuilt and scanned every tick | `runtime::MAX_FILTER_ITEMS` (16) truncates any list at the type (`Filter::new`), `set_filter` refuses a full list with its own message, and an item id is parsed and looked up in the registry before it is stored | `runtime::tests::a_filter_list_is_capped` |
+
+**Found while proving the leg:** the same `Router` Part was attached twice (block and block
+entity type) and crashed the world at load; split into `Router`/`RouterEntity`. And a Brigadier
+`word` argument cannot carry an item id (`:`), so `install … <module>` and `filter … <item>` were
+unusable with the mod's own ids: both are `text` now. **Ladder:** 27 tests, clippy `-D warnings`
+0, `fmt --check` clean, two builds byte-identical, `check` and `fits` exit 0;
+`launcher-game.sh run modularrouters` → `PASS` + `EXIT:0`, `GAME=$CONTROL_GAME` → `EXIT:1`
+(`../_shared/evidence/modularrouters-e2e/`).
+
+Package 0.2.1: **60,609 B**, SHA-256 `9f0852ff830e0c68bbec6644a639c20964a5eeb7126ee38cf79eeb95d3ce6756`;
+a second build is byte-identical (`cmp`), `check` and `fits` exit 0.
 
 ## Verification (0.1.0, the retired `.hnmod` — historical)
 
@@ -373,7 +572,10 @@ binary does not list the port's own tests.
     carried recipes use the vanilla items they stand for (`c:ingots/iron` →
     `minecraft:iron_ingot`, `c:nuggets/gold` → `minecraft:gold_nugget`,
     `c:dusts/redstone` → `minecraft:redstone`). `#minecraft:arrows` is kept.
+    **But the recipes themselves ship and craft** (slice 2, E2E J1) — what is
+    missing is only the tag indirection.
 11. **Loot**: the router drops a plain block item (no `copy_name`/`copy_components`).
+    The table itself works (slice 2, E2E J3).
 12. **Patchouli guide book**, advancements, JEI/Jade/TOP integration, and the
     `mimic`/`range` augments' tooltips.
 

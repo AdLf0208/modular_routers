@@ -19,16 +19,16 @@ use std::collections::BTreeMap;
 use mod_api::{
     BlockEntityPart, BlockEntityTickEvent, BlockEntityTicksEvent, BlockKey, BlockPart, BlockState,
     BlockUpdateFlags, Capability, Command, CommandArgumentValue, Compound, Direction, Flow,
-    GameMode, Hand, Host, HostSide, HostTransaction, ITEMS, ItemKey, ItemResource, ItemStack,
-    LevelHost, LevelRef, ModContainer, PlayerRef, Registrar, ResourceHandler, RightClickBlockEvent,
-    RunModCommandEvent, ServerHost, StateForPlacementEvent, Tag, Text,
+    GameMode, Hand, Host, HostSide, HostTransaction, ITEMS, Identifier, ItemKey, ItemResource,
+    ItemStack, LevelHost, LevelRef, ModContainer, PlayerRef, Registrar, ResourceHandler,
+    RightClickBlockEvent, RunModCommandEvent, ServerHost, StateForPlacementEvent, Tag, Text,
 };
 
 use crate::runtime::{
-    BUFFER_SLOTS, FACE_NAMES, Facing, Filter, MODULE_SLOTS, Module, ModuleKind, Pos, Relative,
-    Slot, Stack, UPGRADE_SLOTS, buffer_after_pull, buffer_after_send, facing_for_placement,
-    facing_of_state, is_operation_tick, items_per_operation, phase_of, pick_pull, pick_send,
-    scan_positions, sender_range, step, tick_rate,
+    BUFFER_SLOTS, FACE_NAMES, Facing, Filter, MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind,
+    Pos, Relative, Slot, Stack, UPGRADE_SLOTS, buffer_after_pull, buffer_after_send,
+    facing_for_placement, facing_of_state, is_operation_tick, items_per_operation, phase_of,
+    pick_pull, pick_send, scan_positions, sender_range, step, tick_rate,
 };
 
 /// The router block (and its item).
@@ -57,10 +57,14 @@ const AIRS: [&str; 3] = ["minecraft:air", "minecraft:cave_air", "minecraft:void_
 // The part
 // ---------------------------------------------------------------------------
 
-/// The router's Part: what the game asks the *block* (the state a placement
-/// chooses, whether it ticks) and what it asks the *block entity type* (each
-/// server tick).
+/// The router block's Part: what the game asks the *block* (the state a placement
+/// chooses).
 struct Router;
+
+/// The router block entity's Part: each server tick. A distinct type because the engine
+/// refuses the same Part attached to a block and to its block entity type ("attached …
+/// twice"), which crashed the world at load in 0.2.0.
+struct RouterEntity;
 
 #[mod_api::horizon_part]
 impl BlockPart for Router {
@@ -84,7 +88,10 @@ impl BlockPart for Router {
 }
 
 #[mod_api::horizon_part]
-impl BlockEntityPart for Router {
+impl BlockPart for RouterEntity {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for RouterEntity {
     /// The router ticks on the server, as upstream's `EntityBlock.getTicker`. The
     /// Part is attached to this block only, so every block it is asked about is a
     /// router.
@@ -109,7 +116,7 @@ pub(crate) fn declare(r: &mut dyn Registrar) {
         .blocks(&["modular_router"])
         .build();
     r.block_part(router, Router);
-    let attached = r.block_entity_part(&kind, Router);
+    let attached = r.block_entity_part(&kind, RouterEntity);
     debug_assert!(
         attached.is_ok(),
         "the router part attaches once: {attached:?}"
@@ -625,6 +632,11 @@ fn edit_router(
     pos: Pos,
     edit: impl FnOnce(&mut Compound) -> bool,
 ) -> bool {
+    // The write path merges a `Modules` list: it must only ever touch one of this
+    // mod's own routers, never a foreign block entity that happens to sit there.
+    if !is_router(&*host, level, pos) {
+        return false;
+    }
     let Some(entity) = host.block_entity(level, pos) else {
         return false;
     };
@@ -773,19 +785,32 @@ fn readout(host: &mut dyn ServerHost, level: LevelRef, pos: Pos) -> Vec<String> 
 
 /// Declare `/modularrouters info|install|remove|direction|filter`.
 pub(crate) fn declare_commands(commands: &mut Vec<Command>) {
-    commands.push(Command::new("modularrouters info <pos:block_pos>"));
-    commands.push(Command::new(
-        "modularrouters install <pos:block_pos> <slot:integer> <module:word>",
-    ));
-    commands.push(Command::new(
-        "modularrouters remove <pos:block_pos> <slot:integer>",
-    ));
-    commands.push(Command::new(
-        "modularrouters direction <pos:block_pos> <slot:integer> <dir:word>",
-    ));
-    commands.push(Command::new(
-        "modularrouters filter <pos:block_pos> <slot:integer> <mode:word> <item:word>",
-    ));
+    for (usage, level) in usages() {
+        commands.push(Command::op(usage, level));
+    }
+}
+
+/// The usages and the level each is registered at. `install`, `remove`, `direction`
+/// and `filter` rewrite a router at player-chosen coordinates — and `install` adds a
+/// module with no item cost — so they are gamemaster tools (level 2), as `/data` is;
+/// `info` is a readout.
+pub(crate) fn usages() -> [(&'static str, u8); 5] {
+    [
+        ("modularrouters info <pos:block_pos>", 0),
+        (
+            "modularrouters install <pos:block_pos> <slot:integer> <module:text>",
+            2,
+        ),
+        ("modularrouters remove <pos:block_pos> <slot:integer>", 2),
+        (
+            "modularrouters direction <pos:block_pos> <slot:integer> <dir:word>",
+            2,
+        ),
+        (
+            "modularrouters filter <pos:block_pos> <slot:integer> <mode:word> <item:text>",
+            2,
+        ),
+    ]
 }
 
 /// The `pos` block-position argument.
@@ -982,13 +1007,27 @@ fn set_filter(
             .to_string();
     };
     let item = namespaced(item);
+    // An id the item registry does not know cannot match anything, and the saved
+    // list is rebuilt on every edit: validate before it is stored.
+    let Ok(id) = Identifier::parse(&item) else {
+        return format!("Modular Router: '{item}' is not an item id");
+    };
+    if host.item_key(&id).is_none() {
+        return format!("Modular Router: no item '{item}' in this game");
+    }
+    let mut full = false;
     let applied = edit_module(host, level, pos, slot, |module| {
         let mut items = module.filter.items().to_vec();
         let whitelist = module.filter.whitelist();
-        let push = |items: &mut Vec<String>| {
-            if !items.contains(&item) {
-                items.push(item.clone());
+        let mut push = |items: &mut Vec<String>| {
+            if items.contains(&item) {
+                return;
             }
+            if items.len() >= MAX_FILTER_ITEMS {
+                full = true;
+                return;
+            }
+            items.push(item.clone());
         };
         match mode {
             "add" => push(&mut items),
@@ -1015,6 +1054,8 @@ fn set_filter(
     });
     if applied {
         format!("Modular Router: slot {slot} filter updated")
+    } else if full {
+        format!("Modular Router: the filter list is full ({MAX_FILTER_ITEMS} items)")
     } else {
         "Modular Router: no module in that slot (or unknown filter mode)".to_string()
     }
@@ -1039,6 +1080,16 @@ mod tests {
 
     fn sender(direction: Relative, filter: Filter) -> Module {
         Module::new(ModuleKind::SenderMk1, direction, filter)
+    }
+
+    #[test]
+    fn the_readout_is_open_and_every_mutation_is_operator_gated() {
+        let usages = usages();
+        assert_eq!(usages.len(), 5);
+        for (usage, level) in usages {
+            let expected = if usage.contains(" info ") { 0 } else { 2 };
+            assert_eq!(level, expected, "{usage}");
+        }
     }
 
     #[test]
