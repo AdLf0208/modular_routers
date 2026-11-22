@@ -3,7 +3,7 @@
 
 Called by `tools/e2e.sh` with the open game's control socket. The harness's
 crafting table exposes the 3x3 grid as slots 100-108 (row-major) and the result
-as 200 (`ctl screen`). For each of the seven carried recipes this:
+as 200 (`ctl screen`). For each of the nine carried recipes this:
 
 1. replaces the table (a fresh block entity, so a stale grid cannot leak in)
    and clears the inventory;
@@ -14,7 +14,7 @@ as 200 (`ctl screen`). For each of the seven carried recipes this:
 6. asserts the grid is empty and the recipe's distinctive ingredient was
    consumed.
 
-Five deliberately wrong patterns must leave the result empty, so the check cannot
+Six deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -35,6 +35,7 @@ RESULT = 200
 BLANK = "modularrouters:blank_module"
 ROUTER = "modularrouters:modular_router"
 PULLER = "modularrouters:puller_module_1"
+PULLER2 = "modularrouters:puller_module_2"
 SENDER = "modularrouters:sender_module_1"
 BLANK_UPGRADE = "modularrouters:blank_upgrade"
 SPEED_UPGRADE = "modularrouters:speed_upgrade"
@@ -233,6 +234,26 @@ def main() -> int:
         ],
         STACK_UPGRADE, 1, "minecraft:bricks",
     )
+    # The jar ships two Puller Mk2 recipes: one module from a Mk1 and an ender
+    # pearl, and four at a time from four Mk1s and one pearl. Both are carried.
+    check(
+        "puller Mk2: a puller Mk1 and an ender pearl, shapeless",
+        [(PULLER, 1), ("minecraft:ender_pearl", 1)],
+        [
+            (PULLER, every(GRID["tl"])),
+            ("minecraft:ender_pearl", every(GRID["mm"])),
+        ],
+        PULLER2, 1, "minecraft:ender_pearl",
+    )
+    check(
+        "puller Mk2 x4: four puller Mk1s and an ender pearl, shapeless, four at a time",
+        [(PULLER, 4), ("minecraft:ender_pearl", 1)],
+        [
+            (PULLER, every(GRID["tl"], GRID["tm"], GRID["ml"], GRID["mm"])),
+            ("minecraft:ender_pearl", every(GRID["br"])),
+        ],
+        PULLER2, 4, "minecraft:ender_pearl",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -297,13 +318,21 @@ def main() -> int:
             ("minecraft:bricks", every(GRID["br"])),
         ],
     )
+    empty_control(
+        "puller Mk2 with a stick where the ender pearl goes",
+        [(PULLER, 1), ("minecraft:stick", 1)],
+        [
+            (PULLER, every(GRID["tl"])),
+            ("minecraft:stick", every(GRID["mm"])),
+        ],
+    )
 
     if failures:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  seven carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and five wrong-ingredient controls craft nothing")
+    print("  nine carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and six wrong-ingredient controls craft nothing")
     return 0
 
 

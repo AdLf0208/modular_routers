@@ -27,10 +27,10 @@ use mod_api::{
 
 use crate::runtime::{
     BUFFER_SLOTS, FACE_NAMES, Facing, Filter, MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind,
-    Pos, Relative, Slot, Stack, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, buffer_after_pull,
-    buffer_after_send, facing_for_placement, facing_of_state, is_operation_tick,
-    items_per_operation, phase_of, pick_pull, pick_send, scan_positions, sender_range, step,
-    tick_rate,
+    Pos, Relative, Slot, Stack, Target, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades,
+    buffer_after_pull, buffer_after_send, face_of_normal, facing_for_placement, facing_of_state,
+    in_range, is_operation_tick, items_per_operation, parse_pos, phase_of, pick_pull, pick_send,
+    puller_range, scan_positions, sender_range, side_towards, step, tick_rate,
 };
 
 /// The router block (and its item).
@@ -48,6 +48,26 @@ const MODULE_ITEM: &str = "item";
 const MODULE_DIR: &str = "dir";
 const MODULE_WHITELIST: &str = "whitelist";
 const MODULE_FILTER: &str = "filter";
+/// A targeted module's selected block inside its `Modules` entry: upstream keeps
+/// it on the module item (`ModDataComponents.MODULE_TARGET_LIST`); this port keeps
+/// the module's settings in the router's save, so the target travels with them.
+const MODULE_TARGET: &str = "Target";
+const TARGET_X: &str = "x";
+const TARGET_Y: &str = "y";
+const TARGET_Z: &str = "z";
+const TARGET_FACE: &str = "face";
+const TARGET_DIMENSION: &str = "dim";
+/// The item component a targeted module carries between the player's hand and an
+/// install (`ModDataComponents.MODULE_TARGET_LIST`). It is declared in
+/// `component_types`, because a patch naming a type the game does not know is not
+/// a value the item can hold.
+const TARGET_COMPONENT: &str = "modularrouters:target";
+
+/// The component id a targeted module carries its selected block in, for
+/// `Hooks::component_types` to register.
+pub(crate) fn target_component() -> &'static str {
+    TARGET_COMPONENT
+}
 /// One upgrade slot's fields inside `Upgrades`.
 const UPGRADE_ITEM: &str = "item";
 const UPGRADE_COUNT: &str = "count";
@@ -175,6 +195,73 @@ fn count(nbt: &Compound, name: &str) -> u32 {
     u32::try_from(int(nbt, name).unwrap_or(0).max(0)).unwrap_or(0)
 }
 
+/// A target's fields, as both the module's save and the item's component spell them.
+fn target_entry(target: &Target) -> Compound {
+    let mut entry = Compound::new();
+    entry.insert(TARGET_X.into(), Tag::Int(target.pos[0]));
+    entry.insert(TARGET_Y.into(), Tag::Int(target.pos[1]));
+    entry.insert(TARGET_Z.into(), Tag::Int(target.pos[2]));
+    entry.insert(
+        TARGET_FACE.into(),
+        Tag::String(FACE_NAMES[target.face].into()),
+    );
+    entry.insert(
+        TARGET_DIMENSION.into(),
+        Tag::String(target.dimension.as_str().into()),
+    );
+    entry
+}
+
+/// The target `entry` holds, `None` when it lacks a position.
+fn target_from(entry: &Compound) -> Option<Target> {
+    let pos = [
+        int(entry, TARGET_X)?,
+        int(entry, TARGET_Y)?,
+        int(entry, TARGET_Z)?,
+    ];
+    let face = string(entry, TARGET_FACE)
+        .and_then(|name| FACE_NAMES.iter().position(|face| *face == name))
+        .unwrap_or(0);
+    let dimension = string(entry, TARGET_DIMENSION).unwrap_or_default();
+    Some(Target::new(pos, face, &dimension))
+}
+
+/// A target as the module's save holds it (`Target`: `{x, y, z, face, dim}`).
+fn read_target(entry: &Compound) -> Option<Target> {
+    let Some(Tag::Compound(target)) = entry.get(&MODULE_TARGET.into()) else {
+        return None;
+    };
+    target_from(target)
+}
+
+/// Write a target into the module's saved entry.
+fn write_target(entry: &mut Compound, target: &Target) {
+    entry.insert(MODULE_TARGET.into(), Tag::Compound(target_entry(target)));
+}
+
+/// The target a module item carries between the player's hand and an install
+/// (`ModDataComponents.MODULE_TARGET_LIST`), read from its component patch.
+fn item_target(stack: &ItemStack) -> Option<Target> {
+    let patch = stack.components()?.as_nbt();
+    let Some(Tag::Compound(entry)) = patch.get(&TARGET_COMPONENT.into()) else {
+        return None;
+    };
+    target_from(entry)
+}
+
+/// The same stack with `target` written into its component patch; `None` when the
+/// patch is refused.
+fn with_item_target(stack: &ItemStack, target: &Target) -> Option<ItemStack> {
+    let mut patch = stack
+        .components()
+        .map(|components| components.as_nbt().clone())
+        .unwrap_or_default();
+    patch.insert(TARGET_COMPONENT.into(), Tag::Compound(target_entry(target)));
+    let mut written = stack.clone();
+    written.set_components(patch).ok()?;
+    Some(written)
+}
+
 /// The installed modules, in slot order (`Modules`).
 ///
 /// An entry whose id this port does not implement is kept as
@@ -206,7 +293,11 @@ fn read_modules(nbt: &Compound) -> Vec<Module> {
                     .collect(),
                 _ => Vec::new(),
             };
-            Some(Module::new(kind, direction, Filter::new(whitelist, items)))
+            let module = Module::new(kind, direction, Filter::new(whitelist, items));
+            match read_target(entry) {
+                Some(target) => Some(module.with_target(target)),
+                None => Some(module),
+            }
         })
         .collect()
 }
@@ -234,6 +325,9 @@ fn write_modules(nbt: &mut Compound, modules: &[Module]) {
                 .map(|item| Tag::String(item.as_str().into()))
                 .collect();
             entry.insert(MODULE_FILTER.into(), Tag::List(items));
+            if let Some(target) = &module.target {
+                write_target(&mut entry, target);
+            }
             Tag::Compound(entry)
         })
         .collect();
@@ -336,17 +430,28 @@ fn facing_at(host: &dyn Host, level: LevelRef, pos: Pos) -> Facing {
     facing_of_state(&name)
 }
 
-/// The item handler of the block at `pos`, reached through the side touching
-/// `face` (the pin's `ITEMS` capability, NeoForge's `Capabilities.Item.BLOCK`).
+/// The item handler of the block at `pos`, reached through the side `side`
+/// (NeoForge's `Capabilities.ItemHandler.BLOCK` with its `Direction` context), or
+/// through any side when `side` is `None`.
+fn handler_facing(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    side: Option<Direction>,
+) -> Option<Capability<dyn ResourceHandler<ItemResource>>> {
+    let handler = level.capability(host, &ITEMS, pos, side)?;
+    (handler.size(host) > 0).then_some(handler)
+}
+
+/// The item handler of the block opposite `face` from a router: the side of a
+/// neighbour that faces the router.
 fn handler(
     host: &mut dyn ServerHost,
     level: LevelRef,
     pos: Pos,
     face: usize,
 ) -> Option<Capability<dyn ResourceHandler<ItemResource>>> {
-    let across = Direction::ALL[face].opposite();
-    let handler = level.capability(host, &ITEMS, pos, Some(across))?;
-    (handler.size(host) > 0).then_some(handler)
+    handler_facing(host, level, pos, Some(Direction::ALL[face].opposite()))
 }
 
 /// What one handler offers, as the pure layer reads a container: its slots, the
@@ -379,19 +484,21 @@ fn read_offered(
     Offered { slots, keys }
 }
 
-/// One Puller Mk1 operation: take from the container beside the router into the
-/// buffer (`CompiledPullerModule1.execute` → `CompiledModule.transferToRouter`).
+/// One puller operation: take from the container at `source`, reached through
+/// `side`, into the buffer (`CompiledPullerModule1.execute` →
+/// `CompiledModule.transferToRouter`). A Mk1 reaches the neighbour through the
+/// side facing the router; a Mk2 reaches its selected block through the face the
+/// player clicked, as `ModuleTarget` keeps it.
 fn pull(
     host: &mut dyn ServerHost,
     level: LevelRef,
-    pos: Pos,
-    face: usize,
+    source: Pos,
+    side: Direction,
     module: &Module,
     entity: &mut mod_api::ModBlockEntityView<'_>,
     items: u32,
 ) -> bool {
-    let source = step(pos, face);
-    let Some(container) = handler(host, level, source, face) else {
+    let Some(container) = handler_facing(host, level, source, Some(side)) else {
         return false;
     };
     let offered = read_offered(host, &container);
@@ -523,6 +630,33 @@ fn show_active(host: &mut dyn ServerHost, level: LevelRef, pos: Pos, active: boo
     host.set_block_property_with(pos, ACTIVE, want, BlockUpdateFlags::CLIENTS.bits());
 }
 
+/// One Puller Mk2 operation: pull from the block the player selected.
+///
+/// `CompiledModule.isTargetValid` keeps a target only when it stands in the
+/// router's own level and inside the module's reach (`distSqr <= range²`), so an
+/// out-of-reach or cross-level target is no operation at all. An Mk2 with **no**
+/// selected block does nothing: it never falls back to scanning its direction
+/// (upstream `setupTargets` returns an empty list for an unselected targeted
+/// module, and the router then skips it).
+fn pull_target(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    items: u32,
+    dimension: &str,
+) -> bool {
+    let Some(target) = &module.target else {
+        return false;
+    };
+    if !target.same_world(dimension) || !in_range(pos, target.pos, puller_range(0)) {
+        return false;
+    }
+    let side = Direction::ALL[target.face];
+    pull(host, level, target.pos, side, module, entity, items)
+}
+
 /// One server tick of one router: on the router's own operation tick, run every
 /// installed module in slot order.
 fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
@@ -545,17 +679,44 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
     let modules = read_modules(&event.entity.nbt);
     let facing = facing_at(&*host, level, pos);
     let items = items_per_operation(upgrades.stack());
+    let dimension = level.dimension().id(&*host).unwrap_or_default();
     let mut worked = false;
     for module in &modules {
-        let Some(face) = module.direction.resolve(facing) else {
-            continue;
-        };
         let ran = match &module.kind {
-            ModuleKind::PullerMk1 => pull(host, level, pos, face, module, &mut event.entity, items),
-            ModuleKind::SenderMk1 => send(host, level, pos, face, module, &mut event.entity, items),
-            // A registered module's operation belongs to the mod that owns it;
-            // this port keeps it installed and leaves it alone.
+            // A targeted module acts on its selected block, wherever its direction
+            // points (upstream's `isDirectional` is false for it).
+            ModuleKind::PullerMk2 => pull_target(
+                host,
+                level,
+                pos,
+                module,
+                &mut event.entity,
+                items,
+                &dimension,
+            ),
+            // A module this port does not implement: its operation belongs to the
+            // mod that owns it. This port keeps it installed and leaves it alone.
             ModuleKind::Registered(_) => false,
+            _ => {
+                let Some(face) = module.direction.resolve(facing) else {
+                    continue;
+                };
+                match &module.kind {
+                    ModuleKind::PullerMk1 => pull(
+                        host,
+                        level,
+                        step(pos, face),
+                        Direction::ALL[face].opposite(),
+                        module,
+                        &mut event.entity,
+                        items,
+                    ),
+                    ModuleKind::SenderMk1 => {
+                        send(host, level, pos, face, module, &mut event.entity, items)
+                    }
+                    _ => false,
+                }
+            }
         };
         worked |= ran;
     }
@@ -578,8 +739,10 @@ fn is_router(host: &dyn Host, level: LevelRef, pos: Pos) -> bool {
         .is_some_and(|router| level.block(host, pos) == Some(router))
 }
 
-/// A player right-clicking a router: with a module or an upgrade in hand it is
-/// installed (upstream's GUI insert, which this slice replaces with a click),
+/// A player right-clicking a block: with a targeted module in hand and sneak held
+/// it selects that block as the module's target (upstream's
+/// `TargetedModuleAdapter.useOn`); with a module or an upgrade in hand on a router
+/// it is installed (upstream's GUI insert, which this slice replaces with a click);
 /// otherwise nothing here claims the click.
 pub(crate) fn right_click(host: HostSide<'_>, event: &mut RightClickBlockEvent<'_>) -> Flow {
     if event.cancelled || event.click.hand != Hand::Main {
@@ -595,10 +758,48 @@ pub(crate) fn right_click(host: HostSide<'_>, event: &mut RightClickBlockEvent<'
     let Some(level) = acting_level(&*host) else {
         return Flow::Continue;
     };
+    let item = held.item().id(&*host);
+    // Sneak + right-click a container with a targeted module: the block becomes the
+    // module's target, on the item, as upstream stores it in `MODULE_TARGET_LIST`.
+    let sneaking = host
+        .player(click.player)
+        .and_then(|player| player.is_secondary_use_active(&*host))
+        .unwrap_or(false);
+    if ModuleKind::of(&item).is_targeted()
+        && sneaking
+        && let Some(target) = select_target(host, level, click.pos, click.hit.face)
+    {
+        let Some(written) = with_item_target(held, &target) else {
+            return Flow::Continue;
+        };
+        let Some(player) = host.player(click.player) else {
+            return Flow::Continue;
+        };
+        let Some(slot) = held_slot(&*host, player) else {
+            return Flow::Continue;
+        };
+        if player
+            .set_inventory_slot(host, slot, Some(written))
+            .is_err()
+        {
+            return Flow::Continue;
+        }
+        tell(
+            host,
+            player,
+            &format!(
+                "Modular Router: target set: block at {} in {}",
+                target.at_text(),
+                target.dimension
+            ),
+        );
+        // The click is the module's, not the chest's: upstream's adapter answers
+        // SUCCESS, so the container does not open.
+        return Flow::Cancel;
+    }
     if !is_router(&*host, level, click.pos) {
         return Flow::Continue;
     }
-    let item = held.item().id(&*host);
     if registered_module(&*host, &item) {
         return if install_from_hand(host, level, click.pos, held, click.player) {
             Flow::Cancel
@@ -627,6 +828,21 @@ pub(crate) fn right_click(host: HostSide<'_>, event: &mut RightClickBlockEvent<'
     } else {
         Flow::Continue
     }
+}
+
+/// The target a click selects, when the clicked block holds an inventory:
+/// `ITargetedModule.isValidTarget` asks `InventoryUtils.getInventory`, and the
+/// clicked face is the side the container is reached through (`ModuleTarget`).
+fn select_target(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    normal: [i32; 3],
+) -> Option<Target> {
+    let face = face_of_normal(normal)?;
+    handler_facing(host, level, pos, Some(Direction::ALL[face]))?;
+    let dimension = level.dimension().id(&*host)?;
+    Some(Target::new(pos, face, &dimension))
 }
 
 /// Whether `item` is a module: one this port runs, or one the [`MODULE_TAG`] item
@@ -678,16 +894,20 @@ fn install_from_hand(
     if !registered_module(&*host, &item) {
         return false;
     }
+    // A targeted module carries the block the player selected on the item; the
+    // install moves it into the router's saved entry, which is the port's
+    // stand-in for the ItemStack upstream keeps in the module slot.
+    let selected = item_target(stack);
     let installed = edit_router(host, level, pos, |nbt| {
         let mut modules = read_modules(nbt);
         if modules.len() >= MODULE_SLOTS {
             return false;
         }
-        modules.push(Module::new(
-            ModuleKind::of(&item),
-            Relative::None,
-            Filter::any(),
-        ));
+        let mut module = Module::new(ModuleKind::of(&item), Relative::None, Filter::any());
+        if let Some(target) = selected {
+            module = module.with_target(target);
+        }
+        modules.push(module);
         write_modules(nbt, &modules);
         true
     });
@@ -734,12 +954,17 @@ fn consume_one(host: &mut dyn ServerHost, player: PlayerRef) {
 
 /// The stack in the player's selected slot, with that slot.
 fn held(host: &dyn ServerHost, player: PlayerRef) -> Option<(u32, ItemStack)> {
-    let slot = u32::try_from(player.selected_slot(host)?).ok()?;
+    let slot = held_slot(host, player)?;
     player
         .inventory_slots(host)?
         .into_iter()
         .find(|(at, _)| *at == slot)
         .map(|(_, stack)| (slot, stack))
+}
+
+/// The slot number the player has selected.
+fn held_slot(host: &dyn ServerHost, player: PlayerRef) -> Option<u32> {
+    u32::try_from(player.selected_slot(host)?).ok()
 }
 
 fn tell(host: &mut dyn ServerHost, player: PlayerRef, line: &str) {
@@ -972,8 +1197,20 @@ fn module_line(pos: Pos, index: usize, module: &Module, facing: Facing) -> Strin
         Some(face) => FACE_NAMES[face],
         None => "none",
     };
+    // A targeted module's block is the one the player selected, not the one its
+    // direction names, so say where it is; a ranged one also says how far it
+    // reaches (`IRangedModule.getCurrentRange`).
+    let at = match &module.target {
+        Some(target) => format!(" at={}", target.at_text()),
+        None => String::new(),
+    };
+    let range = if module.kind.is_targeted() {
+        format!(" range={}", puller_range(0))
+    } else {
+        String::new()
+    };
     format!(
-        "module {index} at {},{},{}: {} dir={} target={target} filter {mode} {list}",
+        "module {index} at {},{},{}: {} dir={} target={target}{at}{range} filter {mode} {list}",
         pos[0],
         pos[1],
         pos[2],
@@ -1025,7 +1262,7 @@ fn readout(host: &mut dyn ServerHost, level: LevelRef, pos: Pos) -> Vec<String> 
 // The commands
 // ---------------------------------------------------------------------------
 
-/// Declare `/modularrouters info|install|remove|direction|filter|upgrade`.
+/// `/modularrouters info|install|remove|direction|filter|upgrade|target`.
 pub(crate) fn declare_commands(commands: &mut Vec<Command>) {
     for (usage, level) in usages() {
         commands.push(Command::op(usage, level));
@@ -1033,10 +1270,10 @@ pub(crate) fn declare_commands(commands: &mut Vec<Command>) {
 }
 
 /// The usages and the level each is registered at. `install`, `remove`,
-/// `direction`, `filter` and `upgrade` rewrite a router at player-chosen
+/// `direction`, `filter`, `upgrade` and `target` rewrite a router at player-chosen
 /// coordinates — and `install`/`upgrade` add to it with no item cost — so they are
 /// gamemaster tools (level 2), as `/data` is; `info` is a readout.
-pub(crate) fn usages() -> [(&'static str, u8); 6] {
+pub(crate) fn usages() -> [(&'static str, u8); 7] {
     [
         ("modularrouters info <pos:block_pos>", 0),
         (
@@ -1054,6 +1291,10 @@ pub(crate) fn usages() -> [(&'static str, u8); 6] {
         ),
         (
             "modularrouters upgrade <pos:block_pos> <mode:word> <kind:word>",
+            2,
+        ),
+        (
+            "modularrouters target <pos:block_pos> <slot:integer> <at:text>",
             2,
         ),
     ]
@@ -1160,6 +1401,15 @@ pub(crate) fn run_command(host: &mut dyn ServerHost, event: &mut RunModCommandEv
                 return Flow::Cancel;
             };
             let line = set_upgrade(host, level, pos, mode, kind);
+            say(host, &line);
+        }
+        ["target"] => {
+            let (Some(slot), Some(at)) = (integer(invocation, "slot"), word(invocation, "at"))
+            else {
+                say(host, USAGE);
+                return Flow::Cancel;
+            };
+            let line = set_target(host, level, pos, slot, at);
             say(host, &line);
         }
         _ => say(host, USAGE),
@@ -1317,7 +1567,57 @@ fn set_filter(
     }
 }
 
-/// `/modularrouters upgrade <pos> <add|remove> <speed|stack>`: the router
+/// `/modularrouters target <pos> <slot> <x,y,z|none>`: the module screen's target
+/// selector, for a player without the screen (upstream's sneak-right-click is the
+/// other half, in [`right_click`]). A target in another level is refused, as
+/// `isSameWorld` refuses one.
+fn set_target(host: &mut dyn ServerHost, level: LevelRef, pos: Pos, slot: i32, at: &str) -> String {
+    let Ok(slot) = usize::try_from(slot) else {
+        return "Usage: /modularrouters target <x> <y> <z> <slot> <x,y,z|none>".to_string();
+    };
+    let cleared = matches!(at, "none" | "clear");
+    let target = if cleared {
+        None
+    } else {
+        let Some(target_pos) = parse_pos(at) else {
+            return format!("Modular Router: '{at}' is not a block position (x,y,z or none)");
+        };
+        let Some(dimension) = level.dimension().id(&*host) else {
+            return "Modular Router: this level has no dimension id".to_string();
+        };
+        // The command is told where the block is, not which face was clicked: it
+        // uses the side of it that faces the router, as a player standing at the
+        // router would have clicked.
+        let Some(face) = side_towards(target_pos, pos) else {
+            return format!("Modular Router: {} is not beside the router", at);
+        };
+        Some(Target::new(target_pos, face, &dimension))
+    };
+    let mut refused = false;
+    let applied = edit_module(host, level, pos, slot, |module| {
+        if !module.uses_target() {
+            refused = true;
+            return false;
+        }
+        module.target = target.clone();
+        true
+    });
+    if applied {
+        match &target {
+            Some(target) => format!(
+                "Modular Router: slot {slot} targets the inventory at {}",
+                target.at_text()
+            ),
+            None => format!("Modular Router: slot {slot} has no target"),
+        }
+    } else if refused {
+        format!("Modular Router: the module in slot {slot} does not use a target")
+    } else {
+        "Modular Router: no module in that slot".to_string()
+    }
+}
+
+/// `/modularrouters target <pos> <add|remove> <speed|stack>`: the router
 /// screen's five upgrade slots, for a player without the screen.
 fn set_upgrade(
     host: &mut dyn ServerHost,
@@ -1360,7 +1660,7 @@ mod tests {
     #[test]
     fn the_readout_is_open_and_every_mutation_is_operator_gated() {
         let usages = usages();
-        assert_eq!(usages.len(), 6);
+        assert_eq!(usages.len(), 7);
         for (usage, level) in usages {
             let expected = if usage.contains(" info ") { 0 } else { 2 };
             assert_eq!(level, expected, "{usage}");
@@ -1436,6 +1736,57 @@ mod tests {
     #[test]
     fn a_router_with_no_modules_key_has_no_modules() {
         assert!(read_modules(&Compound::new()).is_empty());
+    }
+
+    #[test]
+    fn a_saved_target_round_trips_through_the_module_list() {
+        let target = Target::new([0, 100, -10], crate::runtime::NORTH, "minecraft:the_end");
+        let modules = vec![
+            Module::new(ModuleKind::PullerMk2, Relative::Front, Filter::any())
+                .with_target(target.clone()),
+            puller(Relative::Front, Filter::any()),
+        ];
+        let mut nbt = Compound::new();
+        write_modules(&mut nbt, &modules);
+        let read = read_modules(&nbt);
+        assert_eq!(read, modules, "the target is part of the module's save");
+        assert_eq!(read[0].target, Some(target));
+        assert_eq!(read[1].target, None, "a Mk1 has no selected block");
+    }
+
+    #[test]
+    fn a_targeted_modules_readout_names_its_target_and_its_range() {
+        let target = Target::new([0, 100, -10], crate::runtime::NORTH, "minecraft:the_end");
+        let modules = vec![
+            Module::new(ModuleKind::PullerMk2, Relative::Front, Filter::any()).with_target(target),
+        ];
+        let lines = describe([0, 100, 0], Facing::North, false, &modules, None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:puller_module_2 dir=front target=north \
+             at=0,100,-10 range=12 filter blacklist none",
+            "the readout says which block it pulls from and how far it reaches"
+        );
+        // An unselected Mk2 still reports its reach, so a player can see why it does
+        // nothing; a Mk1's line keeps its 0.1.0 text exactly.
+        let bare = vec![Module::new(
+            ModuleKind::PullerMk2,
+            Relative::None,
+            Filter::any(),
+        )];
+        let lines = describe([0, 100, 0], Facing::North, false, &bare, None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:puller_module_2 dir=none target=none \
+             range=12 filter blacklist none"
+        );
+        let mk1 = vec![puller(Relative::Front, Filter::any())];
+        let lines = describe([0, 100, 0], Facing::North, false, &mk1, None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:puller_module_1 dir=front target=north \
+             filter blacklist none"
+        );
     }
 
     #[test]

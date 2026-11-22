@@ -45,6 +45,10 @@ pub const BUFFER_SLOTS: usize = 1;
 pub const SENDER_BASE_RANGE: i32 = 8;
 /// `CommonConfig.module.sender1MaxRange`.
 pub const SENDER_MAX_RANGE: i32 = 16;
+/// `CommonConfig.module.puller2BaseRange`: a Puller Mk2 reaches 12 blocks.
+pub const PULLER_BASE_RANGE: i32 = 12;
+/// `CommonConfig.module.puller2MaxRange`: up to 24 with Range Augments.
+pub const PULLER_MAX_RANGE: i32 = 24;
 
 /// The face's unit vector, as `Direction.normal()` gives it.
 pub const fn face_normal(face: Face) -> [i32; 3] {
@@ -63,6 +67,32 @@ pub const fn face_normal(face: Face) -> [i32; 3] {
 pub const fn step(pos: Pos, face: Face) -> Pos {
     let [dx, dy, dz] = face_normal(face);
     [pos[0] + dx, pos[1] + dy, pos[2] + dz]
+}
+
+/// The face a normal vector names (`BlockHit::face`), or none for a vector that is
+/// not one of the six: `Direction.fromNormal`.
+pub fn face_of_normal(normal: [i32; 3]) -> Option<Face> {
+    (0..FACE_COUNT).find(|face| face_normal(*face) == normal)
+}
+
+/// The side of the block at `from` that points most nearly at `to`, which is the
+/// face a player standing at `to` would have clicked (`Direction.approximate_nearest`
+/// on the vector from the block to the player). None when `to` is that same block.
+pub fn side_towards(from: Pos, to: Pos) -> Option<Face> {
+    let delta = [
+        i64::from(to[0]) - i64::from(from[0]),
+        i64::from(to[1]) - i64::from(from[1]),
+        i64::from(to[2]) - i64::from(from[2]),
+    ];
+    let mut best = (0i64, None);
+    for face in 0..FACE_COUNT {
+        let [x, y, z] = face_normal(face);
+        let dot = delta[0] * i64::from(x) + delta[1] * i64::from(y) + delta[2] * i64::from(z);
+        if dot > best.0 {
+            best = (dot, Some(face));
+        }
+    }
+    best.1
 }
 
 /// The four faces a router can point at (`Direction.Plane.HORIZONTAL`).
@@ -202,7 +232,7 @@ impl Relative {
     }
 }
 
-/// Which module is installed: one of the two transfer modules this port runs,
+/// Which module is installed: one of the three transfer modules this port runs,
 /// or any other module id a save or an add-on carries.
 ///
 /// The second case is the **registered** path: `modularrouters:modules` is the
@@ -214,6 +244,8 @@ impl Relative {
 pub enum ModuleKind {
     /// `modularrouters:puller_module_1`: container → buffer.
     PullerMk1,
+    /// `modularrouters:puller_module_2`: a selected container in range → buffer.
+    PullerMk2,
     /// `modularrouters:sender_module_1`: buffer → container.
     SenderMk1,
     /// A module this port does not implement, carried by its id.
@@ -222,14 +254,16 @@ pub enum ModuleKind {
 
 impl ModuleKind {
     pub const PULLER: &'static str = "modularrouters:puller_module_1";
+    pub const PULLER2: &'static str = "modularrouters:puller_module_2";
     pub const SENDER: &'static str = "modularrouters:sender_module_1";
 
-    /// The kind an item id names: one of the two transfer modules this port
-    /// runs, or a registered kind that keeps the id unchanged.
+    /// The kind an item id names: one of the transfer modules this port runs, or a
+    /// registered kind that keeps the id unchanged.
     #[must_use]
     pub fn of(item: &str) -> Self {
         match item {
             Self::PULLER => ModuleKind::PullerMk1,
+            Self::PULLER2 => ModuleKind::PullerMk2,
             Self::SENDER => ModuleKind::SenderMk1,
             other => ModuleKind::Registered(other.to_string()),
         }
@@ -238,7 +272,18 @@ impl ModuleKind {
     /// Whether this port runs the module itself rather than only carrying it.
     #[must_use]
     pub fn is_known(&self) -> bool {
-        matches!(self, ModuleKind::PullerMk1 | ModuleKind::SenderMk1)
+        matches!(
+            self,
+            ModuleKind::PullerMk1 | ModuleKind::PullerMk2 | ModuleKind::SenderMk1
+        )
+    }
+
+    /// Whether the module works on a block the player **selected** rather than the
+    /// one beside it (`ModuleItem.isDirectional` is false for a targeted module,
+    /// so its relative direction names nothing).
+    #[must_use]
+    pub fn is_targeted(&self) -> bool {
+        matches!(self, ModuleKind::PullerMk2)
     }
 
     /// The item id this module is.
@@ -246,6 +291,7 @@ impl ModuleKind {
     pub fn item(&self) -> &str {
         match self {
             ModuleKind::PullerMk1 => Self::PULLER,
+            ModuleKind::PullerMk2 => Self::PULLER2,
             ModuleKind::SenderMk1 => Self::SENDER,
             ModuleKind::Registered(item) => item,
         }
@@ -303,12 +349,16 @@ impl Filter {
     }
 }
 
-/// A module installed in one slot: what it is, where it points, what it takes.
+/// A module installed in one slot: what it is, where it points, what it takes,
+/// and — for a targeted module — the block the player selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub kind: ModuleKind,
     pub direction: Relative,
     pub filter: Filter,
+    /// The selected block of a targeted module (`ModuleTarget`), `None` until the
+    /// player sets one — an unselected targeted module does nothing.
+    pub target: Option<Target>,
 }
 
 impl Module {
@@ -317,8 +367,68 @@ impl Module {
             kind,
             direction,
             filter,
+            target: None,
         }
     }
+
+    /// The same module with `target` selected on it.
+    #[must_use]
+    pub fn with_target(mut self, target: Target) -> Self {
+        self.target = Some(target);
+        self
+    }
+
+    /// Whether this module works on its selected block rather than the one its
+    /// direction names (`ModuleItem.isDirectional`).
+    #[must_use]
+    pub fn uses_target(&self) -> bool {
+        self.kind.is_targeted()
+    }
+}
+
+/// The block a targeted module works on, as `ModuleTarget` holds it: where it is,
+/// which face the player clicked (the side the container is reached through), and
+/// the level it stands in (`isSameWorld` refuses another one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub pos: Pos,
+    pub face: Face,
+    pub dimension: String,
+}
+
+impl Target {
+    pub fn new(pos: Pos, face: Face, dimension: &str) -> Self {
+        Target {
+            pos,
+            face,
+            dimension: dimension.to_string(),
+        }
+    }
+
+    /// Whether this target stands in the level `dimension` names.
+    #[must_use]
+    pub fn same_world(&self, dimension: &str) -> bool {
+        self.dimension == dimension
+    }
+
+    /// The position as the readout and the command spell it (`0,100,-10`).
+    #[must_use]
+    pub fn at_text(&self) -> String {
+        format!("{},{},{}", self.pos[0], self.pos[1], self.pos[2])
+    }
+}
+
+/// A block position written as `x,y,z` — the `/modularrouters target` spelling.
+#[must_use]
+pub fn parse_pos(text: &str) -> Option<Pos> {
+    let mut parts = text.split(',');
+    let x = parts.next()?.trim().parse::<i32>().ok()?;
+    let y = parts.next()?.trim().parse::<i32>().ok()?;
+    let z = parts.next()?.trim().parse::<i32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some([x, y, z])
 }
 
 /// A stack in the buffer or in a container slot: its item, its count and the
@@ -605,6 +715,26 @@ pub fn is_operation_tick(game_time: u64, phase: u64, tick_rate: u64) -> bool {
 /// (`IRangedModule.getCurrentRange` with `sender1BaseRange`/`sender1MaxRange`).
 pub fn sender_range(boost: i32) -> i32 {
     (SENDER_BASE_RANGE + boost).clamp(1, SENDER_MAX_RANGE)
+}
+
+/// A Puller Mk2's reach: `max(1, min(24, 12 + range_up − range_down))`
+/// (`IRangedModule.getCurrentRange` with `puller2BaseRange`/`puller2MaxRange`).
+pub fn puller_range(boost: i32) -> i32 {
+    (PULLER_BASE_RANGE + boost).clamp(1, PULLER_MAX_RANGE)
+}
+
+/// Whether `target` is within `range` blocks of `from`, as
+/// `CompiledModule.isTargetValid` asks: `distSqr <= range * range`, so the reach
+/// is a sphere and a diagonal target is out sooner than a straight one.
+pub fn in_range(from: Pos, target: Pos, range: i32) -> bool {
+    let [dx, dy, dz] = [
+        i64::from(target[0]) - i64::from(from[0]),
+        i64::from(target[1]) - i64::from(from[1]),
+        i64::from(target[2]) - i64::from(from[2]),
+    ];
+    let distance = dx * dx + dy * dy + dz * dz;
+    let reach = i64::from(range).max(0);
+    distance <= reach * reach
 }
 
 /// The positions a sender's scan tries, nearest first (`CompiledSenderModule1`).
@@ -1179,6 +1309,134 @@ mod tests {
         assert_eq!(upgrades.count(&UpgradeKind::of("example:fast_upgrade")), 1);
         // A slot holds at least one: an empty entry is not a slot at all.
         assert_eq!(Upgrade::new(UpgradeKind::Speed, 0), None);
+    }
+
+    #[test]
+    fn a_ranged_puller_reaches_twelve_blocks_and_at_most_twenty_four() {
+        // `CommonConfig.module.puller2BaseRange` / `puller2MaxRange`, read through
+        // `IRangedModule.getCurrentRange`: `max(1, min(24, 12 + boost))`.
+        assert_eq!(puller_range(0), PULLER_BASE_RANGE);
+        assert_eq!(puller_range(0), 12, "upstream puller2BaseRange 12");
+        assert_eq!(puller_range(4), 16, "a Range Up augment adds one each");
+        assert_eq!(
+            puller_range(12),
+            PULLER_MAX_RANGE,
+            "upstream puller2MaxRange 24"
+        );
+        assert_eq!(puller_range(40), 24, "never past the hard maximum");
+        assert_eq!(puller_range(-20), 1, "never shorter than one block");
+    }
+
+    #[test]
+    fn a_target_is_in_range_by_euclidean_distance() {
+        // `CompiledModule.isTargetValid`: `distSqr <= range * range`, so the reach
+        // is a sphere and a diagonal target at 9,9 (12.7 blocks) is out at 12.
+        let router = [0, 100, 0];
+        assert!(
+            in_range(router, [0, 100, -12], 12),
+            "twelve straight out is in"
+        );
+        assert!(!in_range(router, [0, 100, -13], 12), "thirteen is out");
+        assert!(
+            in_range(router, [7, 100, -7], 12),
+            "9.9 blocks on the diagonal"
+        );
+        assert!(
+            !in_range(router, [9, 100, -9], 12),
+            "12.7 blocks on the diagonal"
+        );
+        assert!(in_range(router, [0, 112, 0], 12), "up as well as across");
+        assert!(!in_range(router, [0, 113, 0], 12));
+        // The rule is `distSqr <= range²`, so the block itself is inside a zero
+        // reach; `puller_range` never goes below one anyway.
+        assert!(in_range(router, [0, 100, 0], 0));
+    }
+
+    #[test]
+    fn the_ranged_puller_is_a_targeted_module_not_a_directional_one() {
+        let puller2 = ModuleKind::of(ModuleKind::PULLER2);
+        assert_eq!(puller2, ModuleKind::PullerMk2);
+        assert!(puller2.is_known(), "this build runs it");
+        assert_eq!(puller2.item(), ModuleKind::PULLER2);
+        assert!(
+            puller2.is_targeted(),
+            "its block is the one the player selected"
+        );
+        assert!(
+            !ModuleKind::PullerMk1.is_targeted(),
+            "the Mk1 takes the block beside it, in its direction"
+        );
+        assert!(!ModuleKind::SenderMk1.is_targeted());
+        assert!(!ModuleKind::of("example:foreign_module").is_targeted());
+        assert_eq!(
+            ModuleKind::of(ModuleKind::PULLER2).item(),
+            "modularrouters:puller_module_2"
+        );
+    }
+
+    #[test]
+    fn a_target_keeps_its_position_face_and_world() {
+        // Upstream's `ModuleTarget` is a `GlobalPos` plus the clicked face, and
+        // `isSameWorld` refuses a target in another level.
+        let target = Target::new([0, 100, -10], NORTH, "minecraft:the_end");
+        assert_eq!(target.pos, [0, 100, -10]);
+        assert_eq!(target.face, NORTH);
+        assert!(target.same_world("minecraft:the_end"));
+        assert!(!target.same_world("minecraft:overworld"));
+        assert_eq!(target.at_text(), "0,100,-10");
+        // The command spells a position the same way the readout does.
+        assert_eq!(parse_pos("0,100,-10"), Some([0, 100, -10]));
+        assert_eq!(parse_pos(" 1 , -60 , 4 "), Some([1, -60, 4]));
+        assert_eq!(parse_pos("0,100"), None);
+        assert_eq!(parse_pos("0,100,ten"), None);
+        assert_eq!(parse_pos("none"), None);
+    }
+
+    #[test]
+    fn a_module_carries_a_selected_target_beside_its_direction() {
+        let target = Target::new([0, 100, -10], NORTH, "minecraft:the_end");
+        let module = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any())
+            .with_target(target.clone());
+        assert_eq!(module.target, Some(target));
+        assert!(module.uses_target());
+        // A module with no target selects nothing: a targeted module does not fall
+        // back to its direction, so it does nothing instead of scanning.
+        let bare = Module::new(ModuleKind::PullerMk2, Relative::Front, Filter::any());
+        assert_eq!(bare.target, None);
+        assert!(
+            bare.uses_target(),
+            "still a targeted module, just unselected"
+        );
+        assert!(
+            !Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any()).uses_target(),
+            "the Mk1's target is the block its direction names"
+        );
+    }
+
+    #[test]
+    fn a_click_names_a_face_and_a_selected_blocks_side_faces_the_router() {
+        // `BlockHit::face` is a normal vector: the six faces map back to their
+        // index in `Direction.ALL`, and anything else names none.
+        assert_eq!(face_of_normal([0, -1, 0]), Some(DOWN));
+        assert_eq!(face_of_normal([0, 1, 0]), Some(UP));
+        assert_eq!(face_of_normal([0, 0, -1]), Some(NORTH));
+        assert_eq!(face_of_normal([0, 0, 1]), Some(SOUTH));
+        assert_eq!(face_of_normal([-1, 0, 0]), Some(WEST));
+        assert_eq!(face_of_normal([1, 0, 0]), Some(EAST));
+        assert_eq!(face_of_normal([1, 1, 0]), None);
+        // The command is told where a selected block is, not which face was
+        // clicked: it uses the side facing the router, as a player at the router
+        // would have clicked. The dominant axis wins a diagonal, and a block is
+        // not beside itself.
+        assert_eq!(side_towards([0, 100, -10], [0, 100, 0]), Some(SOUTH));
+        assert_eq!(side_towards([0, 100, 10], [0, 100, 0]), Some(NORTH));
+        assert_eq!(side_towards([10, 100, 0], [0, 100, 0]), Some(WEST));
+        assert_eq!(
+            side_towards([0, 100, -10], [4, 100, -7]),
+            Some(EAST),
+            "4 east against 3 south: the dominant axis wins"
+        );
+        assert_eq!(side_towards([0, 100, 0], [0, 100, 0]), None);
     }
 
     #[test]

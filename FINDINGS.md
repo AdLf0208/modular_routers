@@ -88,6 +88,13 @@ Files read:
 | `core/ModBlocks.java` | router block properties (above) |
 | `ModularRouters.java` | `event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, … be.getBuffer())` — the buffer is a container on all six sides |
 | `util/InventoryUtils.java` | `transferItems` = `ItemHandlerHelper.insertItem` per slot, remainder kept |
+| `logic/compiled/CompiledPullerModule2.java` | **re-read 2026-11-22 for slice 5:** the whole class is `extends CompiledPullerModule1` with only `playParticles` overridden — no scan, no range of its own |
+| `item/module/PullerModule2.java` | `IRangedModule` (`getBaseRange` = `puller2BaseRange`, `getHardMaxRange` = `puller2MaxRange`) **and `ITargetedModule`** |
+| `item/module/ITargetedModule.java` | the target model: `getTargets`/`setTargets` over `ModDataComponents.MODULE_TARGET_LIST`, `isValidTarget` = the block holds an inventory, `isRangeLimited` default true, `canOperateInDimension` |
+| `item/module/adapter/TargetedModuleAdapter.java` | **sneak**-right-click a block with the module in hand sets the single target (`MODULE_TARGET_LIST`), sneak-right-click in air clears it, and the reply is `modularrouters.chatText.misc.targetSet` |
+| `logic/ModuleTarget.java` | a `GlobalPos` + the clicked face + the block's name; `getCapability` asks the `ITEMS` capability **through that face**; `isSameWorld` refuses another level |
+| `logic/compiled/CompiledModule.java` (again) | `setupTargets` for an `ITargetedModule` = its stored targets, **not** a scan; `isTargetValid` = same world and `distSqr <= range²`; empty targets ⇒ `shouldExecute` false |
+| `item/module/ModuleItem.java` (again) | `isDirectional()` is `false` for an `ITargetedModule`, so the relative direction names nothing for the Mk2 |
 
 ## 3. Behaviour extracted (the rules the port implements)
 
@@ -123,6 +130,25 @@ Files read:
 7. **Placement.** `facing` = the opposite of the player's horizontal direction;
    `active` is true while a module did work in the current tick cycle (upstream sets
    it from `runAllModules`); `can_emit` is a detector-module state we do not declare.
+8. **Puller Mk2** (`puller_module_2`) — **a targeted module, not a scanning one**
+   (re-read 2026-11-22, files above; it corrects the assumption that the Mk2 is "the
+   Mk1 pull with a scan in front"):
+   - its block is **selected by the player**: sneak-right-click an inventory with the
+     module in hand stores a `ModuleTarget` (position, clicked face, dimension) on the
+     item; sneak-right-click in air clears it. `isDirectional()` is false for it, so
+     its relative direction is stored but **names nothing**;
+   - the router pulls from that block through the face the player clicked, up to
+     `itemsPerTick` per operation, with the same filter and buffer rules as the Mk1;
+   - reach: `getCurrentRange` = `max(1, min(24, 12 + range_up − range_down))`
+     (`puller2BaseRange` 12, `puller2MaxRange` 24); `isTargetValid` requires the
+     **same level** and `distSqr <= range²` (Euclidean, so a diagonal target is out
+     sooner than a straight one). Out of reach or another level ⇒ **no operation**;
+   - with **no** selected block it does nothing at all (empty targets ⇒ the router
+     skips it). It never scans its facing, and the patchouli entry says so: *"clear
+     line of sight is not required"* is about the selected block, not a scan;
+   - *"up to 12 blocks away (up to 24 with Range Augments)"* — the Range Augments are
+     a gap here (gap 3), so this slice always asks for `puller_range(0)` = 12 while
+     the rule and its cap are implemented and tested.
 
 ## 4. What this slice takes, and what it does not
 
@@ -134,5 +160,9 @@ Taken (see `notes.md` for the boundary and the gaps):
   relative direction, an item filter (whitelist/blacklist over item ids) and the
   20-tick/1-item operation; the install/remove/direction/info command fallback for
   the missing GUI;
+- **slice 5:** `puller_module_2` with its selected target (sneak-right-click, a
+  component on the item, the router's saved entry), the 12-block reach with the
+  24 cap, and `/modularrouters target` for a player without the module screen;
 - carried content: the router block + item, `blank_module`, `puller_module_1`,
-  `sender_module_1`, their craft chain, models, textures, lang, loot and tags.
+  `puller_module_2`, `sender_module_1`, their craft chain, models, textures, lang,
+  loot and tags.

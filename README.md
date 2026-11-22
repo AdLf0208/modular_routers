@@ -1,13 +1,15 @@
 # Modular Routers for Horizon
 
-A router block that runs item-transfer modules every 20 ticks, the two Mk1
-modules of the original mod — a **Puller Module Mk1** that takes items from the
-container beside the router into its one-slot buffer, and a **Sender Module Mk1**
-that pushes them into the first container along its facing (up to 8 blocks, 16
-with range upgrades — augments are not carried yet) — and the two upgrades the
-router's own numbers are about, in its **five upgrade slots**: a **Speed Upgrade**
-shortens the operation interval by two ticks (20 → 18 → 16 … down to 2), a
-**Stack Upgrade** doubles the items one operation moves (1 → 2 → 4 … up to 64).
+A router block that runs item-transfer modules every 20 ticks, three modules of
+the original mod — a **Puller Module Mk1** that takes items from the container
+beside the router into its one-slot buffer, a **Puller Module Mk2** that takes
+them from the container you select with it, up to 12 blocks away (24 with range
+augments, which are not carried yet), and a **Sender Module Mk1** that pushes them
+into the first container along its facing (up to 8 blocks, 16 with range upgrades)
+— and the two upgrades the router's own numbers are about, in its **five upgrade
+slots**: a **Speed Upgrade** shortens the operation interval by two ticks
+(20 → 18 → 16 … down to 2), a **Stack Upgrade** doubles the items one operation
+moves (1 → 2 → 4 … up to 64).
 
 Ported from Modular Routers 13.2.7 (`desht/ModularRouters`, MIT) as a
 clean-room rewrite for Horizon 26.3, built against SDK nightly `0a875da`
@@ -30,7 +32,8 @@ its code).
 ## Use
 
 Craft the router (4 per recipe), a blank module (6), then a puller (blank module
-+ sticky piston) or a sender (blank module + bow + arrows). A blank upgrade takes
++ sticky piston), a ranged Puller Mk2 (a puller + an ender pearl, or four pullers
++ one pearl for four) or a sender (blank module + bow + arrows). A blank upgrade takes
 4 paper, 3 gold nuggets and a lapis; a Speed Upgrade (3) is redstone, gold and
 gunpowder around it with a blaze rod; a Stack Upgrade is a blank upgrade, stone
 bricks and bricks.
@@ -47,6 +50,7 @@ bricks and bricks.
    /modularrouters remove <x> <y> <z> <slot>
    /modularrouters filter <x> <y> <z> <slot> whitelist|blacklist|add|remove|clear <item>
    /modularrouters upgrade <x> <y> <z> add|remove speed|stack
+   /modularrouters target <x> <y> <z> <slot> <x,y,z|none>
    ```
 
 4. `/modularrouters info` is the screen: facing, modules, buffer, the rate, and
@@ -54,13 +58,19 @@ bricks and bricks.
    `active=false`; working ones light their front face.
 
 A puller takes one item per second from the container it points at; a sender
-delivers one per second to the first container in its line of sight. Each Speed
+delivers one per second to the first container in its line of sight. A **Puller
+Mk2** ignores the direction and works on the block you gave it: sneak-right-click
+an inventory with the module in hand to select it (the block is not opened; the
+reply says `target set`), then install the module — it reaches 12 blocks, in the
+router's own level, with no line of sight needed. With no block selected it does
+nothing, and a block out of reach is no operation either. Each Speed
 Upgrade takes two ticks off that second, each Stack Upgrade doubles what one
 operation moves. The buffer is the block's item container on every side, so
 hoppers and pipes can fill or empty it.
 
-The screen, the other 21 modules, the other 8 upgrades, augments and smart
-filters are not ported yet — see `notes.md`.
+The screen, the other 18 modules, the other 8 upgrades, augments (the Range
+Augments the Mk2's 24-block reach needs among them) and smart filters are not
+ported yet — see `notes.md`.
 
 ### Modules from another mod
 
@@ -70,8 +80,9 @@ check, so this port reads the item tag the jar already ships: an item in
 not implement installs like any other, is listed by `/modularrouters info`,
 keeps its slot, direction and filter in the router's saved data across a
 relaunch, and `/modularrouters remove` takes it out; its behaviour is the owning
-mod's to run. A held item that is neither one of the two Mk1 modules nor in the
-tag is refused (`Unknown module '…'`).
+mod's to run. A held item that is not a module this build runs (the two Mk1
+pullers and the Mk2, the sender) and is not in the tag is refused
+(`Unknown module '…'`).
 
 The tag is a data file (`data/modularrouters/tags/item/modules.json`). At SDK
 pin `0a875da` a content mod may only write its own namespace (plus `minecraft`

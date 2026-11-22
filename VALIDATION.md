@@ -1,5 +1,59 @@
 # Modular Routers — validation ladder
 
+## 0.2.5 — the ranged Puller Mk2 and its selected target (2026-11-22)
+
+Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 5: `ModuleKind::PullerMk2`
+(a **targeted** module — the upstream artefact, not a scan), `Target` in the module's saved entry,
+the `modularrouters:target` component registered through `Hooks::component_types` and written by a
+sneak right-click with the module in hand, `puller_range`/`in_range` (12 base, 24 cap, `distSqr`),
+`/modularrouters target`, the item with the jar's model/texture/two recipes/tag/lang, and the
+unselected/out-of-range/Mk1 differentials. Unit work: 8 new tests, 47 in all.
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the types existed (red) | **47 errors** (`cannot find function puller_range`, `no variant … PullerMk2`, `cannot find type Target`), `could not compile … (lib test)`, exit 101 | `slice5-test-red.log` |
+| 2 | `tools/e2e.sh` phase M on the **0.2.4** package (red) | `FAIL: give modularrouters:puller_module_2 failed (is the ranged puller in this package?)`, `EXIT:1` | `modularrouters-e2e/e2e-red-ranged.log` |
+| 3 | `launcher-game.sh build modularrouters` (manifest 0.2.4 → 0.2.5) | `Compiling modularrouters (1 of 1)` — no cached-package reuse | `modularrouters-e2e/game-build-0.2.5.log` |
+| 4 | `cargo test --offline` | **47 passed**, 0 failed | `slice5-test.log` (= `sdk-test.log`) |
+| 5 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice5-clippy.log` (= `sdk-clippy.log`) |
+| 6 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice5-fmt.log` (= `sdk-fmt.log`) |
+| 7 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical | `slice5-build.log`, `slice5-build-second.log` |
+| 8 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.5 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `87865 bytes, SHA-256 0f73d1fb…375a`, **exit 0** | `sdk-check.log` |
+| 9 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 10 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 11 | `unzip -l modularrouters.hmod` | **71 entries**, no `Cargo.lock` | `slice5-entries.txt` |
+| 12 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (47 tests) | `verify-sdk-package.log` |
+| 13 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–H, **M**, I, L, J1–J4, K | `modularrouters-e2e/e2e-launcher-0.2.5.log` |
+| 14 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.5.log` |
+| 15 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)`, with `Unknown block type …` and `Unknown item …` in the chat | `modularrouters-e2e/e2e-control-0.2.5.log` |
+| 16 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=20 ok=20` | — |
+| 17 | `python3 ports/tools/check-skills.py --notes ports/modularrouters --strict` | PASS | — |
+
+### What phase M proves (parity rule)
+
+| Step | Assertion |
+|---|---|
+| M, target | a **sneak right-click** on a chest with the Mk2 in hand answers `target set: block at 26,100,-10 in minecraft:the_end` and leaves the screen at `playing` (the click was the module's, not the chest's) |
+| M, install | the right-click install copies the target into the router's save: `module 0 … modularrouters:puller_module_2 dir=none target=none at=26,100,-10 range=12` |
+| M, pull | **7 operations, +1 item each**, ten blocks out; the buffer ends at 8 and the chest at 0 |
+| M, direction | `direction … left` → `dir=left target=east`, and the module keeps pulling from the north chest (9 → 14) |
+| M, unselected | an Mk2 facing a chest it would have to scan: `buffer 0 -> 0 in 100 ticks`, chest still 8, `active=false` |
+| M, range | the same module with a target **13** blocks out: `buffer 0 -> 0`; retargeted at **12**: **7 operations, +1 each** |
+| M, Mk1 | the Mk1 at the same distance: `buffer 0 -> 0`, chest still 8 |
+| M, save | quit + relaunch: both targets read back (`at=26,100,-10`, `at=38,100,-12`) and the Mk2 pulls again (6 operations, +1 each) |
+| J1, recipes | both jar recipes craft in a real table: Mk1 + pearl → 1, four Mk1s + one pearl → 4, the grid empties, the pearl is consumed, and a stick in its place crafts nothing |
+
+### Delivered package (0.2.5)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 87,865 B | `0f73d1fb08113b105e5ee4c6b367fa75feee4e43d8d71108425f4831494b375a` | 71 |
+
 ## 0.2.4 — the Speed/Stack upgrades and the five upgrade slots (2026-11-22)
 
 Pin: SDK nightly **`0a875da91dbbf0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

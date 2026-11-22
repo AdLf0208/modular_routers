@@ -46,6 +46,12 @@
 #     fifth slot full of Speed upgrades clamps to the 2-tick floor and refuses a
 #     sixth, an upgrade item the tag names but this build does not run is
 #     refused, and the upgrades survive a relaunch.
+#  M  the Puller Mk2: the jar's *targeted* ranged puller. Sneak-right-clicking a
+#     chest with the module in hand selects it (the target rides the item's
+#     component into the router's save), and a router then pulls one item per
+#     operation from ten blocks away — while an unselected Mk2, a Mk2 whose target
+#     is thirteen blocks out (past puller2BaseRange 12) and a Mk1 at the same
+#     distance all stay empty. The target survives a relaunch.
 #
 # The harness pack is the only data this script adds to the game: a world data
 # pack, not part of the package (see `harness_pack`).
@@ -100,6 +106,7 @@ CONTROL_WORLD=ModularRoutersControl
 ROUTER=modularrouters:modular_router
 BLANK=modularrouters:blank_module
 PULLER=modularrouters:puller_module_1
+PULLER2=modularrouters:puller_module_2
 SENDER=modularrouters:sender_module_1
 BLANK_UPGRADE=modularrouters:blank_upgrade
 SPEED_UPGRADE=modularrouters:speed_upgrade
@@ -182,8 +189,8 @@ arena() {
         fi
     done
     [ "$loaded" = true ] || fail "the End arena chunk never loaded"
-    ctl command "execute in minecraft:the_end run fill -12 99 -12 24 99 16 minecraft:stone"
-    ctl command "execute in minecraft:the_end run fill -12 100 -12 24 108 16 minecraft:air"
+    ctl command "execute in minecraft:the_end run fill -12 99 -20 48 99 16 minecraft:stone"
+    ctl command "execute in minecraft:the_end run fill -12 100 -20 48 108 16 minecraft:air"
     ctl command "execute in minecraft:the_end run kill @e[type=!player]"
     ctl wait 20
 }
@@ -471,6 +478,147 @@ expect_info 0 100 0 "module 1 at 0,100,0: $SENDER dir=back target=south"
 expect_info 6 100 0 "buffer minecraft:stone x"
 echo "  after the relaunch: source $(count 0 100 -1 minecraft:stone), target $(count 0 100 5 minecraft:stone)"
 
+echo "== M: the Puller Mk2 — a selected container, twelve blocks, and only in range =="
+# The jar's Mk2 is a *targeted* module (`ITargetedModule`): a sneak-right-click
+# with it in hand selects an inventory, and the target is range-limited to
+# puller2BaseRange 12 (24 with Range Augments) in the router's own level. Four
+# rigs, all on the arena floor:
+#   A (26,100,0)  Mk2 with the chest at 26,100,-10 selected -> one item per operation
+#   B (32,100,0)  Mk2 with no target at all                 -> nothing (it is not a scanner)
+#   C (38,100,0)  Mk2, target 13 blocks out, then 12        -> nothing, then one per operation
+#   D (44,100,0)  the Mk1 at the same distance              -> nothing (it reaches one block)
+for x in 26 32 38 44; do block_at "$x" 0 "$ROUTER[facing=north]"; done
+block_at 26 -10 minecraft:chest
+block_at 32 -10 minecraft:chest
+block_at 38 -12 minecraft:chest
+block_at 38 -13 minecraft:chest
+block_at 44 -10 minecraft:chest
+ctl wait 6
+ctl container 26 100 -10 minecraft:stone 8 >/dev/null
+ctl container 32 100 -10 minecraft:stone 8 >/dev/null
+ctl container 38 100 -12 minecraft:stone 8 >/dev/null
+ctl container 38 100 -13 minecraft:stone 8 >/dev/null
+ctl container 44 100 -10 minecraft:stone 8 >/dev/null
+ctl wait 4
+
+# M1: the target is selected with the module in hand, as upstream's
+# `TargetedModuleAdapter` does (sneak + right-click; the block is not opened).
+ctl command "gamemode creative @s" >/dev/null
+ctl command "clear @s" >/dev/null
+ctl give "$PULLER2" 1 >/dev/null || fail "give $PULLER2 failed (is the ranged puller in this package?)"
+ctl wait 4
+held=$(ctl inventory | jq -r --arg i "$PULLER2" '.counts[$i] // 0')
+[ "$held" -ge 1 ] || fail "$PULLER2 is not in the inventory after give ($held)"
+ctl tp 26.5 100 -7.5 >/dev/null
+ctl look-at-block 26 100 -10 up >/dev/null
+ctl select "$PULLER2" >/dev/null || fail "no puller Mk2 in the hotbar"
+ctl wait 3
+ctl key shift down >/dev/null
+ctl wait 2 >/dev/null
+ctl interact 26 100 -10 up >/dev/null || fail "the sneak right-click on the chest failed"
+ctl key shift up >/dev/null
+ctl wait 4
+expect_chat "Modular Router: target set: block at 26,100,-10"
+screen=$(ctl screen | jq -r '.screen // "unknown"')
+echo "  after the sneak right-click the screen is '$screen' (the module took the click)"
+[ "$screen" = "playing" ] || fail "the sneak right-click opened '$screen': the chest took the click, not the module"
+
+# M2: install it by right-click and let it pull: one item per operation, ten
+# blocks out, from the block the player selected.
+ctl tp 26.5 100 2.5 >/dev/null
+ctl look-at-block 26 100 0 south >/dev/null
+ctl wait 3
+ctl interact 26 100 0 south >/dev/null || fail "the right-click that installs the Mk2 failed"
+ctl wait 4
+expect_info 26 100 0 "module 0 at 26,100,0: $PULLER2 dir=none target=none at=26,100,-10 range=12"
+expect_info 26 100 0 "1 of 9 module(s)"
+echo "  source before: $(count 26 100 -10 minecraft:stone)"
+sample_steps 26 0 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "the Mk2 pulled $STEPS operation(s) in 6 s from ten blocks away"
+pulled=$(count 26 100 0 minecraft:stone)
+echo "  the router's buffer holds $pulled, the chest $(count 26 100 -10 minecraft:stone)"
+[ "$pulled" -ge 3 ] || fail "the buffer holds $pulled after the sampling"
+
+# The direction is not what selects a Mk2's block: pointing it left changes
+# nothing about where it pulls from (`isDirectional` is false for it). Left on a
+# north-facing router resolves to east, so the line says east while the chest it
+# pulls from is still the one to the north.
+say "modularrouters direction 26 100 0 0 left"
+expect_chat "Modular Router: slot 0 points left"
+expect_info 26 100 0 "module 0 at 26,100,0: $PULLER2 dir=left target=east at=26,100,-10"
+ctl container 26 100 -10 minecraft:stone 8 >/dev/null
+ctl wait 4
+before=$(count 26 100 0 minecraft:stone)
+ctl wait 100 >/dev/null
+after=$(count 26 100 0 minecraft:stone)
+echo "  still pulling with dir=left: the buffer $before -> $after, chest $(count 26 100 -10 minecraft:stone)"
+[ "$after" -gt "$before" ] || fail "a Mk2 pointing left stopped pulling from the block it was given"
+
+# M3: an Mk2 with no target does nothing — it never falls back to scanning its
+# facing (rig B's chest is ten blocks north, exactly where a scanner would look).
+say "modularrouters install 32 100 0 0 $PULLER2"
+say "modularrouters direction 32 100 0 0 front"
+ctl wait 4
+expect_info 32 100 0 "module 0 at 32,100,0: $PULLER2 dir=front target=north range=12"
+before=$(count 32 100 0 minecraft:stone)
+ctl wait 100 >/dev/null
+after=$(count 32 100 0 minecraft:stone)
+echo "  unselected Mk2 facing the chest: buffer $before -> $after in 100 ticks, chest $(count 32 100 -10 minecraft:stone)"
+[ "$after" = "$before" ] || fail "an unselected Mk2 pulled $(( after - before )) item(s): it is scanning, not using a target"
+[ "$(count 32 100 -10 minecraft:stone)" = 8 ] || fail "an unselected Mk2 took from the chest"
+rig_b=$(state 32 100 0)
+case "$rig_b" in *"active=true"*) fail "an unselected Mk2 shows active=true: $rig_b" ;; esac
+
+# M4: the range rule itself. The same module in the same rig with a target
+# thirteen blocks out (one past puller2BaseRange 12): nothing. Then the chest at
+# twelve: one item per operation again. That is the reach deciding the pull.
+say "modularrouters install 38 100 0 0 $PULLER2"
+expect_chat "Modular Router: $PULLER2 in slot 0"
+expect_info 38 100 0 "module 0 at 38,100,0: $PULLER2 dir=none target=none range=12"
+say "modularrouters target 38 100 0 0 38,100,-13"
+expect_chat "Modular Router: slot 0 targets the inventory at 38,100,-13"
+expect_info 38 100 0 "module 0 at 38,100,0: modularrouters:puller_module_2 dir=none target=none at=38,100,-13 range=12"
+before=$(count 38 100 0 minecraft:stone)
+ctl wait 100 >/dev/null
+after=$(count 38 100 0 minecraft:stone)
+echo "  target 13 blocks out: buffer $before -> $after in 100 ticks (the reach is 12)"
+[ "$after" = "$before" ] || fail "a target 13 blocks out pulled $(( after - before )) item(s) into the buffer"
+[ "$(count 38 100 -13 minecraft:stone)" = 8 ] || fail "a target 13 blocks out took from the chest"
+say "modularrouters target 38 100 0 0 38,100,-12"
+expect_chat "Modular Router: slot 0 targets the inventory at 38,100,-12"
+expect_info 38 100 0 "at=38,100,-12 range=12"
+sample_steps 38 0 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "a target 12 blocks out pulled $STEPS operation(s): the range rule is too tight"
+echo "  target 12 blocks out: $(count 38 100 0 minecraft:stone) in the buffer, the chest $(count 38 100 -12 minecraft:stone)"
+
+# M5: the Mk1 at the same distance, the differential the whole phase rests on:
+# it reaches the block beside the router (rig D's is air), so its buffer stays
+# empty however much the chest ten blocks north holds.
+say "modularrouters install 44 100 0 0 $PULLER"
+say "modularrouters direction 44 100 0 0 front"
+ctl wait 4
+expect_info 44 100 0 "module 0 at 44,100,0: $PULLER dir=front target=north"
+before=$(count 44 100 0 minecraft:stone)
+ctl wait 100 >/dev/null
+after=$(count 44 100 0 minecraft:stone)
+echo "  Mk1 at the same distance: buffer $before -> $after in 100 ticks, chest $(count 44 100 -10 minecraft:stone)"
+[ "$after" = "$before" ] || fail "the Mk1 pulled $(( after - before )) item(s) from ten blocks away"
+[ "$(count 44 100 -10 minecraft:stone)" = 8 ] || fail "the Mk1 took from the chest ten blocks away"
+ctl command "clear @s" >/dev/null
+
+# M6: the selected block is part of the router's saved entry: it survives a
+# relaunch and the router pulls from it again.
+ctl quit >/dev/null
+sleep 2
+launch
+expect_info 26 100 0 "module 0 at 26,100,0: $PULLER2 dir=left target=east at=26,100,-10 range=12"
+expect_info 38 100 0 "at=38,100,-12 range=12"
+ctl container 26 100 -10 minecraft:stone 8 >/dev/null
+ctl wait 4
+sample_steps 26 0 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "the Mk2 stopped pulling after a relaunch"
+echo "  after the relaunch: buffer $(count 26 100 0 minecraft:stone), chest $(count 26 100 -10 minecraft:stone)"
+
 echo "== I: one package — the .hmod carries the code and the content =="
 python3 - "$HMOD" "$PORT/src/runtime.rs" <<'PY'
 import hashlib
@@ -669,7 +817,7 @@ ctl wait 4
 sample_steps 2 5 minecraft:stone 2 12
 [ "$STEPS" -ge 3 ] || fail "the upgraded router stopped moving two items after a relaunch"
 
-echo "== J1: the seven carried recipes craft in a real crafting table =="
+echo "== J1: the nine carried recipes craft in a real crafting table =="
 # A carried recipe whose ingredient is in the 1.21.1 object form
 # (`{"item": "..."}`) is rejected by the 26.3 parser at load, so the recipe is
 # dead data. The server names it once, at startup: print those lines as the
@@ -695,14 +843,14 @@ ctl wait 3
 [ -z "$rejected" ] || fail "the server rejected a carried recipe ingredient (see the lines above)"
 
 echo "== J2: every carried item is give-able, and an unknown id is refused =="
-for id in "$BLANK" "$PULLER" "$SENDER" "$ROUTER"; do
+for id in "$BLANK" "$PULLER" "$PULLER2" "$SENDER" "$ROUTER"; do
     ctl command "clear @s" >/dev/null
     ctl give "$id" 1 >/dev/null || fail "give $id failed"
     ctl wait 3
     held=$(ctl inventory | jq -r --arg i "$id" '.counts[$i] // 0')
     [ "$held" -ge 1 ] || fail "$id is not in the inventory after give ($held)"
 done
-echo "  blank module, puller, sender and router each read back from the inventory"
+echo "  blank module, both pullers, sender and router each read back from the inventory"
 unknown=$(ctl command "give @s modularrouters:not_a_module 1" | jq -r '.chat[]?' | tr '\n' ' ')
 echo "  give modularrouters:not_a_module: $unknown"
 case "$unknown" in
@@ -807,4 +955,4 @@ say "modularrouters remove 8 100 4 0"
 expect_chat "Modular Router: removed example:foreign_module"
 expect_info 8 100 4 "1 of 9 module(s)"
 
-echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the four module recipes and the three upgrade recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all seven items read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused"
+echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the four module recipes and the three upgrade recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all seven items read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch"

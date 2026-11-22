@@ -24,8 +24,8 @@ pub mod runtime;
 mod support;
 
 use mod_api::{
-    self, Flow, Hooks, HostSide, RegisterCommandsEvent, Registrar, RegistrationContext,
-    RightClickBlockEvent, RunModCommandEvent, ServerHost,
+    self, ComponentTypesEvent, Flow, Hooks, HostSide, RegisterCommandsEvent, Registrar,
+    RegistrationContext, RightClickBlockEvent, RunModCommandEvent, ServerHost,
 };
 
 /// The mod keeps no state of its own: every router's modules, upgrades and
@@ -40,6 +40,14 @@ impl Hooks for Mod {
     /// tick and the per-tick module run.
     fn register(&self, registrar: &mut dyn Registrar, _context: &RegistrationContext) {
         support::declare(registrar);
+    }
+
+    /// Declare the component a targeted module carries its selected block in
+    /// (`ModDataComponents.MODULE_TARGET_LIST` upstream). A component patch naming
+    /// a type the game does not know is not a value an item can hold, so the id is
+    /// registered before any content loads.
+    fn component_types(&self, _context: &RegistrationContext, event: &mut ComponentTypesEvent<'_>) {
+        event.types.push(support::target_component().to_string());
     }
 
     /// Right-clicking a router with a module or an upgrade installs it — upstream's

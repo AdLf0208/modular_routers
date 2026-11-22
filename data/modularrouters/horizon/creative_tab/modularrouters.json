@@ -5,6 +5,7 @@
     "modularrouters:modular_router",
     "modularrouters:blank_module",
     "modularrouters:puller_module_1",
+    "modularrouters:puller_module_2",
     "modularrouters:sender_module_1",
     "modularrouters:blank_upgrade",
     "modularrouters:speed_upgrade",
