@@ -25,8 +25,8 @@
 #  G  a placed router faces the opposite of its placer (real placement, not a
 #     setblock), and one package carries the code and the content.
 #  H  the modules and the buffer survive a relaunch.
-#  J  the four carried recipes craft in a real crafting table (id, count, grid
-#     emptied, the distinctive ingredient consumed; two wrong-ingredient
+#  J  the seven carried recipes craft in a real crafting table (id, count, grid
+#     emptied, the distinctive ingredient consumed; five wrong-ingredient
 #     controls craft nothing), every carried item is give-able and an unknown
 #     id is refused, the router's loot table drops it when broken (with a
 #     vanilla block as the harness's differential), and no carried recipe or
@@ -38,6 +38,14 @@
 #     blank module and dirt (not in the tag) are still refused; and a foreign id
 #     written straight into the block entity's Modules list survives the
 #     read/rewrite an install performs.
+#  L  the Speed and Stack upgrades and the router's five upgrade slots: the three
+#     items are give-able, a right-click installs a Stack upgrade (2 items per
+#     operation, sampled against an un-upgraded router beside it) and a Speed
+#     upgrade (20 -> 18 -> 12 ticks, with a tick-exact delivery window that the
+#     12-tick router wins), `/modularrouters upgrade … remove` hands one back, a
+#     fifth slot full of Speed upgrades clamps to the 2-tick floor and refuses a
+#     sixth, an upgrade item the tag names but this build does not run is
+#     refused, and the upgrades survive a relaunch.
 #
 # The harness pack is the only data this script adds to the game: a world data
 # pack, not part of the package (see `harness_pack`).
@@ -75,12 +83,16 @@ export LC_ALL=C
 
 CLONE=/home/adlf/Desktop/all_the_mods_10_rust_rewrite
 PORT=$CLONE/ports/modularrouters
+# Scratch goes wherever the launcher leg points (`E2E_TMP`, set by
+# ports/tools/launcher-game.sh): `/tmp` here is a 7.5 GB tmpfs that has been full,
+# and a world save written there fails for the wrong reason.
+TMP=${E2E_TMP:-/tmp/opencode}
 CTL=${CTL:-$CLONE/ports/_shared/bin/horizon-1d63e0a5/horizon-ctl}
 GAME=${GAME:-}
 CONTROL_GAME=${CONTROL_GAME:-}
 HMOD=${HMOD:-$PORT/modularrouters.hmod}
 RES=${RES:-${HORIZON_RES:-/home/adlf/Desktop/horizon/.local/horizon-client/26.3}}
-SOCK=${SOCK:-/tmp/opencode/modularrouters-e2e.sock}
+SOCK=${SOCK:-$TMP/modularrouters-e2e.sock}
 SELFTEST=${SELFTEST:-0}
 KEEP=${KEEP:-0}
 WORLD=ModularRoutersE2E
@@ -89,6 +101,9 @@ ROUTER=modularrouters:modular_router
 BLANK=modularrouters:blank_module
 PULLER=modularrouters:puller_module_1
 SENDER=modularrouters:sender_module_1
+BLANK_UPGRADE=modularrouters:blank_upgrade
+SPEED_UPGRADE=modularrouters:speed_upgrade
+STACK_UPGRADE=modularrouters:stack_upgrade
 
 [ -x "$CTL" ] || { echo "missing horizon-ctl: $CTL" >&2; exit 1; }
 [ -n "$GAME" ] || {
@@ -99,7 +114,7 @@ SENDER=modularrouters:sender_module_1
 [ -x "$GAME" ] || { echo "missing horizon-client: $GAME" >&2; exit 1; }
 [ -d "$RES/assets" ] || { echo "missing prepared resources: $RES" >&2; exit 1; }
 
-SCRATCH=$(mktemp -d /tmp/opencode/modularrouters-home.XXXXXX)
+SCRATCH=$(mktemp -d "$TMP/modularrouters-home.XXXXXX")
 export HORIZON_HOME=$SCRATCH/game
 export HORIZON_LAUNCHER_HOME=$SCRATCH/launcher
 export XDG_DATA_HOME=$SCRATCH/data
@@ -177,10 +192,12 @@ block_at() { # block_at X Z BLOCK[props]
     ctl command "execute in minecraft:the_end run setblock $1 100 $2 $3"
 }
 
-# A world data pack that puts minecraft:stick in modularrouters:modules: a module
-# id this port implements nothing for. A content mod may not write
-# `data/modularrouters/…` (it owns only its own namespace, plus `minecraft`/`c`
-# tags), but a world pack's tags are merged over the resource root by
+# A world data pack that puts minecraft:stick in modularrouters:modules (a module
+# id this port implements nothing for) and minecraft:gunpowder in
+# modularrouters:upgrades (an upgrade item whose behaviour this build does not
+# ship). A content mod may not write `data/modularrouters/…` (it owns only its own
+# namespace, plus `minecraft`/`c` tags), but a world pack's files replace those of
+# the package and its `tags/` are merged over the resource root by
 # `content_overlay`; `/reload` picks a new pack up (`PackRepository.reload`).
 harness_pack() {
     local pack=$SCRATCH/saves/$WORLD/datapacks/mr-harness
@@ -190,6 +207,9 @@ harness_pack() {
 JSON
     cat >"$pack/data/modularrouters/tags/item/modules.json" <<'JSON'
 { "values": ["minecraft:stick"] }
+JSON
+    cat >"$pack/data/modularrouters/tags/item/upgrades.json" <<'JSON'
+{ "values": ["minecraft:gunpowder"] }
 JSON
     ctl command "reload" >/dev/null
     ctl wait 20 >/dev/null
@@ -203,16 +223,17 @@ JSON
 }
 
 # wait_chat TEXT PATTERN TAIL: poll the newest chat lines (bounded, ~5 s) until
-# one matching TEXT appears; print that window. `ctl messages` returns the newest
-# lines first (`recent_lines` takes from the front), so the window is `head`, not
-# `tail`. `say` runs a player-chat command and the reply lands a server tick or
-# two later, so a fixed short wait is a race.
+# one matching TEXT appears; print **the line the assertion matched** (the log is
+# then the transcript, one line per assertion) and the window when it does not.
+# `ctl messages` returns the newest lines first (`recent_lines` takes from the
+# front), so the window is `head`, not `tail`. `say` runs a player-chat command
+# and the reply lands a server tick or two later, so a fixed short wait is a race.
 wait_chat() { # wait_chat TEXT PATTERN TAIL
     local text=$1 pattern=$2 count=$3 lines=""
     for _ in $(seq 1 20); do
         lines=$(ctl messages 16 | jq -r '.chat[]' | grep -E -- "$pattern" | head -"$count")
-        if echo "$lines" | grep -q -- "$text"; then
-            echo "$lines" | sed 's/^/  /'
+        if echo "$lines" | grep -qF -- "$text"; then
+            echo "$lines" | grep -F -- "$text" | head -1 | sed 's/^/  /'
             return 0
         fi
         ctl wait 5 >/dev/null
@@ -233,6 +254,30 @@ expect_info() { # expect_info X Y Z TEXT
 # exits 0 even on a refusal, which is why the *parsed* reply is what is asserted.
 expect_chat() { # expect_chat TEXT
     wait_chat "$1" "." 4 || fail "expected the reply to say '$1'"
+}
+
+# sample_steps X Z ITEM WANT SAMPLES: watch the container at (X,100,Z) at
+# half-second cadence and assert every change is exactly WANT items — one
+# router operation. SAMPLES of 0.5 s at a 20-tick (1 s) operation can hold at
+# most one operation per window, so a `+2` is one operation moving two items and
+# not two operations of one. Sets STEPS to the number of operations seen (the
+# caller asserts a floor, so a router that never moves cannot pass).
+STEPS=0
+sample_steps() { # sample_steps X Z ITEM WANT SAMPLES
+    local x=$1 z=$2 item=$3 want=$4 samples=$5 before after delta seen=0
+    before=$(count "$x" 100 "$z" "$item")
+    for _ in $(seq 1 "$samples"); do
+        sleep 0.5
+        after=$(count "$x" 100 "$z" "$item")
+        [ "$after" = "$before" ] && continue
+        delta=$(( after - before ))
+        [ "$delta" -eq "$want" ] \
+            || fail "one operation moved $delta items into $x,100,$z, not $want"
+        seen=$(( seen + 1 ))
+        before=$after
+    done
+    echo "  $x,100,$z: $seen operation(s), +$want item(s) each"
+    STEPS=$seen
 }
 
 # The negative control: an unmodded client of the same build. Both ids must be
@@ -456,7 +501,175 @@ with zipfile.ZipFile(package) as archive:
           f' + data/{len(data)} + src/ 3')
 PY
 
-echo "== J1: the four carried recipes craft in a real crafting table =="
+echo "== L: the Speed and Stack upgrades and the five upgrade slots =="
+# L1: the jar's three upgrade items (the blank base and the two this build runs)
+# are in this package, and the tag that names an upgrade to another mod lists the
+# two it runs.
+ctl command "gamemode creative @s" >/dev/null
+for id in "$BLANK_UPGRADE" "$SPEED_UPGRADE" "$STACK_UPGRADE"; do
+    ctl command "clear @s" >/dev/null
+    ctl give "$id" 1 >/dev/null || fail "give $id failed (is the upgrade in this package?)"
+    ctl wait 3
+    held=$(ctl inventory | jq -r --arg i "$id" '.counts[$i] // 0')
+    [ "$held" -ge 1 ] || fail "$id is not in the inventory after give ($held)"
+done
+ctl command "clear @s" >/dev/null
+echo "  blank, speed and stack upgrade each read back from the inventory"
+for id in "$SPEED_UPGRADE" "$STACK_UPGRADE"; do
+    unzip -p "$HMOD" data/modularrouters/tags/item/upgrades.json | grep -q "\"$id\"" \
+        || fail "the package's modularrouters:upgrades tag does not list $id"
+done
+echo "  the package's modularrouters:upgrades tag lists both upgrades it runs"
+
+# L2: two identical routers — one takes the upgrades, the one at 10,100,0 is the
+# differential that never does.
+block_at 2 0 "$ROUTER[facing=north]"
+block_at 2 -1 minecraft:chest
+block_at 2 5 minecraft:chest
+block_at 10 0 "$ROUTER[facing=north]"
+block_at 10 -1 minecraft:chest
+block_at 10 5 minecraft:chest
+ctl wait 4
+ctl container 2 100 -1 minecraft:stone 64 >/dev/null
+ctl container 10 100 -1 minecraft:stone 64 >/dev/null
+for x in 2 10; do
+    say "modularrouters install $x 100 0 0 $PULLER"
+    say "modularrouters direction $x 100 0 0 front"
+    say "modularrouters install $x 100 0 1 $SENDER"
+    say "modularrouters direction $x 100 0 1 back"
+done
+ctl wait 4
+expect_info 2 100 0 "1 item(s) every 20 ticks"
+expect_info 10 100 0 "1 item(s) every 20 ticks"
+echo "  with no upgrade both routers move one item per operation"
+sample_steps 2 5 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "the router at 2,100,0 moved $STEPS operation(s) in 6 s with no upgrade"
+sample_steps 10 5 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "the differential router moved $STEPS operation(s) in 6 s"
+
+# L3: a Stack upgrade in the hand, right-clicked onto the router: two items per
+# operation, and the router beside it stays at one.
+ctl command "clear @s" >/dev/null
+ctl give "$STACK_UPGRADE" 1 >/dev/null || fail "give $STACK_UPGRADE failed"
+ctl wait 4
+ctl tp 2.5 100 2.5 >/dev/null
+ctl select "$STACK_UPGRADE" >/dev/null || fail "no stack upgrade in the hotbar"
+ctl look-at-block 2 100 0 south >/dev/null
+ctl interact 2 100 0 south >/dev/null || fail "the right-click on the router failed"
+ctl wait 4 >/dev/null
+expect_info 2 100 0 "2 item(s) every 20 ticks"
+expect_info 2 100 0 "0 speed / 1 stack upgrade(s) of 5"
+expect_info 10 100 0 "1 item(s) every 20 ticks"
+echo "  the stack-upgraded router moves two items per operation, the one beside it one"
+sample_steps 2 5 minecraft:stone 2 12
+[ "$STEPS" -ge 3 ] || fail "the stack-upgraded router moved $STEPS operation(s) in 6 s"
+sample_steps 10 5 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "the differential router moved $STEPS operation(s) in 6 s"
+
+# L4: a Speed upgrade moves the interval 20 -> 18 ticks.
+ctl command "clear @s" >/dev/null
+ctl give "$SPEED_UPGRADE" 1 >/dev/null || fail "give $SPEED_UPGRADE failed"
+ctl wait 4
+ctl tp 2.5 100 2.5 >/dev/null
+ctl select "$SPEED_UPGRADE" >/dev/null || fail "no speed upgrade in the hotbar"
+ctl look-at-block 2 100 0 south >/dev/null
+ctl interact 2 100 0 south >/dev/null || fail "the right-click on the router failed"
+ctl wait 4 >/dev/null
+expect_info 2 100 0 "2 item(s) every 18 ticks"
+expect_info 2 100 0 "1 speed / 1 stack upgrade(s) of 5"
+
+# L5: three more Speed upgrades land in the same slot (its limit is nine): four
+# in all, so 12 ticks. A tick-exact window then separates it from the plain
+# router: `wait 360` holds exactly 30 ticks of a 12-tick cycle and 18 of a
+# 20-tick one, two items each against one. Both targets keep what they hold
+# already (replacing a chest with a chest is refused at this pin), so the window
+# counts the difference, and both sources are topped up first so the faster
+# router cannot run dry inside it.
+for _ in 1 2 3; do say "modularrouters upgrade 2 100 0 add speed"; done
+ctl wait 4 >/dev/null
+expect_info 2 100 0 "2 item(s) every 12 ticks"
+expect_info 2 100 0 "4 speed / 1 stack upgrade(s) of 5"
+ctl container 2 100 -1 minecraft:stone 64 >/dev/null
+ctl container 10 100 -1 minecraft:stone 64 >/dev/null
+before_fast=$(count 2 100 5 minecraft:stone)
+before_slow=$(count 10 100 5 minecraft:stone)
+ctl wait 360 >/dev/null
+fast=$(( $(count 2 100 5 minecraft:stone) - before_fast ))
+slow=$(( $(count 10 100 5 minecraft:stone) - before_slow ))
+echo "  360 ticks: the 12-tick router delivered $fast stone, the un-upgraded one $slow"
+[ "$fast" -ge 50 ] || fail "the 12-tick router delivered $fast stone in 360 ticks, expected about 60"
+[ "$slow" -ge 12 ] || fail "the un-upgraded router delivered $slow stone in 360 ticks, expected about 18"
+[ "$slow" -le 30 ] || fail "the un-upgraded router delivered $slow stone in 360 ticks, expected about 18"
+[ "$fast" -gt $(( slow * 2 )) ] || fail "the upgraded router delivered $fast against the plain one's $slow: not twice as much"
+
+# L6: removal is the same rule backwards — one upgrade leaves the slot, the item
+# is handed back to the player, and the readout follows.
+ctl command "clear @s" >/dev/null
+ctl wait 3
+say "modularrouters upgrade 2 100 0 remove speed"
+expect_chat "Modular Router: removed modularrouters:speed_upgrade"
+expect_info 2 100 0 "3 speed / 1 stack upgrade(s) of 5"
+expect_info 2 100 0 "2 item(s) every 14 ticks"
+ctl wait 3
+back=$(ctl inventory | jq -r --arg i "$SPEED_UPGRADE" '.counts[$i] // 0')
+echo "  the removed speed upgrade came back to the inventory: $back"
+[ "$back" -ge 1 ] || fail "the removed speed upgrade did not reach the inventory ($back)"
+say "modularrouters upgrade 2 100 0 remove stack"
+expect_chat "Modular Router: removed modularrouters:stack_upgrade"
+expect_info 2 100 0 "3 speed / 0 stack upgrade(s) of 5"
+expect_info 2 100 0 "1 item(s) every 14 ticks"
+say "modularrouters upgrade 2 100 0 remove speed"
+say "modularrouters upgrade 2 100 0 remove speed"
+say "modularrouters upgrade 2 100 0 remove speed"
+ctl wait 4
+expect_info 2 100 0 "0 speed / 0 stack upgrade(s) of 5"
+expect_info 2 100 0 "1 item(s) every 20 ticks"
+say "modularrouters upgrade 2 100 0 remove speed"
+expect_chat "Modular Router: no modularrouters:speed_upgrade installed"
+
+# L7: the five slots and the per-slot limits: five slots of nine Speed upgrades
+# is 45, which the 2-tick floor clamps, and a sixth upgrade has nowhere to go.
+block_at 14 0 "$ROUTER[facing=north]"
+ctl wait 4
+ctl command 'data merge block 14 100 0 {Upgrades:[{item:"modularrouters:speed_upgrade",count:9},{item:"modularrouters:speed_upgrade",count:9},{item:"modularrouters:speed_upgrade",count:9},{item:"modularrouters:speed_upgrade",count:9},{item:"modularrouters:speed_upgrade",count:9}]}' >/dev/null
+ctl wait 3
+expect_info 14 100 0 "45 speed / 0 stack upgrade(s) of 5"
+expect_info 14 100 0 "1 item(s) every 2 ticks"
+say "modularrouters upgrade 14 100 0 add speed"
+expect_chat "Modular Router: all 5 upgrade slots are full"
+expect_info 14 100 0 "45 speed / 0 stack upgrade(s) of 5"
+
+# L8: the tag names minecraft:gunpowder as an upgrade (the harness pack), and an
+# upgrade whose behaviour this build does not ship is refused, not silently
+# installed as a count it cannot run.
+ctl command "clear @s" >/dev/null
+ctl give minecraft:gunpowder 1 >/dev/null
+ctl wait 4
+ctl tp 14.5 100 2.5 >/dev/null
+ctl select minecraft:gunpowder >/dev/null || fail "no gunpowder in the hotbar"
+ctl look-at-block 14 100 0 south >/dev/null
+ctl interact 14 100 0 south >/dev/null || fail "the right-click on the router failed"
+ctl wait 4 >/dev/null
+expect_chat "minecraft:gunpowder is an upgrade this build does not install"
+expect_info 14 100 0 "45 speed / 0 stack upgrade(s) of 5"
+ctl command "clear @s" >/dev/null
+
+# L9: the upgrades live in the block entity's saved compound: a relaunch keeps
+# them and the router keeps running at the shorter interval.
+say "modularrouters upgrade 2 100 0 add stack"
+say "modularrouters upgrade 2 100 0 add speed"
+ctl wait 4
+ctl quit >/dev/null
+sleep 2
+launch
+expect_info 2 100 0 "1 speed / 1 stack upgrade(s) of 5"
+expect_info 2 100 0 "2 item(s) every 18 ticks"
+ctl container 2 100 -1 minecraft:stone 64 >/dev/null
+ctl wait 4
+sample_steps 2 5 minecraft:stone 2 12
+[ "$STEPS" -ge 3 ] || fail "the upgraded router stopped moving two items after a relaunch"
+
+echo "== J1: the seven carried recipes craft in a real crafting table =="
 # A carried recipe whose ingredient is in the 1.21.1 object form
 # (`{"item": "..."}`) is rejected by the 26.3 parser at load, so the recipe is
 # dead data. The server names it once, at startup: print those lines as the
@@ -594,4 +807,4 @@ say "modularrouters remove 8 100 4 0"
 expect_chat "Modular Router: removed example:foreign_module"
 expect_info 8 100 4 "1 of 9 module(s)"
 
-echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; the four carried recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, two wrong-ingredient controls craft nothing, all four items read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused"
+echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the four module recipes and the three upgrade recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all seven items read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused"

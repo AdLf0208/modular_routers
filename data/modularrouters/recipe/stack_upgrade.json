@@ -1,0 +1,10 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    "modularrouters:blank_upgrade",
+    "#minecraft:stone_bricks",
+    "minecraft:bricks"
+  ],
+  "result": { "count": 1, "id": "modularrouters:stack_upgrade" }
+}

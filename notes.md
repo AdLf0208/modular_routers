@@ -6,9 +6,10 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.3** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.4** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
-the recipe/loot repair of 2026-11-21, and 0.2.3 the registered-module path of 2026-11-21. Pin: SDK
+the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, and 0.2.4 the
+Speed/Stack upgrade items with the router's five upgrade slots (2026-11-22). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -84,8 +85,10 @@ The clone is deleted after this note; the jar stays at
 - **Block entity**: declared in `Hooks::register` with
   `registrar.block_entity_type("modular_router").blocks(&["modular_router"]).build()` and the
   `Router` Part attached to it. Its saved compound keeps `Modules` (a list of compounds
-  `{item, dir, whitelist, filter}`) and the `Speed`/`Stack` upgrade counts; the buffer is its one
-  item slot. A declared type starts with an empty compound, so the old `block_entity` hook (which
+  `{item, dir, whitelist, filter}`) and — since 0.2.4 — `Upgrades` (a list of at most five
+  `{item, count}` slots, upstream's own key; 0.2.3 and earlier read two `Speed`/`Stack` counts that
+  nothing ever wrote, so no save can be missing them); the buffer is its one item slot. `Speed` and
+  `Stack` are the Slot 4 section's business. A declared type starts with an empty compound, so the old `block_entity` hook (which
   returned `Some((ROUTER, Compound::new()))`) has no replacement and is not needed.
 - **Tick**: `BlockEntityPart::block_entity_ticks` sets `event.ticks = true`;
   `BlockEntityPart::block_entity_tick` runs the router's own operation tick
@@ -614,6 +617,168 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 
 Package 0.2.3: **62,770 B**, SHA-256 `33461229aba38b7da9b2d9522ba9bf915bae94a3869c28fa0702a4c4d5e6c72c`.
 
+## Slice 4 (2026-11-22) — the Speed and Stack upgrades and the five upgrade slots (0.2.4)
+
+Slice chosen from this file's gap list, item 2 — *"the 10 upgrade items (Speed, Stack, Blast,
+Camouflage, Energy, Fluid, Muffler, Security, Sync, Blank) and the 5 upgrade slots' insert rules. The
+tick-rate and stack formulas are implemented and tested, so installing a Speed/Stack upgrade is a
+content+GUI job, not an engine change."* It is the last family the shipped module pair already reads
+in every readout: `1 item(s) every 20 ticks` is `items_per_operation(stack)` and `tick_rate(speed)`,
+but **nothing could set the counts** — the two items were not in the package, no slot existed that
+could hold them, and the two `Speed`/`Stack` ints the readout looked at were never written. Tier fit:
+**machines**, the ledger row — this is the router's own block entity data and carried items, no new
+renderer and no new machine. Out of scope (gaps 6 and 9): the other 8 upgrade items, whose mechanics
+are redstone/eco/camouflage/energy work.
+
+### Design: five slots, upstream's own save key
+
+`Upgrades` (upstream's `NBT_UPGRADES`), a list of at most five `{item, count}` slots — not the two
+ints 0.2.3 read. One kind per slot and at most its kind's limit, as upstream's `UpgradeHandler` holds
+them (`UpgradeItem.getInstalledStackLimit`: **9 Speed, 6 Stack, 1 any other**). The rules are pure and
+in `runtime`: `UpgradeKind {Speed, Stack, Registered(id)}`, `Upgrade {kind, count}`, `Upgrades`
+(`count`/`speed`/`stack`/`used`/`add`/`remove_one`, cut to `UPGRADE_SLOTS` on read, each count cut to
+its kind's limit). `add` fills the first slot of that kind with room and opens a new slot only when
+there is none — so nine Speed upgrades share one slot and the tenth opens the second. A foreign
+upgrade id is **carried**, exactly as slice 3's `ModuleKind::Registered` carries a foreign module, so
+an add-on's upgrade survives the read/rewrite an install performs.
+
+Glue: `read_upgrades`/`write_upgrades`; the tick and the readout take `speed`/`stack` from the slots;
+a right-click installs a module **or** an upgrade (a tagged upgrade this build does not run is
+refused with a message, never counted as one of the two formulas); `/modularrouters upgrade <pos>
+<add|remove> <speed|stack>` is the GUI's other half at level 2, and `remove` hands the item back with
+`give_stack` as the GUI does.
+
+Content: `blank_upgrade` (the base both recipes need, as `blank_module` is for modules),
+`speed_upgrade`, `stack_upgrade` — item files, 26.3 item models with the jar's three upgrade texture
+layers, the jar's own recipes with the `c:` tags mapped to the vanilla items they stand for
+(`c:gunpowders`→`minecraft:gunpowder`, `c:ingots/gold`→`gold_ingot`, `c:nuggets/gold`→`gold_nugget`,
+`c:dusts/redstone`→`redstone`, `c:rods/blaze`→`blaze_rod`, `c:gems/lapis`→`lapis_lazuli`,
+`c:bricks`→`minecraft:bricks`, `#minecraft:stone_bricks` kept), the `modularrouters:upgrades` tag
+listing the two this build runs (the jar's lists nine and not the blank base), lang and the creative
+tab. `blank_upgrade`/`speed_upgrade`/`stack_upgrade` textures are the jar's (`upgrade_layer0`,
+`upgrade_layer1`, `speed_upgrade`, `stack_upgrade`; MIT, rank 0, so carried, not regenerated).
+
+### TDD, in the order the ruling asks for
+
+**Red, in game** — phase L of `tools/e2e.sh` written first and run on the shipped **0.2.3** package
+(`../_shared/evidence/modularrouters-e2e/e2e-red-upgrade.log`): the three items do not exist, so the
+first give fails and no install assertion can even run.
+
+```
+== L: the Speed and Stack upgrades and the five upgrade slots ==
+FAIL: give modularrouters:blank_upgrade failed (is the upgrade in this package?)
+EXIT:1
+```
+
+**Red, unit** — the `runtime`/`support` tests for the slots written before the type existed
+(`slice4-test-red.log`, 82 errors, `cargo` exit 101):
+
+```
+error[E0433]: cannot find type `UpgradeKind` in this scope
+error[E0425]: cannot find value `SPEED_PER_SLOT` in this scope
+   --> src/runtime.rs:912:21
+error: could not compile `modularrouters` (lib test) due to 82 previous errors
+```
+
+Then the minimal implementation, then the same phase green.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.4.log`)
+
+```
+== L: the Speed and Stack upgrades and the five upgrade slots ==
+  blank, speed and stack upgrade each read back from the inventory
+  the package's modularrouters:upgrades tag lists both upgrades it runs
+  Modular Router at 2,100,0: facing north, active true, 2 of 9 module(s), buffer empty, 1 item(s) every 20 ticks, 0 speed / 0 stack upgrade(s) of 5
+  Modular Router at 10,100,0: facing north, active false, 2 of 9 module(s), buffer empty, 1 item(s) every 20 ticks, 0 speed / 0 stack upgrade(s) of 5
+  with no upgrade both routers move one item per operation
+  2,100,5: 7 operation(s), +1 item(s) each
+  10,100,5: 7 operation(s), +1 item(s) each
+  Modular Router at 2,100,0: facing north, active true, 2 of 9 module(s), buffer empty, 2 item(s) every 20 ticks, 0 speed / 1 stack upgrade(s) of 5
+  Modular Router at 10,100,0: facing north, active true, 2 of 9 module(s), buffer empty, 1 item(s) every 20 ticks, 0 speed / 0 stack upgrade(s) of 5
+  the stack-upgraded router moves two items per operation, the one beside it one
+  2,100,5: 7 operation(s), +2 item(s) each
+  10,100,5: 7 operation(s), +1 item(s) each
+  Modular Router at 2,100,0: ... 2 item(s) every 18 ticks, 1 speed / 1 stack upgrade(s) of 5
+  Modular Router at 2,100,0: ... 2 item(s) every 12 ticks, 4 speed / 1 stack upgrade(s) of 5
+  360 ticks: the 12-tick router delivered 60 stone, the un-upgraded one 18
+  Modular Router: removed modularrouters:speed_upgrade
+  Modular Router at 2,100,0: ... 2 item(s) every 14 ticks, 3 speed / 1 stack upgrade(s) of 5
+  the removed speed upgrade came back to the inventory: 1
+  Modular Router: removed modularrouters:stack_upgrade
+  Modular Router at 2,100,0: ... 1 item(s) every 14 ticks, 3 speed / 0 stack upgrade(s) of 5
+  Modular Router at 2,100,0: ... 1 item(s) every 20 ticks, 0 speed / 0 stack upgrade(s) of 5
+  Modular Router: no modularrouters:speed_upgrade installed
+  Modular Router at 14,100,0: ... 1 item(s) every 2 ticks, 45 speed / 0 stack upgrade(s) of 5
+  Modular Router: all 5 upgrade slots are full
+  Modular Router at 14,100,0: ... 1 item(s) every 2 ticks, 45 speed / 0 stack upgrade(s) of 5
+  Modular Router: minecraft:gunpowder is an upgrade this build does not install
+  Modular Router at 14,100,0: ... 1 item(s) every 2 ticks, 45 speed / 0 stack upgrade(s) of 5
+  … relaunch …
+  Modular Router at 2,100,0: ... 2 item(s) every 18 ticks, 1 speed / 1 stack upgrade(s) of 5
+  2,100,5: 7 operation(s), +2 item(s) each
+```
+
+and the three new recipes in the same run (`craft_check.py`, J1):
+
+```
+  blank upgrade: 4 paper + 3 gold nuggets + a lapis, four at a time -> {"count": 4, "item": "modularrouters:blank_upgrade", "slot": 200}
+  speed upgrade: redstone over gold over gunpowder, a blaze rod up the middle, three at a time -> {"count": 3, "item": "modularrouters:speed_upgrade", "slot": 200}
+  stack upgrade: a blank upgrade, stone bricks and bricks, shapeless -> {"count": 1, "item": "modularrouters:stack_upgrade", "slot": 200}
+  blank upgrade with a stick where the lapis goes -> null
+  speed upgrade with paper where the blank upgrade goes -> null
+  stack upgrade with paper where the blank upgrade goes -> null
+  seven carried recipes craft their declared id and count, the grid empties,
+  each distinctive ingredient is consumed, and five wrong-ingredient controls craft nothing
+```
+
+**Why the assertions can fail, five ways.** (1) The 0.2.3 run above is phase L's own give on the
+shipped package (`EXIT:1`). (2) The per-step sampling is paired with an **un-upgraded router beside
+it** in the same window: `+2` against `+1` every operation, so a slowed or doubled harness shows
+itself. (3) The 360-tick window is tick-exact (`wait` counts game ticks): a 12-tick cycle holds 30
+operations and a 20-tick one 18, so 60 vs 18 is the interval and the items-per-operation together;
+if the speed upgrades did nothing the upgraded router would deliver ~34. (4) The `/data merge`d
+5 × 9-speed list reaches the 2-tick floor and `upgrade add speed` is refused — a router with no slot
+rule would count a 46th. (5) Three wrong-ingredient controls leave the table empty, and `SELFTEST=1`
+fails phase A (`FAIL: SELFTEST: the target chest holds stone, so the check is alive`, `EXIT:1`) —
+`e2e-selftest-0.2.4.log`; the unmodded control game exits 1 at `give modularrouters:modular_router`
+after proving it knows neither the block nor the item — `e2e-control-0.2.4.log`.
+
+### Two harness findings worth recording
+
+1. **`setblock` refuses to replace a chest with a chest at this pin** (`Could not set the block`), so
+   a phase that re-uses a container reset it that way recorded **cumulative** counts instead of the
+   window's delta — the first 0.2.4 run failed on `… delivered 51 stone in 360 ticks` with the
+   mechanics working (`e2e-0.2.4-timing-red.log`). The leg now measures the difference and tops the
+   sources up additively.
+2. **`ctl wait N` answers with the game's tick counter, not the wait's length** (`{"ticks":803}` for
+   `wait 360`), so the counter is no evidence about the interval; `wait` itself is honoured.
+
+### Ladder (every command in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, in game | `tools/e2e.sh` phase L on the **0.2.3** game | `FAIL: give modularrouters:blank_upgrade failed …`, `EXIT:1` | `modularrouters-e2e/e2e-red-upgrade.log` |
+| red, unit | `cargo test --offline` before the type existed | 82 errors, `could not compile … (lib test)` | `slice4-test-red.log` |
+| tests | `cargo test --offline` | **39 passed**, 0 failed | `slice4-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice4-clippy.log` (= `sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice4-fmt.log` (= `sdk-fmt.log`) |
+| manifest bump | `launcher-game.sh build modularrouters` | `Compiling modularrouters (1 of 1)` — the new version was compiled, not a cached package | `modularrouters-e2e/game-build-0.2.4.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | `0a875da` build, second `cmp`-identical, **77,994 B** | `slice4-build.log`, `slice4-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.4 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `77994 bytes, SHA-256 52e4ebe3…c621`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, `EXIT:0` | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` | `sdk-fits-0b14f8a.log` |
+| package contents | `unzip -l modularrouters.hmod` | **65 entries**, no `Cargo.lock` | `slice4-entries.txt` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (39 tests) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` | `modularrouters-e2e/e2e-launcher-0.2.4.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.4.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-control-0.2.4.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=16 ok=16` | — |
+
+Skills: superpowers/using-superpowers, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.4: **77,994 B**, SHA-256 `52e4ebe3fc95a163ae5a815b38cffd25c61b5b36c40675d683c04742cc45c621`,
+65 entries, no `Cargo.lock`.
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -636,7 +801,11 @@ Every family the jar carries, against what this port does with it. `tested` name
 | the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused) |
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
 | the other 18 modules | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
-| the 10 upgrades + 5 upgrade slots | not ported (the tick-rate/stack formulas are implemented and unit-tested) | gap 2 |
+| **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
+| the three upgrade recipes (blank, Speed, Stack) | tested | E2E J1 (real table: id, count, grid emptied, distinctive ingredient consumed, one wrong-ingredient control each) |
+| the three upgrade items | tested | E2E L (give + read back from the inventory) |
+| the `modularrouters:upgrades` item tag (the upgrade registry) | tested | E2E L (the package's tag lists both; a world pack's tag makes `minecraft:gunpowder` an upgrade, which is refused by message and changes nothing) |
+| the other 8 upgrade items (Blast, Camouflage, Energy, Fluid, Muffler, Security, Sync, Blank) | not ported (their mechanics are gaps 6 and 9; a tagged upgrade this build does not run is refused) | gap 2 for the items, gaps 6/9 for the behaviour |
 | 11 augments, 5 smart filters, RegexMatcher | not ported | gap 3 |
 | the router screen and every module screen | not ported | gap 4 (commands + a right-click readout stand in) |
 | item beams, particles, sounds | not ported | gap 5 |
@@ -697,10 +866,11 @@ binary does not list the port's own tests.
    `dropper`, `flinger`, `placer`, `breaker`, `extruder_1`/`_2`, `detector`,
    `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`,
    `player`, `activator`, `void`, `creative` — and their settings screens.
-2. **Upgrades**: the 10 upgrade items (Speed, Stack, Blast, Camouflage, Energy,
-   Fluid, Muffler, Security, Sync, Blank) and the 5 upgrade slots' insert rules.
-   The tick-rate and stack formulas are implemented and tested, so installing a
-   Speed/Stack upgrade is a content+GUI job, not an engine change.
+2. **Upgrades**: the other 8 upgrade items (Blast, Camouflage, Energy, Fluid,
+   Muffler, Security, Sync, Blank) and their mechanics (gaps 6 and 9).
+   **Speed, Stack and the blank base ship, with the five slots and their insert
+   rules** (slice 4, E2E L): those two are what the tick-rate and stack formulas
+   are about.
 3. **Augments** (11) and **smart filters** (5: bulk item, mod, tag, regex,
    inspection) and the RegexMatcher; this slice's filter is a whitelist/blacklist
    over item ids.

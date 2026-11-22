@@ -1,14 +1,15 @@
 //! Game glue for Modular Routers' router: the block entity's Part, its saved
-//! modules and buffer, the module tick, the install and readout paths and
-//! `/modularrouters`.
+//! modules, upgrade slots and buffer, the module tick, the install and readout
+//! paths and `/modularrouters`.
 //!
 //! Upstream a router is a block entity with nine module slots, five upgrade
 //! slots and a one-slot buffer, ticked on the server and exposed to neighbours
 //! as the block's item container. This slice keeps the installed modules in the
-//! block entity's saved compound (their direction and filter) and the buffer in
-//! its one item slot, and runs each module's operation every `tickRate` ticks: a
-//! Puller Mk1 takes from the container beside it into the buffer, a Sender Mk1
-//! pushes from the buffer into the first container along its facing.
+//! block entity's saved compound (their direction and filter), the upgrades in
+//! its five slots and the buffer in its one item slot, and runs each module's
+//! operation every `tickRate` ticks: a Puller Mk1 takes from the container beside
+//! it into the buffer, a Sender Mk1 pushes from the buffer into the first
+//! container along its facing.
 //!
 //! The rules — the tick rate, how many items, which face, what a filter accepts
 //! — are [`crate::runtime`]'s; this file reads the world, calls those rules and
@@ -26,9 +27,10 @@ use mod_api::{
 
 use crate::runtime::{
     BUFFER_SLOTS, FACE_NAMES, Facing, Filter, MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind,
-    Pos, Relative, Slot, Stack, UPGRADE_SLOTS, buffer_after_pull, buffer_after_send,
-    facing_for_placement, facing_of_state, is_operation_tick, items_per_operation, phase_of,
-    pick_pull, pick_send, scan_positions, sender_range, step, tick_rate,
+    Pos, Relative, Slot, Stack, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, buffer_after_pull,
+    buffer_after_send, facing_for_placement, facing_of_state, is_operation_tick,
+    items_per_operation, phase_of, pick_pull, pick_send, scan_positions, sender_range, step,
+    tick_rate,
 };
 
 /// The router block (and its item).
@@ -39,14 +41,16 @@ const ACTIVE: &str = "active";
 const FACING: &str = "facing";
 /// `ModularRouterBlockEntity.NBT_MODULES`.
 const KEY_MODULES: &str = "Modules";
-/// Upstream's Speed Upgrade count (`getUpgradeCount(SPEED_UPGRADE)`).
-const KEY_SPEED: &str = "Speed";
-/// Upstream's Stack Upgrade count.
-const KEY_STACK: &str = "Stack";
+/// Upstream's own key for the five upgrade slots (`NBT_UPGRADES`): a list of
+/// `{item, count}` slots, the port's shape for what Java stores as an item list.
+const KEY_UPGRADES: &str = "Upgrades";
 const MODULE_ITEM: &str = "item";
 const MODULE_DIR: &str = "dir";
 const MODULE_WHITELIST: &str = "whitelist";
 const MODULE_FILTER: &str = "filter";
+/// One upgrade slot's fields inside `Upgrades`.
+const UPGRADE_ITEM: &str = "item";
+const UPGRADE_COUNT: &str = "count";
 /// The buffer slot in the block entity's item list.
 const BUFFER_SLOT: usize = 0;
 /// The item registry a module id is looked up in (`BuiltInRegistries.ITEM`).
@@ -54,6 +58,10 @@ const ITEM_REGISTRY: &str = "minecraft:item";
 /// The item tag that declares a module: the jar ships it, and a mod's own module
 /// item joins it with a data pack. It is the port's module registry.
 const MODULE_TAG: &str = "modularrouters:modules";
+/// The item tag that declares an upgrade, upstream's other registry tag. Only
+/// Speed and Stack have a behaviour here; a tagged upgrade this build does not
+/// run is refused rather than counted as one it can.
+const UPGRADE_TAG: &str = "modularrouters:upgrades";
 /// A block a sender's scan counts as passable: the three airs. Upstream also
 /// sends through any non-solid-render block (glass, torches, water) — a gap.
 const AIRS: [&str; 3] = ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"];
@@ -230,6 +238,53 @@ fn write_modules(nbt: &mut Compound, modules: &[Module]) {
         })
         .collect();
     nbt.insert(KEY_MODULES.into(), Tag::List(entries));
+}
+
+/// The five upgrade slots (`Upgrades`), in slot order.
+///
+/// A slot's id this port does not run is kept as [`UpgradeKind::Registered`], as a
+/// foreign module is: a save from a newer build, or an add-on's upgrade, must
+/// survive being read and rewritten. A slot with no id, or with a count of zero
+/// or less, is not a slot at all.
+fn read_upgrades(nbt: &Compound) -> Upgrades {
+    let Some(Tag::List(entries)) = nbt.get(&KEY_UPGRADES.into()) else {
+        return Upgrades::default();
+    };
+    let slots = entries
+        .iter()
+        .filter_map(|entry| {
+            let Tag::Compound(entry) = entry else {
+                return None;
+            };
+            let kind = UpgradeKind::of(&string(entry, UPGRADE_ITEM)?);
+            // A slot that names an upgrade but no count holds one of it.
+            let held = if entry.contains_key(&UPGRADE_COUNT.into()) {
+                count(entry, UPGRADE_COUNT)
+            } else {
+                1
+            };
+            Upgrade::new(kind, held)
+        })
+        .collect();
+    Upgrades::new(slots)
+}
+
+/// Write the five upgrade slots back (`Upgrades`), the kind's limit applied.
+fn write_upgrades(nbt: &mut Compound, upgrades: &Upgrades) {
+    let entries: Vec<Tag> = upgrades
+        .slots()
+        .iter()
+        .map(|slot| {
+            let mut entry = Compound::new();
+            entry.insert(UPGRADE_ITEM.into(), Tag::String(slot.kind.item().into()));
+            entry.insert(
+                UPGRADE_COUNT.into(),
+                Tag::Int(i32::try_from(slot.count).unwrap_or(i32::MAX)),
+            );
+            Tag::Compound(entry)
+        })
+        .collect();
+    nbt.insert(KEY_UPGRADES.into(), Tag::List(entries));
 }
 
 /// The component key that makes two stacks of one item different resources (an
@@ -478,9 +533,8 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
     if event.entity.items.len() == BUFFER_SLOT {
         event.entity.items.resize(BUFFER_SLOT + 1, None);
     }
-    let speed = count(&event.entity.nbt, KEY_SPEED);
-    let stacks = count(&event.entity.nbt, KEY_STACK);
-    let rate = tick_rate(speed);
+    let upgrades = read_upgrades(&event.entity.nbt);
+    let rate = tick_rate(upgrades.speed());
     let Some(game_time) = level.game_time(&*host) else {
         return;
     };
@@ -490,7 +544,7 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
     }
     let modules = read_modules(&event.entity.nbt);
     let facing = facing_at(&*host, level, pos);
-    let items = items_per_operation(stacks);
+    let items = items_per_operation(upgrades.stack());
     let mut worked = false;
     for module in &modules {
         let Some(face) = module.direction.resolve(facing) else {
@@ -524,9 +578,9 @@ fn is_router(host: &dyn Host, level: LevelRef, pos: Pos) -> bool {
         .is_some_and(|router| level.block(host, pos) == Some(router))
 }
 
-/// A player right-clicking a router: with a module in hand it is installed
-/// (upstream's GUI insert, which this slice replaces with a click), otherwise
-/// the router reports its state (upstream's screen).
+/// A player right-clicking a router: with a module or an upgrade in hand it is
+/// installed (upstream's GUI insert, which this slice replaces with a click),
+/// otherwise nothing here claims the click.
 pub(crate) fn right_click(host: HostSide<'_>, event: &mut RightClickBlockEvent<'_>) -> Flow {
     if event.cancelled || event.click.hand != Hand::Main {
         return Flow::Continue;
@@ -544,11 +598,31 @@ pub(crate) fn right_click(host: HostSide<'_>, event: &mut RightClickBlockEvent<'
     if !is_router(&*host, level, click.pos) {
         return Flow::Continue;
     }
-    if !registered_module(&*host, &held.item().id(&*host)) {
+    let item = held.item().id(&*host);
+    if registered_module(&*host, &item) {
+        return if install_from_hand(host, level, click.pos, held, click.player) {
+            Flow::Cancel
+        } else {
+            Flow::Continue
+        };
+    }
+    if !registered_upgrade(&*host, &item) {
         return Flow::Continue;
     }
-    let installed = install_from_hand(host, level, click.pos, held, click.player);
-    if installed {
+    let kind = UpgradeKind::of(&item);
+    if !kind.is_known() {
+        // The tag names an upgrade whose behaviour is another mod's: say so
+        // rather than count it as one of the two formulas this port runs.
+        if let Some(player) = host.player(click.player) {
+            tell(
+                host,
+                player,
+                &format!("Modular Router: {item} is an upgrade this build does not install"),
+            );
+        }
+        return Flow::Continue;
+    }
+    if install_upgrade_from_hand(host, level, click.pos, &kind, click.player) {
         Flow::Cancel
     } else {
         Flow::Continue
@@ -570,6 +644,23 @@ fn registered_module(host: &dyn Host, item: &str) -> bool {
         return false;
     };
     host.registry_entry_in_tag(&entry, MODULE_TAG)
+        .unwrap_or(false)
+}
+
+/// Whether `item` is an upgrade: one this port runs, or one the [`UPGRADE_TAG`]
+/// item tag lists. As for modules, the tag is the registry — the jar ships it, and
+/// a data pack adds to it — so this port keeps no id list of its own.
+fn registered_upgrade(host: &dyn Host, item: &str) -> bool {
+    if UpgradeKind::of(item).is_known() {
+        return true;
+    }
+    if Identifier::parse(item).is_err() {
+        return false;
+    }
+    let Some(entry) = host.registry_entry(ITEM_REGISTRY, item) else {
+        return false;
+    };
+    host.registry_entry_in_tag(&entry, UPGRADE_TAG)
         .unwrap_or(false)
 }
 
@@ -655,9 +746,127 @@ fn tell(host: &mut dyn ServerHost, player: PlayerRef, line: &str) {
     let _ = player.tell(host, Text::literal(line));
 }
 
+/// The router's message when no upgrade slot is free.
+fn upgrade_slots_full() -> String {
+    format!("Modular Router: all {UPGRADE_SLOTS} upgrade slots are full")
+}
+
+/// Install the held upgrade into the router's five slots, as dragging it into the
+/// router GUI does upstream. False (and the item stays in the hand) when they are
+/// full.
+fn install_upgrade_from_hand(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    kind: &UpgradeKind,
+    player: u128,
+) -> bool {
+    let mut used = 0;
+    let installed = edit_router(host, level, pos, |nbt| {
+        let mut upgrades = read_upgrades(nbt);
+        if !upgrades.add(kind.clone()) {
+            return false;
+        }
+        used = upgrades.used();
+        write_upgrades(nbt, &upgrades);
+        true
+    });
+    let Some(player) = host.player(player) else {
+        return installed;
+    };
+    if installed {
+        // Creative players keep their item, as upstream's GUI insert does not take it.
+        consume_one(host, player);
+        tell(
+            host,
+            player,
+            &format!(
+                "Modular Router: installed {} ({used} of {UPGRADE_SLOTS} upgrade slots used)",
+                kind.item()
+            ),
+        );
+    } else {
+        let line = upgrade_slots_full();
+        tell(host, player, &line);
+    }
+    installed
+}
+
+/// Add one upgrade through `/modularrouters upgrade` (a gamemaster tool, so it
+/// costs no item), and say what the slots hold now.
+fn add_upgrade(host: &mut dyn ServerHost, level: LevelRef, pos: Pos, kind: &UpgradeKind) -> String {
+    let mut used = 0;
+    let added = edit_router(host, level, pos, |nbt| {
+        let mut upgrades = read_upgrades(nbt);
+        if !upgrades.add(kind.clone()) {
+            return false;
+        }
+        used = upgrades.used();
+        write_upgrades(nbt, &upgrades);
+        true
+    });
+    if added {
+        format!(
+            "Modular Router: installed {} ({used} of {UPGRADE_SLOTS} upgrade slots used)",
+            kind.item()
+        )
+    } else {
+        upgrade_slots_full()
+    }
+}
+
+/// Take one upgrade out through `/modularrouters upgrade` and hand it back, as
+/// the router GUI does when an upgrade is pulled out of its slot.
+fn remove_upgrade(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    kind: &UpgradeKind,
+) -> String {
+    let mut removed = false;
+    edit_router(host, level, pos, |nbt| {
+        let mut upgrades = read_upgrades(nbt);
+        if !upgrades.remove_one(kind) {
+            return false;
+        }
+        removed = true;
+        write_upgrades(nbt, &upgrades);
+        true
+    });
+    if !removed {
+        return format!("Modular Router: no {} installed", kind.item());
+    }
+    if hand_back(host, kind) {
+        format!("Modular Router: removed {}", kind.item())
+    } else {
+        format!(
+            "Modular Router: removed {} (the inventory refused it)",
+            kind.item()
+        )
+    }
+}
+
+/// Give one `kind` to the player running the command, as `/give` does.
+fn hand_back(host: &mut dyn ServerHost, kind: &UpgradeKind) -> bool {
+    let Ok(id) = Identifier::parse(kind.item()) else {
+        return false;
+    };
+    let Some(item) = host.item_key(&id) else {
+        return false;
+    };
+    let Some(stack) = ItemStack::new(item, 1) else {
+        return false;
+    };
+    let Some(player) = host.players().acting_player() else {
+        return false;
+    };
+    player.give_stack(host, stack).is_ok()
+}
+
 /// Run `edit` on the router's saved compound at `pos`; false when no router is
-/// there or the edit reported no change. Only `Modules` is written, so the
-/// upgrade counts saved beside it stay as they are.
+/// there or the edit reported no change. Only the module list and the upgrade
+/// slots are written, so anything else another mod (or a newer save) keeps beside
+/// them stays as it is.
 fn edit_router(
     host: &mut dyn ServerHost,
     level: LevelRef,
@@ -679,8 +888,10 @@ fn edit_router(
         return false;
     }
     let mut patch = Compound::new();
-    if let Some(modules) = data.get(&KEY_MODULES.into()) {
-        patch.insert(KEY_MODULES.into(), modules.clone());
+    for key in [KEY_MODULES, KEY_UPGRADES] {
+        if let Some(value) = data.get(&key.into()) {
+            patch.insert(key.into(), value.clone());
+        }
     }
     entity.merge_data(host, patch).unwrap_or(false)
 }
@@ -794,8 +1005,7 @@ fn readout(host: &mut dyn ServerHost, level: LevelRef, pos: Pos) -> Vec<String> 
         )];
     };
     let modules = read_modules(&data);
-    let speed = count(&data, KEY_SPEED);
-    let stacks = count(&data, KEY_STACK);
+    let upgrades = read_upgrades(&data);
     let buffer = host
         .block_entity(level, pos)
         .and_then(|entity| entity.item_slot(&*host, BUFFER_SLOT as u32).ok().flatten())
@@ -806,8 +1016,8 @@ fn readout(host: &mut dyn ServerHost, level: LevelRef, pos: Pos) -> Vec<String> 
         active,
         &modules,
         buffer.as_ref(),
-        speed,
-        stacks,
+        upgrades.speed(),
+        upgrades.stack(),
     )
 }
 
@@ -815,18 +1025,18 @@ fn readout(host: &mut dyn ServerHost, level: LevelRef, pos: Pos) -> Vec<String> 
 // The commands
 // ---------------------------------------------------------------------------
 
-/// Declare `/modularrouters info|install|remove|direction|filter`.
+/// Declare `/modularrouters info|install|remove|direction|filter|upgrade`.
 pub(crate) fn declare_commands(commands: &mut Vec<Command>) {
     for (usage, level) in usages() {
         commands.push(Command::op(usage, level));
     }
 }
 
-/// The usages and the level each is registered at. `install`, `remove`, `direction`
-/// and `filter` rewrite a router at player-chosen coordinates — and `install` adds a
-/// module with no item cost — so they are gamemaster tools (level 2), as `/data` is;
-/// `info` is a readout.
-pub(crate) fn usages() -> [(&'static str, u8); 5] {
+/// The usages and the level each is registered at. `install`, `remove`,
+/// `direction`, `filter` and `upgrade` rewrite a router at player-chosen
+/// coordinates — and `install`/`upgrade` add to it with no item cost — so they are
+/// gamemaster tools (level 2), as `/data` is; `info` is a readout.
+pub(crate) fn usages() -> [(&'static str, u8); 6] {
     [
         ("modularrouters info <pos:block_pos>", 0),
         (
@@ -840,6 +1050,10 @@ pub(crate) fn usages() -> [(&'static str, u8); 5] {
         ),
         (
             "modularrouters filter <pos:block_pos> <slot:integer> <mode:word> <item:text>",
+            2,
+        ),
+        (
+            "modularrouters upgrade <pos:block_pos> <mode:word> <kind:word>",
             2,
         ),
     ]
@@ -874,7 +1088,8 @@ fn say(host: &mut dyn ServerHost, line: &str) {
     let _ = host.commands().feedback(Text::literal(line));
 }
 
-const USAGE: &str = "Usage: /modularrouters info|install|remove|direction|filter <x> <y> <z> …";
+const USAGE: &str =
+    "Usage: /modularrouters info|install|remove|direction|filter|upgrade <x> <y> <z> …";
 
 /// Run `/modularrouters info|install|remove|direction|filter`: the GUI's
 /// controls, as the harness and a player without the screen use them.
@@ -936,6 +1151,15 @@ pub(crate) fn run_command(host: &mut dyn ServerHost, event: &mut RunModCommandEv
                 return Flow::Cancel;
             };
             let line = set_filter(host, level, pos, slot, mode, item);
+            say(host, &line);
+        }
+        ["upgrade"] => {
+            let (Some(mode), Some(kind)) = (word(invocation, "mode"), word(invocation, "kind"))
+            else {
+                say(host, USAGE);
+                return Flow::Cancel;
+            };
+            let line = set_upgrade(host, level, pos, mode, kind);
             say(host, &line);
         }
         _ => say(host, USAGE),
@@ -1093,6 +1317,25 @@ fn set_filter(
     }
 }
 
+/// `/modularrouters upgrade <pos> <add|remove> <speed|stack>`: the router
+/// screen's five upgrade slots, for a player without the screen.
+fn set_upgrade(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    mode: &str,
+    kind: &str,
+) -> String {
+    let Some(kind) = UpgradeKind::from_name(kind) else {
+        return "Unknown upgrade: speed or stack".to_string();
+    };
+    match mode {
+        "add" => add_upgrade(host, level, pos, &kind),
+        "remove" => remove_upgrade(host, level, pos, &kind),
+        _ => "Unknown mode: add or remove".to_string(),
+    }
+}
+
 /// An item argument without a namespace is a vanilla item, as the GUI's list is.
 fn namespaced(item: &str) -> String {
     if item.contains(':') {
@@ -1117,7 +1360,7 @@ mod tests {
     #[test]
     fn the_readout_is_open_and_every_mutation_is_operator_gated() {
         let usages = usages();
-        assert_eq!(usages.len(), 5);
+        assert_eq!(usages.len(), 6);
         for (usage, level) in usages {
             let expected = if usage.contains(" info ") { 0 } else { 2 };
             assert_eq!(level, expected, "{usage}");
@@ -1283,5 +1526,67 @@ mod tests {
         assert!(ModuleKind::of(ModuleKind::SENDER).is_known());
         assert!(!ModuleKind::of("modularrouters:blank_module").is_known());
         assert!(!ModuleKind::of("minecraft:dirt").is_known());
+    }
+
+    #[test]
+    fn the_upgrade_slots_round_trip_through_the_saved_compound() {
+        let upgrades = Upgrades::new(vec![
+            Upgrade::new(UpgradeKind::Speed, 2).expect("two speed upgrades"),
+            Upgrade::new(UpgradeKind::of("example:fast_upgrade"), 1).expect("one foreign upgrade"),
+        ]);
+        let mut nbt = Compound::new();
+        write_upgrades(&mut nbt, &upgrades);
+        assert_eq!(read_upgrades(&nbt), upgrades);
+        assert!(
+            nbt.contains_key(&KEY_UPGRADES.into()),
+            "the slots live under upstream's own key"
+        );
+        assert!(read_upgrades(&Compound::new()).slots().is_empty());
+    }
+
+    #[test]
+    fn an_upgrade_entry_is_one_when_it_saves_no_count_and_none_at_zero() {
+        let mut entry = Compound::new();
+        entry.insert(UPGRADE_ITEM.into(), Tag::String(UpgradeKind::STACK.into()));
+        let mut zero = Compound::new();
+        zero.insert(UPGRADE_ITEM.into(), Tag::String(UpgradeKind::SPEED.into()));
+        zero.insert(UPGRADE_COUNT.into(), Tag::Int(0));
+        let mut nbt = Compound::new();
+        nbt.insert(
+            KEY_UPGRADES.into(),
+            Tag::List(vec![Tag::Compound(entry), Tag::Compound(zero)]),
+        );
+        let upgrades = read_upgrades(&nbt);
+        assert_eq!(upgrades.stack(), 1, "a slot with no count holds one");
+        assert_eq!(upgrades.speed(), 0, "a zero count is not a slot");
+        assert_eq!(upgrades.used(), 1);
+    }
+
+    #[test]
+    fn the_readout_takes_its_upgrade_counts_from_the_saved_slots() {
+        // What phase L asserts in game: one Speed and one Stack upgrade.
+        let mut nbt = Compound::new();
+        write_upgrades(
+            &mut nbt,
+            &Upgrades::new(vec![
+                Upgrade::new(UpgradeKind::Speed, 1).expect("one speed upgrade"),
+                Upgrade::new(UpgradeKind::Stack, 1).expect("one stack upgrade"),
+            ]),
+        );
+        let upgrades = read_upgrades(&nbt);
+        let lines = describe(
+            [2, 100, 0],
+            Facing::North,
+            false,
+            &[],
+            None,
+            upgrades.speed(),
+            upgrades.stack(),
+        );
+        assert_eq!(
+            lines[0],
+            "Modular Router at 2,100,0: facing north, active false, 0 of 9 module(s), \
+             buffer empty, 2 item(s) every 18 ticks, 1 speed / 1 stack upgrade(s) of 5"
+        );
     }
 }

@@ -1,12 +1,16 @@
-//! Modular Routers for Horizon: a router block entity with nine module slots
-//! and a one-slot buffer that runs its installed modules on its operation tick.
+//! Modular Routers for Horizon: a router block entity with nine module slots,
+//! five upgrade slots and a one-slot buffer that runs its installed modules on
+//! its operation tick.
 //!
 //! Upstream (`desht/ModularRouters`) a router is a block entity with nine module
 //! slots, five upgrade slots and a one-slot buffer; every `tickRate` ticks it
-//! runs its modules in slot order. This slice carries the router and its two
-//! Mk1 transfer modules: a **Puller Mk1** takes items from the container beside
-//! it into the buffer, a **Sender Mk1** pushes them out of the buffer into the
-//! first container along its facing. With no upgrades that is one operation a
+//! runs its modules in slot order, and the upgrades in its slots set that rate and
+//! how many items one operation moves. This slice carries the router, its two Mk1
+//! transfer modules and the two upgrades those numbers are about: a **Puller Mk1**
+//! takes items from the container beside it into the buffer, a **Sender Mk1**
+//! pushes them out of the buffer into the first container along its facing, a
+//! **Speed Upgrade** shortens the interval by two ticks, and a **Stack Upgrade**
+//! doubles the items per operation. With no upgrades that is one operation a
 //! second, one item each.
 //!
 //! The rules are what [`runtime`] decides (tick rate, items per operation, the
@@ -38,20 +42,19 @@ impl Hooks for Mod {
         support::declare(registrar);
     }
 
-    /// Right-clicking a router with a module installs it — upstream's GUI insert,
-    /// which this slice replaces with a click — and a right-click without one is
-    /// upstream's screen, printed as chat lines.
+    /// Right-clicking a router with a module or an upgrade installs it — upstream's
+    /// GUI insert, which this slice replaces with a click.
     fn right_click_block(&self, host: HostSide<'_>, event: &mut RightClickBlockEvent<'_>) -> Flow {
         support::right_click(host, event)
     }
 
-    /// `/modularrouters info|install|remove|direction|filter`: the router screen's
-    /// controls, as the harness and a player without the screen use them.
+    /// `/modularrouters info|install|remove|direction|filter|upgrade`: the router
+    /// screen's controls, as the harness and a player without the screen use them.
     fn register_commands(&self, _host: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
         support::declare_commands(event.commands);
     }
 
-    /// Run the five usages [`Hooks::register_commands`] declares, after the game
+    /// Run the six usages [`Hooks::register_commands`] declares, after the game
     /// has parsed and permission-checked them.
     fn run_mod_command(
         &self,

@@ -384,6 +384,193 @@ impl Slot {
     }
 }
 
+/// `UpgradeItem.getInstalledStackLimit` for a Speed Upgrade: nine fit in one slot.
+pub const SPEED_PER_SLOT: u32 = 9;
+/// …for a Stack Upgrade: six fit in one slot, which is the `1 << min(6, …)` cap.
+pub const STACK_PER_SLOT: u32 = 6;
+/// …and for every other upgrade item, one.
+pub const OTHER_PER_SLOT: u32 = 1;
+
+/// An upgrade installed in one of the router's five slots: one of the two this
+/// port runs, or any other id a save or another mod carries.
+///
+/// The second case is the **registered** path, as [`ModuleKind::Registered`] is
+/// for modules: an add-on's upgrade keeps its id and its slot, and what it does
+/// stays its own mod's business.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpgradeKind {
+    /// `modularrouters:speed_upgrade`: two ticks less per operation, nine a slot.
+    Speed,
+    /// `modularrouters:stack_upgrade`: one more doubling of the items moved.
+    Stack,
+    /// An upgrade this port does not run, carried by its id.
+    Registered(String),
+}
+
+impl UpgradeKind {
+    pub const SPEED: &'static str = "modularrouters:speed_upgrade";
+    pub const STACK: &'static str = "modularrouters:stack_upgrade";
+
+    /// The kind an item id names: one of the two upgrades this port runs, or a
+    /// registered kind that keeps the id unchanged.
+    #[must_use]
+    pub fn of(item: &str) -> Self {
+        match item {
+            Self::SPEED => UpgradeKind::Speed,
+            Self::STACK => UpgradeKind::Stack,
+            other => UpgradeKind::Registered(other.to_string()),
+        }
+    }
+
+    /// The upgrade a `/modularrouters upgrade … <kind>` word names.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "speed" => Some(UpgradeKind::Speed),
+            "stack" => Some(UpgradeKind::Stack),
+            _ => None,
+        }
+    }
+
+    /// Whether this port runs the upgrade itself rather than only carrying it.
+    #[must_use]
+    pub fn is_known(&self) -> bool {
+        matches!(self, UpgradeKind::Speed | UpgradeKind::Stack)
+    }
+
+    /// The item id this upgrade is.
+    #[must_use]
+    pub fn item(&self) -> &str {
+        match self {
+            UpgradeKind::Speed => Self::SPEED,
+            UpgradeKind::Stack => Self::STACK,
+            UpgradeKind::Registered(item) => item,
+        }
+    }
+
+    /// How many of this upgrade fit in one of the five slots.
+    #[must_use]
+    pub fn per_slot(&self) -> u32 {
+        match self {
+            UpgradeKind::Speed => SPEED_PER_SLOT,
+            UpgradeKind::Stack => STACK_PER_SLOT,
+            UpgradeKind::Registered(_) => OTHER_PER_SLOT,
+        }
+    }
+}
+
+/// One of the router's five upgrade slots: which upgrade, and how many of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upgrade {
+    pub kind: UpgradeKind,
+    pub count: u32,
+}
+
+impl Upgrade {
+    /// A slot holding `count` of `kind`, its kind's limit applied. `None` for a
+    /// count of zero: an empty slot is no slot at all.
+    #[must_use]
+    pub fn new(kind: UpgradeKind, count: u32) -> Option<Self> {
+        if count == 0 {
+            return None;
+        }
+        Some(Upgrade {
+            count: count.min(kind.per_slot()),
+            kind,
+        })
+    }
+}
+
+/// The router's five upgrade slots (`N_UPGRADE_SLOTS`), as the upgrades in them.
+///
+/// One kind per slot and at most that kind's limit, as upstream's `UpgradeHandler`
+/// holds them; a save naming more slots than the router has is cut rather than
+/// trusted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Upgrades {
+    slots: Vec<Upgrade>,
+}
+
+impl Upgrades {
+    /// The slots a saved list names, at most [`UPGRADE_SLOTS`] of them.
+    #[must_use]
+    pub fn new(slots: Vec<Upgrade>) -> Self {
+        Upgrades {
+            slots: slots.into_iter().take(UPGRADE_SLOTS).collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn slots(&self) -> &[Upgrade] {
+        &self.slots
+    }
+
+    /// How many slots are in use.
+    #[must_use]
+    pub fn used(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// How many of `kind` the router holds, summed over the slots holding it.
+    #[must_use]
+    pub fn count(&self, kind: &UpgradeKind) -> u32 {
+        self.slots
+            .iter()
+            .filter(|slot| slot.kind.item() == kind.item())
+            .map(|slot| slot.count)
+            .sum()
+    }
+
+    /// The Speed Upgrades installed (`getUpgradeCount(SPEED_UPGRADE)`).
+    #[must_use]
+    pub fn speed(&self) -> u32 {
+        self.count(&UpgradeKind::Speed)
+    }
+
+    /// The Stack Upgrades installed (`getUpgradeCount(STACK_UPGRADE)`).
+    #[must_use]
+    pub fn stack(&self) -> u32 {
+        self.count(&UpgradeKind::Stack)
+    }
+
+    /// Add one `kind`: the first slot of that kind with room, else a free slot.
+    /// False when five slots are all held by kinds at their limits.
+    #[must_use]
+    pub fn add(&mut self, kind: UpgradeKind) -> bool {
+        if let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.kind.item() == kind.item() && slot.count < slot.kind.per_slot())
+        {
+            slot.count += 1;
+            return true;
+        }
+        if self.slots.len() >= UPGRADE_SLOTS {
+            return false;
+        }
+        self.slots.push(Upgrade { kind, count: 1 });
+        true
+    }
+
+    /// Take one `kind` out, from the last slot holding it; true when the router
+    /// had one. The slot goes when that empties it.
+    #[must_use]
+    pub fn remove_one(&mut self, kind: &UpgradeKind) -> bool {
+        let Some(index) = self
+            .slots
+            .iter()
+            .rposition(|slot| slot.kind.item() == kind.item())
+        else {
+            return false;
+        };
+        self.slots[index].count -= 1;
+        if self.slots[index].count == 0 {
+            self.slots.remove(index);
+        }
+        true
+    }
+}
+
 /// The interval between two operations, given the router's Speed Upgrades
 /// (`compileUpgrades`: `max(2, 20 − 2 × speed)`).
 pub fn tick_rate(speed_upgrades: u32) -> u64 {
@@ -875,5 +1062,133 @@ mod tests {
             vec![[1, 100, 0], [2, 100, 0], [3, 100, 0]]
         );
         assert!(scan_positions([0, 100, 0], UP, 0).is_empty());
+    }
+
+    #[test]
+    fn the_two_upgrades_this_port_runs_keep_their_slot_limit_and_a_foreign_one_is_carried() {
+        assert_eq!(
+            UpgradeKind::of("modularrouters:speed_upgrade"),
+            UpgradeKind::Speed
+        );
+        assert_eq!(
+            UpgradeKind::of("modularrouters:stack_upgrade"),
+            UpgradeKind::Stack
+        );
+        assert!(UpgradeKind::of("modularrouters:speed_upgrade").is_known());
+        assert_eq!(UpgradeKind::Speed.item(), "modularrouters:speed_upgrade");
+        // `UpgradeItem.getInstalledStackLimit`: nine Speed in a slot, six Stack.
+        assert_eq!(UpgradeKind::Speed.per_slot(), 9);
+        assert_eq!(UpgradeKind::Stack.per_slot(), 6);
+        // Any other upgrade item keeps its id and fills its slot once.
+        let carried = UpgradeKind::of("example:fast_upgrade");
+        assert_eq!(
+            carried,
+            UpgradeKind::Registered("example:fast_upgrade".to_string())
+        );
+        assert!(!carried.is_known());
+        assert_eq!(carried.per_slot(), 1);
+        // The command's two words name the two this build runs.
+        assert_eq!(UpgradeKind::from_name("speed"), Some(UpgradeKind::Speed));
+        assert_eq!(UpgradeKind::from_name("stack"), Some(UpgradeKind::Stack));
+        assert_eq!(UpgradeKind::from_name("blast"), None);
+    }
+
+    #[test]
+    fn an_upgrade_slot_holds_one_kind_up_to_that_kinds_limit() {
+        let mut upgrades = Upgrades::default();
+        for _ in 0..SPEED_PER_SLOT {
+            assert!(upgrades.add(UpgradeKind::Speed));
+        }
+        assert_eq!(upgrades.speed(), SPEED_PER_SLOT);
+        assert_eq!(upgrades.used(), 1, "nine Speed upgrades share one slot");
+        // The tenth Speed upgrade opens a second slot.
+        assert!(upgrades.add(UpgradeKind::Speed));
+        assert_eq!(upgrades.speed(), 10);
+        assert_eq!(upgrades.used(), 2);
+        // Stack upgrades go in a slot of their own, six to it.
+        for _ in 0..STACK_PER_SLOT {
+            assert!(upgrades.add(UpgradeKind::Stack));
+        }
+        assert_eq!(upgrades.stack(), STACK_PER_SLOT);
+        assert_eq!(upgrades.used(), 3);
+        // The counts are what the two formulas read.
+        assert_eq!(tick_rate(upgrades.speed()), 2, "10 speed hits the floor");
+        assert_eq!(
+            items_per_operation(upgrades.stack()),
+            64,
+            "6 stack is the cap"
+        );
+    }
+
+    #[test]
+    fn five_full_slots_hold_forty_five_speed_upgrades_and_refuse_a_sixth_slot() {
+        let mut upgrades = Upgrades::default();
+        for _ in 0..(SPEED_PER_SLOT as usize * UPGRADE_SLOTS) {
+            assert!(upgrades.add(UpgradeKind::Speed));
+        }
+        assert_eq!(upgrades.used(), UPGRADE_SLOTS, "five slots, nine each");
+        assert_eq!(upgrades.speed(), 45);
+        assert_eq!(
+            tick_rate(upgrades.speed()),
+            HARD_MIN_TICK_RATE,
+            "45 Speed cannot go below the hard minimum of 2 ticks"
+        );
+        assert!(
+            !upgrades.add(UpgradeKind::Speed),
+            "a sixth slot does not exist"
+        );
+        assert!(!upgrades.add(UpgradeKind::Stack), "no slot is free for it");
+        assert_eq!(upgrades.speed(), 45);
+    }
+
+    #[test]
+    fn removing_an_upgrade_takes_one_and_frees_the_slot_it_empties() {
+        let mut upgrades = Upgrades::new(vec![
+            Upgrade::new(UpgradeKind::Speed, 2).expect("two speed upgrades"),
+            Upgrade::new(UpgradeKind::Stack, 1).expect("one stack upgrade"),
+        ]);
+        assert!(upgrades.remove_one(&UpgradeKind::Speed));
+        assert_eq!(upgrades.speed(), 1);
+        assert_eq!(upgrades.used(), 2, "the slot still holds one");
+        assert!(upgrades.remove_one(&UpgradeKind::Speed));
+        assert_eq!(upgrades.used(), 1, "an emptied slot is no slot");
+        assert!(!upgrades.remove_one(&UpgradeKind::Speed), "nothing is left");
+        assert!(upgrades.remove_one(&UpgradeKind::Stack));
+        assert_eq!(upgrades.stack(), 0);
+        assert!(upgrades.slots().is_empty());
+    }
+
+    #[test]
+    fn a_saved_upgrade_list_is_cut_to_five_slots_and_to_each_kinds_limit() {
+        let upgrades = Upgrades::new(vec![
+            Upgrade::new(UpgradeKind::Speed, 40).expect("40 saved, 9 kept"),
+            Upgrade::new(UpgradeKind::Stack, 40).expect("40 saved, 6 kept"),
+            Upgrade::new(UpgradeKind::of("example:fast_upgrade"), 4).expect("4 saved, 1 kept"),
+            Upgrade::new(UpgradeKind::Speed, 1).expect("one"),
+            Upgrade::new(UpgradeKind::Speed, 1).expect("one"),
+            Upgrade::new(UpgradeKind::Speed, 1).expect("one"),
+        ]);
+        assert_eq!(upgrades.used(), UPGRADE_SLOTS, "the sixth entry is cut");
+        assert_eq!(upgrades.slots()[0].count, SPEED_PER_SLOT);
+        assert_eq!(upgrades.slots()[1].count, STACK_PER_SLOT);
+        assert_eq!(
+            upgrades.slots()[2].count,
+            1,
+            "an upgrade this port does not run fills its slot once"
+        );
+        assert_eq!(upgrades.count(&UpgradeKind::of("example:fast_upgrade")), 1);
+        // A slot holds at least one: an empty entry is not a slot at all.
+        assert_eq!(Upgrade::new(UpgradeKind::Speed, 0), None);
+    }
+
+    #[test]
+    fn a_foreign_upgrade_survives_the_slot_list_it_is_carried_in() {
+        let mut upgrades = Upgrades::new(vec![
+            Upgrade::new(UpgradeKind::of("example:fast_upgrade"), 1).expect("one foreign upgrade"),
+        ]);
+        assert!(upgrades.add(UpgradeKind::Speed));
+        assert_eq!(upgrades.slots().len(), 2);
+        assert_eq!(upgrades.slots()[0].kind.item(), "example:fast_upgrade");
+        assert_eq!(upgrades.speed(), 1);
     }
 }

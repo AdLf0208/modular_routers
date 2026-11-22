@@ -1,5 +1,63 @@
 # Modular Routers — validation ladder
 
+## 0.2.4 — the Speed/Stack upgrades and the five upgrade slots (2026-11-22)
+
+Pin: SDK nightly **`0a875da91dbbf0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 4: `UpgradeKind`/`Upgrade`/
+`Upgrades` (five slots, 9 Speed and 6 Stack per slot, a foreign id carried), the `Upgrades` save key
+(upstream's), right-click install, `/modularrouters upgrade <pos> <add|remove> <speed|stack>`, and the
+three carried items with their recipes. Unit work: 9 new tests, 39 in all.
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `tools/e2e.sh` phase L on the **0.2.3** package (red) | `FAIL: give modularrouters:blank_upgrade failed (is the upgrade in this package?)`, `EXIT:1` | `modularrouters-e2e/e2e-red-upgrade.log` |
+| 2 | `cargo test --offline` before the types existed (red) | 82 errors (`cannot find type UpgradeKind`), `could not compile … (lib test)` | `slice4-test-red.log` |
+| 3 | `launcher-game.sh build modularrouters` (manifest 0.2.3 → 0.2.4) | `Compiling modularrouters (1 of 1)` — no cached-package reuse | `modularrouters-e2e/game-build-0.2.4.log` |
+| 4 | `cargo test --offline` | **39 passed**, 0 failed | `slice4-test.log` (= `sdk-test.log`) |
+| 5 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice4-clippy.log` (= `sdk-clippy.log`) |
+| 6 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice4-fmt.log` (= `sdk-fmt.log`) |
+| 7 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | `0a875da` build, second `cmp`-identical, **77,994 B** | `slice4-build.log`, `slice4-build-second.log` |
+| 8 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.4 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `77994 bytes, SHA-256 52e4ebe3…c621`, **exit 0** | `sdk-check.log` |
+| 9 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 10 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 11 | `unzip -l modularrouters.hmod` | **65 entries**, no `Cargo.lock` | `slice4-entries.txt` |
+| 12 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (39 tests) | `verify-sdk-package.log` |
+| 13 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, L, J1–J4, K | `modularrouters-e2e/e2e-launcher-0.2.4.log` |
+| 14 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.4.log` |
+| 15 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.4.log` |
+| 16 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=16 ok=16` | — |
+| 17 | `python3 ports/tools/check-skills.py --notes ports/modularrouters --strict` | PASS | — |
+
+Two harness runs failed before the green one and are kept as evidence, because each named a real
+fact about the platform rather than about the port: `e2e-0.2.4-timing-red.log` (a chest cannot be
+replaced by a chest at this pin, so the window counted cumulative items) and `e2e-0.2.4-message-red.log`
+(the "no upgrade installed" reply names the item id, which the assertion did not expect).
+
+### What phase L proves (parity rule)
+
+| Step | Assertion |
+|---|---|
+| L, items | `blank_upgrade`, `speed_upgrade` and `stack_upgrade` are given and read back from the inventory; the package's `modularrouters:upgrades` tag lists both upgrades it runs |
+| L, baseline | two routers with a puller + sender move exactly **one** item per operation (`+1` on 7 sampled operations each) |
+| L, Stack | a right-click with the stack upgrade installs it: `2 item(s) every 20 ticks`, `0 speed / 1 stack upgrade(s) of 5`, and **every** sampled operation moves `+2` while the router beside it moves `+1` |
+| L, Speed | a right-click with the speed upgrade: `2 item(s) every 18 ticks`, `1 speed / 1 stack upgrade(s) of 5`; three more in the same slot: `12 ticks`, `4 speed` |
+| L, interval | a tick-exact 360-tick window: **60** stone from the 12-tick router against **18** from the un-upgraded one |
+| L, removal | `upgrade … remove speed` → `3 speed`, `14 ticks`, and the item arrives in the inventory; removing the stack upgrade → `1 item(s) every 14 ticks`; emptying both → `0 speed / 0 stack`, `20 ticks`; one more remove → `no modularrouters:speed_upgrade installed` |
+| L, slots | a `/data merge`d five-slot list of 9 Speed each reads `45 speed` and clamps to `1 item(s) every 2 ticks`; `upgrade add speed` answers `all 5 upgrade slots are full` and changes nothing |
+| L, registry | a right-click with `minecraft:gunpowder` (the world pack's `modularrouters:upgrades` tag) answers `… is an upgrade this build does not install` and leaves the router's slots alone |
+| L, save | quit + relaunch: `1 speed / 1 stack upgrade(s) of 5`, `2 item(s) every 18 ticks`, and the router still moves `+2` per operation |
+| J1, recipes | blank (×4), Speed (×3) and Stack (×1) upgrades craft their declared id and count in a real table, the grid empties, the distinctive ingredient is consumed, and one wrong-ingredient control per recipe crafts nothing |
+
+### Delivered package (0.2.4)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 77,994 B | `52e4ebe3fc95a163ae5a815b38cffd25c61b5b36c40675d683c04742cc45c621` | 65 |
+
 ## 0.2.3 — the registered-module path (2026-11-21)
 
 Pin: SDK nightly **`0a875da91dbbf0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

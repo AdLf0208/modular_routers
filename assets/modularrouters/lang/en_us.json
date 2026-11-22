@@ -3,5 +3,8 @@
   "item.modularrouters.blank_module": "Blank Module",
   "item.modularrouters.puller_module_1": "Puller Module Mk1",
   "item.modularrouters.sender_module_1": "Sender Module Mk1",
+  "item.modularrouters.blank_upgrade": "Blank Upgrade",
+  "item.modularrouters.speed_upgrade": "Speed Upgrade",
+  "item.modularrouters.stack_upgrade": "Stack Upgrade",
   "itemGroup.modularrouters.modularrouters": "Modular Routers"
 }

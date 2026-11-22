@@ -1,10 +1,13 @@
 # Modular Routers for Horizon
 
-A router block that runs item-transfer modules every 20 ticks, and the two Mk1
-modules of the original mod: a **Puller Module Mk1** that takes items from the
+A router block that runs item-transfer modules every 20 ticks, the two Mk1
+modules of the original mod — a **Puller Module Mk1** that takes items from the
 container beside the router into its one-slot buffer, and a **Sender Module Mk1**
 that pushes them into the first container along its facing (up to 8 blocks, 16
-with range upgrades — augments are not carried yet).
+with range upgrades — augments are not carried yet) — and the two upgrades the
+router's own numbers are about, in its **five upgrade slots**: a **Speed Upgrade**
+shortens the operation interval by two ticks (20 → 18 → 16 … down to 2), a
+**Stack Upgrade** doubles the items one operation moves (1 → 2 → 4 … up to 64).
 
 Ported from Modular Routers 13.2.7 (`desht/ModularRouters`, MIT) as a
 clean-room rewrite for Horizon 26.3, built against SDK nightly `0a875da`
@@ -27,10 +30,14 @@ its code).
 ## Use
 
 Craft the router (4 per recipe), a blank module (6), then a puller (blank module
-+ sticky piston) or a sender (blank module + bow + arrows).
++ sticky piston) or a sender (blank module + bow + arrows). A blank upgrade takes
+4 paper, 3 gold nuggets and a lapis; a Speed Upgrade (3) is redstone, gold and
+gunpowder around it with a blaze rod; a Stack Upgrade is a blank upgrade, stone
+bricks and bricks.
 
 1. Place the router: it faces away from you.
-2. Right-click it with a module to install it (up to 9).
+2. Right-click it with a module to install it (up to 9), or with an upgrade to put
+   it in one of the five upgrade slots (nine Speed or six Stack fit in a slot).
 3. Set each module's direction relative to the router:
 
    ```
@@ -39,18 +46,21 @@ Craft the router (4 per recipe), a blank module (6), then a puller (blank module
    /modularrouters install <x> <y> <z> <slot> modularrouters:sender_module_1
    /modularrouters remove <x> <y> <z> <slot>
    /modularrouters filter <x> <y> <z> <slot> whitelist|blacklist|add|remove|clear <item>
+   /modularrouters upgrade <x> <y> <z> add|remove speed|stack
    ```
 
-4. Right-click with an empty hand for the router's state (facing, modules, buffer,
-   rate). Idle routers show `active=false`; working ones light their front face.
+4. `/modularrouters info` is the screen: facing, modules, buffer, the rate, and
+   how many Speed/Stack upgrades the five slots hold. Idle routers show
+   `active=false`; working ones light their front face.
 
 A puller takes one item per second from the container it points at; a sender
-delivers one per second to the first container in its line of sight. The buffer
-is the block's item container on every side, so hoppers and pipes can fill or
-empty it.
+delivers one per second to the first container in its line of sight. Each Speed
+Upgrade takes two ticks off that second, each Stack Upgrade doubles what one
+operation moves. The buffer is the block's item container on every side, so
+hoppers and pipes can fill or empty it.
 
-The screen, the other 21 modules, upgrades, augments and smart filters are not
-ported yet — see `notes.md`.
+The screen, the other 21 modules, the other 8 upgrades, augments and smart
+filters are not ported yet — see `notes.md`.
 
 ### Modules from another mod
 
@@ -68,6 +78,16 @@ pin `0a875da` a content mod may only write its own namespace (plus `minecraft`
 and `c` tags), so another mod's module item joins the tag through a world data
 pack or by being part of the same game content — not through that mod's own
 `.hmod`.
+
+### Upgrades
+
+`#modularrouters:upgrades` is the same kind of registry, and the router's five
+slots hold what it lists — but only **Speed** and **Stack** have a formula here,
+so an upgrade item the tag names and this build does not run is refused with a
+message instead of being counted as one it can. The slots are saved under
+upstream's own `Upgrades` key, one kind per slot, and an entry for a build this
+port does not run is kept verbatim, so a newer save's or another mod's upgrade is
+not erased by the next install.
 
 ## Build
 

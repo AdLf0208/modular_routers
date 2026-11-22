@@ -3,7 +3,7 @@
 
 Called by `tools/e2e.sh` with the open game's control socket. The harness's
 crafting table exposes the 3x3 grid as slots 100-108 (row-major) and the result
-as 200 (`ctl screen`). For each of the four carried recipes this:
+as 200 (`ctl screen`). For each of the seven carried recipes this:
 
 1. replaces the table (a fresh block entity, so a stale grid cannot leak in)
    and clears the inventory;
@@ -14,7 +14,7 @@ as 200 (`ctl screen`). For each of the four carried recipes this:
 6. asserts the grid is empty and the recipe's distinctive ingredient was
    consumed.
 
-Two deliberately wrong patterns must leave the result empty, so the check cannot
+Five deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -36,6 +36,9 @@ BLANK = "modularrouters:blank_module"
 ROUTER = "modularrouters:modular_router"
 PULLER = "modularrouters:puller_module_1"
 SENDER = "modularrouters:sender_module_1"
+BLANK_UPGRADE = "modularrouters:blank_upgrade"
+SPEED_UPGRADE = "modularrouters:speed_upgrade"
+STACK_UPGRADE = "modularrouters:stack_upgrade"
 
 
 def main() -> int:
@@ -188,6 +191,48 @@ def main() -> int:
         ],
         SENDER, 1, "minecraft:bow",
     )
+    check(
+        "blank upgrade: 4 paper + 3 gold nuggets + a lapis, four at a time",
+        [("minecraft:paper", 4), ("minecraft:gold_nugget", 3),
+         ("minecraft:lapis_lazuli", 1)],
+        [
+            ("minecraft:paper",
+             every(GRID["tl"], GRID["tm"], GRID["ml"], GRID["bm"])),
+            ("minecraft:gold_nugget", every(GRID["tr"], GRID["mr"], GRID["br"])),
+            ("minecraft:lapis_lazuli", every(GRID["mm"])),
+        ],
+        BLANK_UPGRADE, 4, "minecraft:lapis_lazuli",
+    )
+    check(
+        "speed upgrade: redstone over gold over gunpowder, a blaze rod up the middle, three at a time",
+        [
+            ("minecraft:redstone", 2),
+            ("minecraft:gold_ingot", 1),
+            ("minecraft:gold_nugget", 2),
+            (BLANK_UPGRADE, 1),
+            ("minecraft:gunpowder", 2),
+            ("minecraft:blaze_rod", 1),
+        ],
+        [
+            ("minecraft:redstone", every(GRID["tl"], GRID["tr"])),
+            ("minecraft:gold_ingot", every(GRID["tm"])),
+            ("minecraft:gold_nugget", every(GRID["ml"], GRID["mr"])),
+            (BLANK_UPGRADE, every(GRID["mm"])),
+            ("minecraft:gunpowder", every(GRID["bl"], GRID["br"])),
+            ("minecraft:blaze_rod", every(GRID["bm"])),
+        ],
+        SPEED_UPGRADE, 3, "minecraft:blaze_rod",
+    )
+    check(
+        "stack upgrade: a blank upgrade, stone bricks and bricks, shapeless",
+        [(BLANK_UPGRADE, 1), ("minecraft:stone_bricks", 1), ("minecraft:bricks", 1)],
+        [
+            (BLANK_UPGRADE, every(GRID["tl"])),
+            ("minecraft:stone_bricks", every(GRID["mm"])),
+            ("minecraft:bricks", every(GRID["br"])),
+        ],
+        STACK_UPGRADE, 1, "minecraft:bricks",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -214,13 +259,51 @@ def main() -> int:
             ("minecraft:stick", every(GRID["br"])),
         ],
     )
+    empty_control(
+        "blank upgrade with a stick where the lapis goes",
+        [("minecraft:paper", 4), ("minecraft:gold_nugget", 3), ("minecraft:stick", 1)],
+        [
+            ("minecraft:paper",
+             every(GRID["tl"], GRID["tm"], GRID["ml"], GRID["bm"])),
+            ("minecraft:gold_nugget", every(GRID["tr"], GRID["mr"], GRID["br"])),
+            ("minecraft:stick", every(GRID["mm"])),
+        ],
+    )
+    empty_control(
+        "speed upgrade with paper where the blank upgrade goes",
+        [
+            ("minecraft:redstone", 2),
+            ("minecraft:gold_ingot", 1),
+            ("minecraft:gold_nugget", 2),
+            ("minecraft:paper", 1),
+            ("minecraft:gunpowder", 2),
+            ("minecraft:blaze_rod", 1),
+        ],
+        [
+            ("minecraft:redstone", every(GRID["tl"], GRID["tr"])),
+            ("minecraft:gold_ingot", every(GRID["tm"])),
+            ("minecraft:gold_nugget", every(GRID["ml"], GRID["mr"])),
+            ("minecraft:paper", every(GRID["mm"])),
+            ("minecraft:gunpowder", every(GRID["bl"], GRID["br"])),
+            ("minecraft:blaze_rod", every(GRID["bm"])),
+        ],
+    )
+    empty_control(
+        "stack upgrade with paper where the blank upgrade goes",
+        [("minecraft:paper", 1), ("minecraft:stone_bricks", 1), ("minecraft:bricks", 1)],
+        [
+            ("minecraft:paper", every(GRID["tl"])),
+            ("minecraft:stone_bricks", every(GRID["mm"])),
+            ("minecraft:bricks", every(GRID["br"])),
+        ],
+    )
 
     if failures:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  four carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and two wrong-ingredient controls craft nothing")
+    print("  seven carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and five wrong-ingredient controls craft nothing")
     return 0
 
 
