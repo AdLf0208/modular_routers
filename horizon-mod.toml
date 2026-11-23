@@ -1,6 +1,6 @@
 id = "modularrouters"
 name = "Modular Routers"
-version = "0.2.10"
+version = "0.2.11"
 description = """A port of Modular Routers for Horizon: a router block entity with nine module slots, five upgrade
 slots and a one-slot buffer that runs its installed modules every 20 ticks — a Puller Mk1 takes an item
 from the container beside it into the buffer, a Puller Mk2 takes from the container you select up to
@@ -9,8 +9,8 @@ Sender Mk2 inserts into the container you select up to twenty-four blocks away, 
 Void Module destroys what its filter accepts in the buffer, a Speed Upgrade shortens the interval by
 two ticks, a Stack Upgrade doubles the items per operation, the Range Augments move a module's reach
 one block each in its four augment slots, a Stack Augment sets how many items one operation of that
-module moves, and a Regulator Augment makes an operation leave the module's saved amount of the item
-in the source.
+module moves, and a Regulator Augment turns the module's saved amount on: a pull leaves that many of
+the item in its source, and a send tops its target up to it.
 The router block, its modules, its upgrades, its augments and their models, textures, lang, recipes,
 loot and tags travel in this one package beside the code, so a single .hmod installs both halves."""
 authors = ["Des Herriott", "AdLf0208"]

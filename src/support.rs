@@ -31,7 +31,7 @@ use crate::runtime::{
     UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, buffer_after_pull, buffer_after_send,
     face_of_normal, facing_for_placement, facing_of_state, in_range, is_operation_tick,
     items_per_operation, parse_pos, phase_of, pick_pull, pick_send, pick_void, scan_positions,
-    side_towards, step, tick_rate,
+    send_quota, side_towards, step, tick_rate,
 };
 
 /// The router block (and its item).
@@ -663,12 +663,32 @@ fn send_to(
         return false;
     };
     let buffer = saved_stack(&*host, &stack);
-    let Some((_, wanted)) = pick_send(Some(&buffer), &module.filter, items) else {
+    let Some((_, items)) = pick_send(Some(&buffer), &module.filter, items) else {
         return false;
     };
     let Some(container) = handler(host, level, target, face) else {
         return false;
     };
+    // A Regulator Augment's amount is the target's floor: count what it already
+    // holds (`InventoryUtils.countItems`, capped at the amount) and send only the
+    // room left, nothing once it holds the amount.
+    let amount = module.regulation_amount();
+    let wanted = if amount == 0 {
+        items
+    } else {
+        let offered = read_offered(host, &container);
+        let existing = offered
+            .slots
+            .iter()
+            .filter(|slot| slot.is(&buffer))
+            .map(|slot| slot.count)
+            .sum::<u32>()
+            .min(amount);
+        send_quota(items, amount, existing)
+    };
+    if wanted == 0 {
+        return false;
+    }
     let resource = ItemResource::of(&stack);
     let sent = host
         .transaction(|host, tx| Ok::<u32, ()>(container.insert_any(host, tx, &resource, wanted)))
@@ -2111,15 +2131,31 @@ fn set_regulation(
     let Ok(amount) = u32::try_from(amount) else {
         return "Modular Router: the regulation amount cannot be negative".to_string();
     };
+    let mut found = false;
+    let mut sender = false;
+    let mut had_augment = false;
     let applied = edit_module(host, level, pos, slot, |module| {
+        found = true;
+        sender = module.kind.is_sender();
         if module.augments().count(&AugmentKind::Regulator) == 0 {
             return false;
         }
+        had_augment = true;
         module.set_regulation(amount);
         true
     });
+    // A sender's amount is the floor it tops its target up to; a puller's and a
+    // void's is what they leave in the source.
+    let place = if sender { "target" } else { "source" };
+    // Setting the amount a module already has changes no data, so the write answers
+    // false: that is "already set", not "no augment" (found in game 2026-11-23 —
+    // re-entering the same amount answered *has no regulator augment*).
     if applied {
-        format!("Modular Router: module {slot} leaves {amount} item(s) in the source")
+        format!("Modular Router: module {slot} leaves {amount} item(s) in the {place}")
+    } else if !found {
+        format!("Modular Router: no module in slot {slot}")
+    } else if had_augment {
+        format!("Modular Router: module {slot} already leaves {amount} item(s) in the {place}")
     } else {
         format!("Modular Router: module {slot} has no regulator augment")
     }
@@ -2370,6 +2406,48 @@ mod tests {
             lines[1],
             "module 0 at 80,100,0: modularrouters:sender_module_2 dir=front target=north \
              range=24 filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn a_senders_line_names_the_regulation_amount_it_will_keep_in_the_target() {
+        // The same augment rule on the other half of the module: a Sender with a
+        // Regulator Augment tops its target up to the saved amount
+        // (`CompiledSenderModule1.execute`), so its line names the amount exactly
+        // as the pull side's does — and a Sender cannot have one unless the augment
+        // is in a slot.
+        let mut nbt = Compound::new();
+        let mut entry = Compound::new();
+        entry.insert(MODULE_ITEM.into(), Tag::String(ModuleKind::SENDER.into()));
+        entry.insert(MODULE_DIR.into(), Tag::String("front".into()));
+        entry.insert(MODULE_REGULATE.into(), Tag::Int(10));
+        nbt.insert(KEY_MODULES.into(), Tag::List(vec![Tag::Compound(entry)]));
+        let modules = read_modules(&nbt);
+        assert_eq!(modules[0].regulation(), 10, "the saved amount is kept");
+        assert_eq!(
+            modules[0].regulation_amount(),
+            0,
+            "the amount is inert without the augment, as the screen hides its field"
+        );
+        let lines = describe([80, 100, 0], Facing::North, false, &modules, None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 80,100,0: modularrouters:sender_module_1 dir=front target=north \
+             range=8 filter blacklist none"
+        );
+        let with = vec![
+            Module::new(ModuleKind::SenderMk1, Relative::Front, Filter::any())
+                .with_regulation(10)
+                .with_augments(Augments::new(vec![
+                    Augment::new(AugmentKind::Regulator, 1).expect("one regulator"),
+                ])),
+        ];
+        assert_eq!(with[0].regulation_amount(), 10);
+        let lines = describe([80, 100, 0], Facing::North, false, &with, None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 80,100,0: modularrouters:sender_module_1 dir=front target=north \
+             range=8 regulate=10 augments regulator filter blacklist none"
         );
     }
 

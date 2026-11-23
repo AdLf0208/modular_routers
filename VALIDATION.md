@@ -1,5 +1,66 @@
 # Modular Routers — validation ladder
 
+## 0.2.11 — the Regulator Augment's sender half (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 11: the same augment's rule on
+the send side — `CompiledSenderModule1.execute` counts the target's matching items (capped at the
+amount) and sends `min(itemsPerTick, amount − existing)`, nothing once the target holds the amount.
+`runtime::send_quota` is the arithmetic; `support::send_to` resolves the target's handler first and
+counts its slots with the port's own resource identity (`Slot::is`: item id + component key);
+`ModuleKind::is_sender` makes `/modularrouters regulate` name the target rather than the source.
+The 0.2.10 brief's own next-slice, `sender_module_3`, was probed in the same session and is
+**`blocked(cross-level-capability)`** — the measurement is in [`notes.md`](notes.md#blocked-the-sender-module-mk3--blockedcross-level-capability-probe-2026-11-23)
+and its log is `modularrouters-e2e/probe-sender3-cross-level.log`; nothing of it ships.
+
+Every compile step ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before `send_quota` existed (red) | **6 errors**, `cannot find function send_quota`, `could not compile … (lib test)`, exit 101 | `slice11-test-red.log` |
+| 2 | `tools/e2e.sh` phase S on the **0.2.10** game (red) | every rig ignores the amount: S1/S3 send all 8 (14/0, 18/0); `FAIL: the regulated Mk1 sent 8 item(s) into a chest of six, not the four that fill it to the amount of ten`, `EXIT:1` | `modularrouters-e2e/e2e-red-regulate.log` |
+| 3 | `launcher-game.sh build modularrouters` (manifest 0.2.10 → 0.2.11, the stale `native-*` tag removed first) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.11** (`09f28193…`), one library `libmodularrouters.so` (`385d7edb808f…`) | `modularrouters-e2e/game-build-0.2.11.log` |
+| 4 | `cargo test --offline` | **69 passed**, 0 failed | `slice11-test.log` (= `sdk-test.log`) |
+| 5 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice11-clippy.log` (= `sdk-clippy.log`) |
+| 6 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice11-fmt.log` (= `sdk-fmt.log`) |
+| 7 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **125,520 B** | `slice11-build.log`, `slice11-build-second.log` |
+| 8 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.11 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `125520 bytes, SHA-256 3431d2f6…94e4`, **exit 0** | `sdk-check.log` |
+| 9 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 10 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 11 | `unzip -l modularrouters.hmod` | **111 entries**, no `Cargo.lock` | `slice11-entries.txt` |
+| 12 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, K, L, M, N, O, P, Q, R, **S**, J1–J4 (package `3431d2f6…`) | `modularrouters-e2e/e2e-launcher-0.2.11.log` |
+| 13 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.11.log` |
+| 14 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.11.log` |
+| 15 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=49 ok=49`, 0 missing/bad exit lines | — |
+| 16 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (69 tests, package = tree, no lock) | `verify-sdk-package.log` |
+
+### What phase S proves (parity rule)
+
+Four rigs at the End arena's south edge, each with **eight stone** written into its buffer after
+every module was configured (an empty buffer moves nothing while the rig is set up), then fifteen
+operations at the 20-tick interval (`ctl wait 100` is five):
+
+| rig | module | target before | after |
+|---|---|---|---|
+| S1 (80,100,8) | Sender Mk1, Regulator Augment, `/modularrouters regulate … 10` | chest `80,100,6` holds **6** | **chest 10, buffer 4** |
+| S2 (82,100,8) | the identical Sender Mk1, **no** augment | chest `82,100,6` holds **6** | **chest 14, buffer 0** |
+| S3 (84,100,8) | Sender Mk1 + augment, amount 10 | chest `84,100,6` holds **10** | **chest 10, buffer 8** |
+| S4 (78,100,8) | Sender Mk2 + augment, amount 10, target selected by command | chest `78,100,-2` holds **6** | **chest 10, buffer 4** |
+
+- **S1 is the feature**: four of the buffer's eight go, filling the chest to the amount, and the
+  operation then stops (the other four stay in the buffer for fifteen operations).
+- **S2 is the differential**: no augment, same chest, same interval → all eight go (14 / 0), so the
+  four is the augment's and its amount, not the harness or a slow router.
+- **S3 is the boundary**: a chest already at the amount is never touched (10 / 8) — the rule is
+  "top up to", not "send up to the amount" (which would send eight).
+- **S4 is a different module and target rule**: the targeted Sender Mk2 tops its selected chest up the
+  same way, so the count is `send_to`'s, not the Mk1 scan's.
+- The reply names where the amount is kept (`in the target` for a send, `in the source` for a pull),
+  and re-setting the amount it already has says **already leaves …** instead of claiming no augment —
+  the port defect phase S found on its first green run and the fix it now pins.
+
 ## 0.2.10 — the Sender Module Mk2 (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

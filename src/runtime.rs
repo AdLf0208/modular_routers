@@ -326,6 +326,14 @@ impl ModuleKind {
         )
     }
 
+    /// Whether the module moves items **out of the buffer into a container** (a
+    /// sender): its regulation amount is the floor the target is topped up to,
+    /// where a puller's or a void's is what is left in the source.
+    #[must_use]
+    pub fn is_sender(&self) -> bool {
+        matches!(self, ModuleKind::SenderMk1 | ModuleKind::SenderMk2)
+    }
+
     /// Whether the module works on a block the player **selected** rather than the
     /// one beside it (`ModuleItem.isDirectional` is false for a targeted module,
     /// so its relative direction names nothing).
@@ -720,7 +728,7 @@ impl Slot {
 
     /// Whether this slot holds the resource `stack` is.
     #[must_use]
-    fn is(&self, stack: &Stack) -> bool {
+    pub(crate) fn is(&self, stack: &Stack) -> bool {
         self.item == stack.item && self.extra == stack.extra
     }
 }
@@ -1324,6 +1332,21 @@ pub fn pick_send(buffer: Option<&Stack>, filter: &Filter, items: u32) -> Option<
         return None;
     }
     Some((stack.item.clone(), items.min(stack.count)))
+}
+
+/// What one sender operation may move: the module's items-per-operation, capped
+/// by the room a Regulator Augment's amount leaves in the target.
+///
+/// `CompiledSenderModule1.execute`: with `getRegulationAmount() > 0` it counts the
+/// target's matching items (up to the amount) and sends
+/// `min(getItemsPerTick, amount − existing)`, moving nothing when that is not
+/// positive. `amount = 0` is exactly the pre-augment behaviour.
+#[must_use]
+pub fn send_quota(items: u32, amount: u32, existing: u32) -> u32 {
+    if amount == 0 {
+        return items;
+    }
+    items.min(amount.saturating_sub(existing))
 }
 
 /// What one void operation destroys: this many of the buffered stack, never more
@@ -1938,6 +1961,29 @@ mod tests {
         // The reach rule is the one the Mk2 already uses (`isTargetValid`).
         assert!(!in_range([80, 100, 0], [80, 100, -25], 24));
         assert!(in_range([80, 100, 0], [80, 100, -25], 25));
+    }
+
+    #[test]
+    fn a_sender_tops_the_target_up_to_the_regulation_amount() {
+        // `CompiledSenderModule1.execute`: with `getRegulationAmount() > 0` the send
+        // is `min(getItemsPerTick, amount − existing)`, where `existing` counts the
+        // target's matching items (capped at the amount) and nothing at all moves
+        // once the target holds the amount.
+        assert_eq!(send_quota(8, 0, 0), 8, "no amount: the module's own count");
+        assert_eq!(send_quota(8, 10, 6), 4, "ten wanted, six there: four go");
+        assert_eq!(
+            send_quota(1, 10, 6),
+            1,
+            "never more than items per operation"
+        );
+        assert_eq!(send_quota(8, 3, 0), 3, "never more than the amount");
+        assert_eq!(send_quota(8, 10, 10), 0, "the target holds the amount");
+        assert_eq!(send_quota(8, 10, 14), 0, "and more than the amount");
+        // The amount is the *target's* floor on a sender and the *source's* on a
+        // puller, which is what `/modularrouters regulate`'s reply names.
+        assert!(ModuleKind::SenderMk1.is_sender() && ModuleKind::SenderMk2.is_sender());
+        assert!(!ModuleKind::PullerMk1.is_sender() && !ModuleKind::PullerMk2.is_sender());
+        assert!(!ModuleKind::Void.is_sender());
     }
 
     #[test]

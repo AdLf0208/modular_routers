@@ -6,13 +6,14 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.10** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.11** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
 (the three of those on 2026-11-22), 0.2.6 the Range Augments in a module's four augment slots,
 0.2.7 the Stack Augment (both on 2026-11-23), 0.2.8 the Regulator Augment, 0.2.9 the Void
-Module and 0.2.10 the targeted Sender Mk2 (all three on 2026-11-23). Pin: SDK
+Module, 0.2.10 the targeted Sender Mk2 and 0.2.11 the Regulator Augment's **sender** half
+(all on 2026-11-23). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -322,6 +323,11 @@ no `--target-dir`); logs in `ports/_shared/evidence/modularrouters/`.
 
 **None of the jar's own behaviour was broken** in slice 1: the router constants, the module filters
 and the two Mk1 operations agree with their own data, and nothing reproduced an upstream defect.
+
+**Slice 11 found no upstream defect**, and one **port** defect of its own in game: re-saving a
+module's regulation amount when it already had that value answered *"has no regulator augment"* (the
+write changed no data, and the command read "nothing changed" as "no augment"). Fixed and pinned by
+phase S — see [*Slice 11*](#slice-11-2026-11-23--the-regulator-augments-sender-half-0211).
 
 **Three carry errors of the same class were found and fixed in slice 2** (2026-11-21). They are not
 upstream defects: the Java mod is correct, and the **data this port carried was written in the
@@ -1776,6 +1782,218 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.10: **124,155 B**, SHA-256 `a6da9bf8dac0b6082b52e6d4832e966e74a3b8f219acfbbe4a97e0687b15469e`,
 111 entries, no `Cargo.lock`.
 
+## Slice 11 (2026-11-23) — the Regulator Augment's sender half (0.2.11)
+
+Slice chosen from this file's own gap list, **gap 1c** — *"**The sender's regulator amount**:
+upstream's `CompiledSenderModule1.execute` also reads `getRegulationAmount()` — it counts the
+target's contents and sends only while the target holds fewer than the amount. Slice 8 implemented
+the rule on the **pull** side only, so a Regulator Augment on a sender is carried and shown but
+changes nothing here."* The brief's call: make it work or keep it inert with a coverage row —
+**made to work**, because it is the same augment's rule on the other half of the same module and it
+is `machines` tier (the module's saved amount, the target's container and the router's tick). The
+0.2.10 brief's own next-slice (`sender_module_3`) was probed in the same session and is **blocked**;
+that measurement follows this section.
+
+### The artefact's rule, re-read
+
+At the same commit as slices 5–10 (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`):
+
+| upstream | what it says | used for |
+|---|---|---|
+| `logic/compiled/CompiledSenderModule1.execute:31-40` | `nToSend = min(getItemsPerTick, getRegulationAmount() − existing)`, `return false` when that is not positive | `runtime::send_quota` |
+| `util/InventoryUtils.countItems:94-112` | sums the target's slots holding the item, capped at `max` (`matchMeta` compares damage) | the count in `support::send_to` |
+| `logic/compiled/CompiledModule.getRegulationAmount:154` | the amount only while the Regulator Augment is installed | `Module::regulation_amount()` (slice 8, unchanged) |
+
+So the amount is the **target's floor** on a send: the operation tops the target up to it and stops,
+while on a pull (and on the Void Module) it is what is left in the source. `amount = 0` — the default
+and every module without the augment — is exactly the old behaviour.
+
+### How it works here
+
+- **`src/runtime.rs`** — `send_quota(items, amount, existing)`: `amount == 0` → `items`, otherwise
+  `items.min(amount − existing)` (0 included, which is "no operation"). `ModuleKind::is_sender()`
+  (the two Senders) so the command's reply can name the right place.
+- **`src/support.rs`** — `send_to` (the one insert the Mk1, the Mk2 and the Void's siblings all use)
+  resolves the target's handler **before** it decides how many items to send, counts the target's
+  matching slots with the port's own resource test (`Slot::is`: item id **and** component key — the
+  identity `pick_pull` already uses; upstream compares item id and damage), caps that at the amount,
+  and sends `send_quota(...)`. `/modularrouters regulate` answers *leaves N item(s) in the **target*** for
+  a sender and *in the source* for a puller or a void.
+- No content change: the augment, its recipe and its slot are slice 8's.
+
+### A defect the in-game leg found (and neither `check` nor a unit test could)
+
+**Re-saving the amount a module already had answered *"has no regulator augment".*** Setting the
+value changes no saved data, so `edit_router`'s write reported "nothing changed", and the command
+read that as the augment being absent. Found by phase S's own assertion on the green run
+(`FAIL: expected the reply to say 'Modular Router: module 0 leaves 10 item(s) in the target'`), fixed
+by telling the three cases apart — the write applied, the module is not there, the amount is already
+set — and pinned by the same phase (`already leaves 11 item(s) in the target`).
+
+Before that, the *behaviour* had already been proven: the red run below is the un-fixed behaviour.
+
+### TDD, in the order the ruling asks for
+
+**Red, unit** — `runtime::tests::a_sender_tops_the_target_up_to_the_regulation_amount` and
+`support::tests::a_senders_line_names_the_regulation_amount_it_will_keep_in_the_target` written
+first, run on the untouched tree (`slice11-test-red.log`, **6 errors**, `cargo` exit 101):
+
+```
+error[E0425]: cannot find function `send_quota` in this scope
+    --> src/runtime.rs:2076:20
+error: could not compile `modularrouters` (lib test) due to 6 previous errors
+```
+
+**Red, in game** — phase S written first and run on the shipped **0.2.10** game (rebuilt from the
+0.2.10 sources, `game-build-0.2.10-rebuild.log`, `native-mods.json` 0.2.10 `532d6ed3…`): every one of
+the four rigs ignores the amount (`e2e-red-regulate.log`).
+
+```
+  S1/S2/S3 chests before: 6 / 6 / 10; S4's chest 6
+  S1 (Mk1 + regulator 10, target at 6): the chest holds 14, the buffer 0
+  S2 (the same Mk1, no augment):         the chest holds 14, the buffer 0
+  S3 (Mk1 + regulator 10, target at 10): the chest holds 18, the buffer 0
+  S4 (Mk2 + regulator 10, target at 6):  the chest holds 14, the buffer 0
+FAIL: the regulated Mk1 sent 8 item(s) into a chest of six, not the four that fill it to the amount of ten
+EXIT:1
+```
+
+Then the minimal implementation, then the same phase green.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.11.log`)
+
+```
+== S: the sender-side regulator amount — a send tops the target up to it ==
+  S1/S2/S3 chests before: 6 / 6 / 10; S4's chest 6
+  S1 (Mk1 + regulator 10, target at 6): the chest holds 10, the buffer 4
+  S2 (the same Mk1, no augment):         the chest holds 14, the buffer 0
+  S3 (Mk1 + regulator 10, target at 10): the chest holds 10, the buffer 8
+  S4 (Mk2 + regulator 10, target at 6):  the chest holds 10, the buffer 4
+  Modular Router: module 0 leaves 11 item(s) in the target
+  Modular Router: module 0 already leaves 11 item(s) in the target
+PASS: … EXIT:0
+```
+
+No recipe changes in this slice: the Regulator Augment's recipe is slice 8's and still crafts in J1.
+
+**Why the assertions can fail, four ways.** (1) The 0.2.10 run above has every rig ignoring the
+amount (`EXIT:1`). (2) **S2 is the differential**: the identical Mk1, chest and interval with **no**
+augment empties all eight into a chest that then holds fourteen — the reading a rule that stopped the
+router, or sent the whole buffer anyway, would also give — while S1 beside it stops at ten; the
+augment and its amount are what leave four in the buffer. (3) **S3 is the boundary**: a chest already
+holding exactly the amount is never touched (10 / 8), so the rule is "top up to the amount" and not
+"send up to the amount" (which would send eight). (4) **S4 is a different module and a different
+target rule**: the targeted Sender Mk2, whose chest was selected with a command at ten blocks, tops
+its target up the same way (10 / 4) — so the count is `send_to`'s, not the Mk1 scan's. The unit test
+drives the arithmetic (`0`, `4`, the items cap, `0` at and above the amount), so a `send_quota` that
+ignored the amount or the count cannot pass. `SELFTEST=1` fails phase A
+(`FAIL: SELFTEST: the target chest holds stone, so the check is alive`, `EXIT:1`) and the unmodded
+control game exits 1 at its first `give`
+(`FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)`, `EXIT:1`) —
+`e2e-selftest-0.2.11.log`, `e2e-control-0.2.11.log`.
+
+### Ladder (every compile step in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before `send_quota` existed | **6 errors**, `could not compile … (lib test)`, exit 101 | `slice11-test-red.log` |
+| red, in game | `tools/e2e.sh` phase S on the **0.2.10** game | all four rigs ignore the amount; `FAIL: the regulated Mk1 sent 8 item(s) …`, `EXIT:1` | `modularrouters-e2e/e2e-red-regulate.log` |
+| tests | `cargo test --offline` | **69 passed**, 0 failed | `slice11-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice11-clippy.log` (= `sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice11-fmt.log` (= `sdk-fmt.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **125,520 B** | `slice11-build.log`, `slice11-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.11 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `125520 bytes, SHA-256 3431d2f6…94e4`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| package contents | `unzip -l modularrouters.hmod` | **111 entries**, no `Cargo.lock` | `slice11-entries.txt` |
+| manifest bump | `launcher-game.sh build modularrouters` (a `native-*` tag carrying this mod removed first) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.11** (`52…`/`09f28193…` at the two builds), one library `libmodularrouters.so` | `modularrouters-e2e/game-build-0.2.11.log` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (69 tests) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` | `modularrouters-e2e/e2e-launcher-0.2.11.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.11.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-control-0.2.11.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=49 ok=49`, 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.11: **125,520 B**, SHA-256 `3431d2f6491e8410bdab08682be453fa83cf4157e17c78b1b8f67b3543b594e4`,
+111 entries, no `Cargo.lock`.
+
+## Blocked: the Sender Module Mk3 — `blocked(cross-level-capability)` (probe, 2026-11-23)
+
+The 0.2.10 brief's own next-slice was gap 1's first entry, `sender_module_3`. It was built as a
+**probe**, measured in game and is **not shipped**: at pin `0a875da` a block-entity tick cannot reach
+another level's item capability, and the artefact's whole point for this module is that it can.
+
+### The artefact's rule
+
+`SenderModule3 implements ITargetedModule` with `isRangeLimited()` **false** and
+`canOperateInDimension(d)` = the config's `dimensionBlacklist`; `CompiledSenderModule3 extends
+CompiledSenderModule2` overriding **only** `playParticles`. `CompiledModule.isTargetValid:136-144`
+then takes its unlimited branch — `(same world || canOperateInDimension(target.dim)) &&
+canOperateInDimension(router.dim)` — so there is **no distance check at all**. The transfer is
+`ModuleTarget.getItemHandler()` → `ServerLevel.getCapability(...)` on the level the target's
+`GlobalPos` names, which NeoForge answers from any ticking level (`MiscUtil.getWorldForGlobalPos`).
+
+### What the pin answers (measured, not read)
+
+`LevelRef::capability` (`api-source/crates/horizon-mod-vocab/src/item/capability.rs:184-193`) returns
+`None` unless `LevelRef::in_place(host)` — *the level the server ticks now* (`host/levels.rs:344-350`:
+"False for a level parked while the server ticks another (its blocks can still be read)"), and the
+pin's own test `a_level_not_in_place_asks_no_provider` (`parts/capabilities.rs:283`) states it. A
+router in the End ticking has the Overworld **parked**.
+
+The probe build added `ModuleKind::SenderMk3`, the unlimited target rule and a `Probe` compound the
+tick writes into the router's own save, so the harness read the symbols from inside the tick instead
+of inferring them. Rigs (End arena, player with them): **A** Mk3 → a chest 60 blocks out in the End;
+**B** Mk3 → a chest at `0,100,-10` **in the Overworld**; **C** Mk2 → the same Overworld chest;
+**D** Mk3 → a chest in the Nether (the probe's blacklist, `PROBE_BLACKLIST`). Fifteen operations.
+
+`../_shared/evidence/modularrouters-e2e/probe-sender3-cross-level.log` (game `0.2.11-probe`
+`15c0de518199`):
+
+```
+  A (Mk3, same level 60 blocks out): chest 8, buffer 0  [read in the End]
+  B's probe (read in the End): 82, 100, 0 has the following block data: {loaded: 1b, capability: 0b, merge: "stale", in_place: 0b, target: "minecraft:overworld"}
+  B/C: the Overworld chest 0,100,-10 holds 0  [read in minecraft:overworld]
+  D: the Nether chest 0,100,-10 holds 0  [read in minecraft:the_nether]
+  B (Mk3, target in the Overworld): buffer 8
+  C (Mk2, the same target):         buffer 8
+  D (Mk3, target in the Nether):    buffer 8
+VERDICT: cross-level capability = NONE (rig B kept 8; the parked level lends nothing)
+VERDICT: blacklisted-dimension refusal = ENFORCED
+```
+
+Read out: the target level is **loaded** (`loaded: 1b`) and **parked** (`in_place: 0b`); its item
+capability is `None` (`capability: 0b`); and the only other write route to a block entity,
+`BlockEntityRef::merge_data` (`host/block_entities.rs:116-127`, which documents `Stale` for an
+unwritable handle), returns `Err(Stale)` (`merge: "stale"`). So no path reaches the other level's
+container from a tick — capability or NBT.
+
+The parts that **do** work are proven in the same run: the Mk3 kind installs, its readout names the
+target with **no `range=`** (`module 0 at 80,100,0: modularrouters:sender_module_3 dir=none
+target=none at=80,100,-60 filter blacklist none`, where the Mk2's line carries `range=24`), and a
+same-level target **60 blocks out** receives all eight — the no-distance rule and the insert are
+fine, the level boundary is what fails. The blacklisted dimension is refused too (`D` keeps 8).
+
+### What a slice would need (why it is blocked, not faked)
+
+- Either `LevelRef::capability` on a parked level (the game's own reason for refusing is that a parked
+  level's block entities are not written), or a capability answer that does not require the level to
+  be ticked. A scheduled task (`ServerHost::schedule_task`) fires at the server tick, not inside a
+  level, so it does not help.
+- Writing the target's `Items` NBT through `merge_data` is not an alternative: it refuses parked
+  levels too, and it would bypass every container provider (only vanilla `Items` shapes).
+- A port-side limit found on the way: `/modularrouters target` names the **acting** level, so a
+  cross-level target cannot be set by the command — the item path can (sneak-click the chest in the
+  Overworld, carry the module to the End, install it there), and that is how upstream does it.
+
+Re-check at the next pin: the question is one sentence — *does `LevelRef::capability` answer for a
+level that is not in place?* The probe is kept with its sources:
+`../_shared/evidence/modularrouters/probe-sender3.sh`, `probe-sender3.patch`, and
+`../_shared/evidence/modularrouters-e2e/game-build-0.2.11-probe.log`.
+
+
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -1801,7 +2019,8 @@ Every family the jar carries, against what this port does with it. `tested` name
 | the `minecraft:mineable/pickaxe` + `needs_iron_tool` block tags | tested | E2E J3 (the router breaks with an iron pickaxe and drops) |
 | the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers, both senders and the void module (M installs the Puller Mk2 and R the Sender Mk2 through it) |
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
-| the other 17 modules (`sender_module_3`, `vacuum`, `dropper`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| **`sender_module_3`** (a targeted sender with `isRangeLimited()` false: no distance limit, the target in the router's world *or* a permitted dimension) | `blocked(cross-level-capability)` — probed in game, not shipped | the probe (§ *Blocked: the Sender Module Mk3*): the Mk3 kind installs, its readout prints **no `range=`** where the Mk2's prints `range=24`, and a same-level target **60 blocks** out receives all eight — but a target in the Overworld is unreachable from an End tick: `{loaded: 1b, in_place: 0b, capability: 0b, merge: "stale"}`, buffer 8 kept; the Mk2 keeps its 8 too (the differential) and a blacklisted dimension is refused |
+| the other 16 modules (`vacuum`, `dropper`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
 | **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
 | the three upgrade recipes (blank, Speed, Stack) | tested | E2E J1 (real table: id, count, grid emptied, distinctive ingredient consumed, one wrong-ingredient control each) |
 | the three upgrade items | tested | E2E L (give + read back from the inventory) |
@@ -1811,7 +2030,7 @@ Every family the jar carries, against what this port does with it. `tested` name
 | the three augment items and the five augment recipes (core, Range Up, Range Down, and the two conversions) | tested | E2E N1 (three items given and read back, the `augments` tag lists both) and J1 (each crafts its declared id and count ×4/×4/×4/×1/×1 in a real table, the grid empties, the distinctive ingredient is consumed, two wrong-ingredient controls craft nothing) → **now five items and seven recipes** with the Stack and Regulator Augments (below) |
 | **the Stack Augment and the count one operation moves** (`CompiledModule.getItemsPerTick`: `n > 0 ? min(1 << n, 64) : router`) | **tested** | E2E O — a Mk1 whose router holds one Stack Upgrade (`2 item(s) every 20 ticks`) and whose module holds two Stack Augments moves **exactly 4** per operation (7 operations, +4 each; a multiplying augment would move 8 and `sample_steps` fails on any other delta), the identical module with **no** upgrade moves **4 as well** while the plain Mk1 beside them moves **1**, a seventh augment in the slot is refused, six augments read `items=64` and one operation empties a 64-strong chest into the one-slot buffer, the count reads back after a relaunch and it moves four again; `runtime::tests` cover the override (4 not 8, 4 not 1), the 64 cap, the six-per-slot limit and the capped saved count; the Stack Augment's recipe and item are in N1/J1 |
 | the Stack Augment's `getMaxAugments = 0` modules (Detector, both Extruders, Breaker, Placer, both Fluid modules) | `blocked(module-kind)` — unit-tested only | `runtime::tests::a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items` asserts the seven ids take none (and a foreign module takes upstream's six); none of those seven kinds is implemented here (gap 1), so there is no module in game that could show the refusal |
-| **the Regulator Augment and a module's saved regulation amount** (`getRegulationAmount`: the amount only with the augment; `findItemToPull` refuses an operation that would drop the source below it) | **tested** | E2E P — a Mk1 whose chest holds twelve stone, with the augment (installed by sneak right-click) and `/modularrouters regulate … 3`, ends with **nine in its buffer and three in the chest**; the identical rig with no augment empties the chest into its buffer (**12 / 0**, the differential), `regulate` is refused on a module without the augment, and a chest of **exactly three is never touched** (the boundary); the amount is named `regulate=3` only with the augment and survives the save; `runtime::tests` cover the whole-operation rule (`6 − 4 < 3` refuses), the two-slot total, `keep = 0`, and the one-per-slot limit with none on the Detector/Extruder Mk2; `support::tests` cover the saved amount and the readout |
+| **the Regulator Augment and a module's saved regulation amount** (`getRegulationAmount`: the amount only with the augment; `findItemToPull` refuses an operation that would drop the source below it; `CompiledSenderModule1.execute` tops the **target** up to it) | **tested** | E2E P — a Mk1 whose chest holds twelve stone, with the augment (installed by sneak right-click) and `/modularrouters regulate … 3`, ends with **nine in its buffer and three in the chest**; the identical rig with no augment empties the chest into its buffer (**12 / 0**, the differential), `regulate` is refused on a module without the augment, and a chest of **exactly three is never touched** (the boundary); the amount is named `regulate=3` only with the augment and survives the save; **and on a sender the same amount is the target's floor** — E2E S: a Mk1 sending into a chest of six with an amount of ten adds **exactly four and stops** (chest 10, buffer 4), the identical Mk1 with **no** augment empties all eight into it (**14 / 0**, the differential), a chest already holding the amount takes **nothing** (**10 / 8**, the boundary), a Sender Mk2 with the same amount and a selected chest does the same (**10 / 4**), and re-setting the amount answers that it is already set; `runtime::tests` cover the whole-operation rule (`6 − 4 < 3` refuses), the two-slot total, `keep = 0`, the send quota (`0`, `4`, the items cap, `0` at the amount) and the one-per-slot limit with none on the Detector/Extruder Mk2; `support::tests` cover the saved amount and the readouts on both halves |
 | the Regulator Augment's `getMaxAugments = 0` half (the Detector and the Extruder Mk2) | `blocked(module-kind)` — unit-tested only | `runtime::tests::a_regulator_augment_fills_one_slot_and_none_on_the_detector_and_the_second_extruder` asserts the two ids take none (and every other id, including a carried one, takes one); neither kind is implemented here (gap 1), so no module in game can show the refusal |
 | the other 7 augments (Mimic, Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum) | not ported (a tagged augment is carried inertly, one per slot, and its saved count is kept) | gap 3 |
 | the router screen and every module screen | not ported | gap 4 (commands + a right-click readout stand in) |
@@ -1869,10 +2088,16 @@ binary does not list the port's own tests.
 
 ## Gaps (not in this slice)
 
-1. **Modules**: `sender_module_3`, `vacuum`,
+1. **Modules**: `sender_module_3` (**blocked**, see below), `vacuum`,
    `dropper`, `flinger`, `placer`, `breaker`, `extruder_1`/`_2`, `detector`,
    `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`,
    `player`, `activator`, `creative` — and their settings screens.
+   **`sender_module_3` is `blocked(cross-level-capability)`**: probed in game on 2026-11-23 (see
+   *Blocked: the Sender Module Mk3*). The kind, its unlimited target rule and its no-`range=` readout
+   all work and a same-level target 60 blocks out receives items, but an End tick cannot reach an
+   Overworld container — `{loaded: 1b, in_place: 0b, capability: 0b, merge: "stale"}` — so the
+   module's own point (a target in another dimension) cannot be built at this pin. Re-check the
+   sentence "does `LevelRef::capability` answer for a level that is not in place?" at every new pin.
    **`puller_module_2` ships** (slice 5, E2E M): a selected container within 12
    blocks, 24 with the Range Augments that ship (slice 6, E2E N).
    **`sender_module_2` ships** (slice 10, E2E R): a selected container within 24
@@ -1882,11 +2107,11 @@ binary does not list the port's own tests.
    1b. **The Mk2s' other half**: the item-beam particles `CompiledPullerModule2`
    and `CompiledSenderModule2` add; a sneak right-click **in air** does not clear
    a target (the click hook is block-only; `/modularrouters target … none` does).
-   1c. **The sender's regulator amount**: upstream's
-   `CompiledSenderModule1.execute` also reads `getRegulationAmount()` — it counts
-   the target's contents and sends only while the target holds fewer than the
-   amount. Slice 8 implemented the rule on the **pull** side only, so a Regulator
-   Augment on a sender is carried and shown but changes nothing here.
+   1c. **The sender's regulator amount** — **done (slice 11, E2E S)**: a send tops
+   its target up to the module's saved amount
+   (`CompiledSenderModule1.execute` / `InventoryUtils.countItems`), on the Mk1 and
+   the Mk2 alike; the amount is the *source's* floor on a pull and a void, and the
+   *target's* on a send.
 2. **Upgrades**: the other 8 upgrade items (Blast, Camouflage, Energy, Fluid,
    Muffler, Security, Sync, Blank) and their mechanics (gaps 6 and 9).
    **Speed, Stack and the blank base ship, with the five slots and their insert

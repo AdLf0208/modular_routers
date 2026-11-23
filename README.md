@@ -18,8 +18,9 @@ moves, 1 → 2 → 4 … up to 64), and the **augments** that fit a module's fou
 augment slots: the **Range Up/Down Augments** move that module's reach one block
 each, the **Stack Augment** sets how many items one operation of that module
 moves (`1 << n`, up to 64), overriding the router's Stack Upgrades rather than
-adding to them, and the **Regulator Augment** makes a pull leave the module's
-saved amount of the item in the source.
+adding to them, and the **Regulator Augment** turns the module's saved regulation
+amount on: a pull stops while the source still holds that many of the item, and a
+send tops its target up to it.
 
 Ported from Modular Routers 13.2.7 (`desht/ModularRouters`, MIT) as a
 clean-room rewrite for Horizon 26.3, built against SDK nightly `0a875da`
@@ -88,7 +89,9 @@ module (one augment 2, two 4, six 64), which is the one augment whose number is
 not a range. A **Regulator Augment** turns on the module's own regulation amount
 (`/modularrouters regulate <x> <y> <z> <slot> <amount>`, or the module screen's
 field upstream): a pull then stops while the source still holds that many of the
-item, so a chest of twelve with an amount of three keeps three. The buffer is the
+item, so a chest of twelve with an amount of three keeps three, and a send tops
+its own target up to the amount — a chest of six with an amount of ten takes four
+and no more. The buffer is the
 block's item container on every side, so hoppers
 and pipes can fill or empty it.
 
