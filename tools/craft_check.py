@@ -3,7 +3,7 @@
 
 Called by `tools/e2e.sh` with the open game's control socket. The harness's
 crafting table exposes the 3x3 grid as slots 100-108 (row-major) and the result
-as 200 (`ctl screen`). For each of the seventeen carried recipes this:
+as 200 (`ctl screen`). For each of the nineteen carried recipes this:
 
 1. replaces the table (a fresh block entity, so a stale grid cannot leak in)
    and clears the inventory;
@@ -14,7 +14,7 @@ as 200 (`ctl screen`). For each of the seventeen carried recipes this:
 6. asserts the grid is empty (or holds exactly the recipe's vanilla crafting
    remainder) and the recipe's distinctive ingredient was consumed.
 
-Eleven deliberately wrong patterns must leave the result empty, so the check cannot
+Twelve deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -37,6 +37,7 @@ ROUTER = "modularrouters:modular_router"
 PULLER = "modularrouters:puller_module_1"
 PULLER2 = "modularrouters:puller_module_2"
 SENDER = "modularrouters:sender_module_1"
+SENDER2 = "modularrouters:sender_module_2"
 BLANK_UPGRADE = "modularrouters:blank_upgrade"
 SPEED_UPGRADE = "modularrouters:speed_upgrade"
 STACK_UPGRADE = "modularrouters:stack_upgrade"
@@ -207,6 +208,27 @@ def main() -> int:
             ("minecraft:arrow", every(GRID["br"])),
         ],
         SENDER, 1, "minecraft:bow",
+    )
+    # The jar ships two Sender Mk2 recipes, the shape of the Puller Mk2 pair: one
+    # module from a Sender Mk1 and an ender pearl, and four at a time from four
+    # Mk1s and one pearl. Both are carried.
+    check(
+        "sender Mk2: a sender Mk1 and an ender pearl, shapeless",
+        [(SENDER, 1), ("minecraft:ender_pearl", 1)],
+        [
+            (SENDER, every(GRID["tl"])),
+            ("minecraft:ender_pearl", every(GRID["mm"])),
+        ],
+        SENDER2, 1, "minecraft:ender_pearl",
+    )
+    check(
+        "sender Mk2 x4: four sender Mk1s and an ender pearl, shapeless, four at a time",
+        [(SENDER, 4), ("minecraft:ender_pearl", 1)],
+        [
+            (SENDER, every(GRID["tl"], GRID["tm"], GRID["ml"], GRID["mm"])),
+            ("minecraft:ender_pearl", every(GRID["br"])),
+        ],
+        SENDER2, 4, "minecraft:ender_pearl",
     )
     check(
         "blank upgrade: 4 paper + 3 gold nuggets + a lapis, four at a time",
@@ -430,6 +452,14 @@ def main() -> int:
         ],
     )
     empty_control(
+        "sender Mk2 with a stick where the ender pearl goes",
+        [(SENDER, 1), ("minecraft:stick", 1)],
+        [
+            (SENDER, every(GRID["tl"])),
+            ("minecraft:stick", every(GRID["mm"])),
+        ],
+    )
+    empty_control(
         "range up augment with a stick where the augment core goes",
         [
             ("minecraft:quartz", 3),
@@ -478,8 +508,8 @@ def main() -> int:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  seventeen carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and eleven wrong-ingredient controls craft nothing")
+    print("  nineteen carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and twelve wrong-ingredient controls craft nothing")
     return 0
 
 

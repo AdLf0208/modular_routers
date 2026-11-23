@@ -25,9 +25,9 @@
 #  G  a placed router faces the opposite of its placer (real placement, not a
 #     setblock), and one package carries the code and the content.
 #  H  the modules and the buffer survive a relaunch.
-#  J  the seventeen carried recipes craft in a real crafting table (id, count, grid
+#  J  the nineteen carried recipes craft in a real crafting table (id, count, grid
 #     emptied (or the recipe's vanilla bucket remainder), the distinctive ingredient
-#     consumed; eleven wrong-ingredient controls craft nothing), every carried item is
+#     consumed; twelve wrong-ingredient controls craft nothing), every carried item is
 #     give-able and an unknown id is refused, the router's loot table drops it when
 #     broken (with a vanilla block as the harness's differential), and no carried
 #     recipe or loot table is in the 1.21.1 dialect the 26.3 parser rejects.
@@ -89,6 +89,15 @@
 #     keeps all eight (the differential); and a Void whose whitelist omits stone
 #     touches nothing (8 -> 8). An empty buffer is no operation. Its recipe crafts in
 #     a real table and leaves the lava bucket's bucket as the vanilla remainder.
+#  R  the Sender Mk2 (`CompiledSenderModule2`): a *targeted* ranged sender. Its
+#     container is selected with a sneak right-click (the target rides the item's
+#     component into the router's save) and it reaches sender2BaseRange **24**
+#     blocks, 48 with Range Augments — no scan, no line of sight. Eight stone in a
+#     router's buffer go into the selected chest ten blocks out (chest 8, buffer 0);
+#     an identical Mk2 with no target keeps all eight although its chest sits ten
+#     blocks along its facing (the differential); and a target **25** blocks out
+#     moves nothing at range 24 but exactly one item per operation once one Range Up
+#     augment takes it to 25. Both jar recipes craft in a real table.
 #
 # The harness pack is the only data this script adds to the game: a world data
 # pack, not part of the package (see `harness_pack`).
@@ -144,6 +153,7 @@ BLANK=modularrouters:blank_module
 PULLER=modularrouters:puller_module_1
 PULLER2=modularrouters:puller_module_2
 SENDER=modularrouters:sender_module_1
+SENDER2=modularrouters:sender_module_2
 BLANK_UPGRADE=modularrouters:blank_upgrade
 SPEED_UPGRADE=modularrouters:speed_upgrade
 STACK_UPGRADE=modularrouters:stack_upgrade
@@ -1091,6 +1101,100 @@ ctl command "data merge block 72 100 0 {Items:[]}" >/dev/null
 ctl wait 40 >/dev/null
 [ "$(count 72 100 0 minecraft:stone)" = 0 ] || fail "the emptied router's buffer came back"
 
+echo "== R: the Sender Mk2 — a selected container, twenty-four blocks, no scan =="
+# `SenderModule2 implements IRangedModule, ITargetedModule` and its compiled half
+# (`CompiledSenderModule2`) overrides only which handler the Mk1 insert writes to:
+# the block the player selected, through the face they clicked. The reach is
+# `sender2BaseRange` 24 (`sender2MaxRange` 48 with Range Augments). Three rigs:
+#   A (80,100,0)  Mk2 with the chest 80,100,-10 selected by sneak right-click
+#   B (82,100,0)  the same Mk2 with NO target, chest ten north (a scan would find it)
+#   C (84,100,0)  a target 25 blocks out: nothing at range 24, +1/operation at 25
+for x in 80 82 84; do block_at "$x" 0 "$ROUTER[facing=north]"; done
+block_at 80 -10 minecraft:chest
+block_at 82 -10 minecraft:chest
+block_at 84 -25 minecraft:chest
+ctl wait 6
+
+# R1: the target is selected with the module in hand (sneak right-click, the same
+# `TargetedModuleAdapter` path as the Puller Mk2), then the module is installed by
+# right-clicking the router and carries the selected block into the save.
+ctl command "gamemode creative @s" >/dev/null
+ctl command "clear @s" >/dev/null
+ctl give "$SENDER2" 1 >/dev/null || fail "give $SENDER2 failed (is the sender Mk2 in this package?)"
+ctl wait 4
+held=$(ctl inventory | jq -r --arg i "$SENDER2" '.counts[$i] // 0')
+[ "$held" -ge 1 ] || fail "$SENDER2 is not in the inventory after give ($held)"
+ctl tp 80.5 100 -8.5 >/dev/null
+ctl look-at-block 80 100 -10 up >/dev/null
+ctl select "$SENDER2" >/dev/null || fail "no sender Mk2 in the hotbar"
+ctl wait 3
+ctl key shift down >/dev/null
+ctl wait 2 >/dev/null
+ctl interact 80 100 -10 up >/dev/null || fail "the sneak right-click on the chest failed"
+ctl key shift up >/dev/null
+ctl wait 4
+expect_chat "Modular Router: target set: block at 80,100,-10"
+screen=$(ctl screen | jq -r '.screen // "unknown"')
+echo "  after the sneak right-click the screen is '$screen' (the module took the click)"
+[ "$screen" = "playing" ] || fail "the sneak right-click opened '$screen': the chest took the click, not the module"
+ctl tp 80.5 100 2.5 >/dev/null
+ctl look-at-block 80 100 0 south >/dev/null
+ctl wait 3
+ctl interact 80 100 0 south >/dev/null || fail "the right-click that installs the Mk2 failed"
+ctl wait 4
+expect_info 80 100 0 "module 0 at 80,100,0: $SENDER2 dir=none target=none at=80,100,-10 range=24"
+
+# R2/R3 first, while every buffer is still empty (a sender left running while it
+# is configured would move its own evidence): rig B by command, rig C by command
+# and a target 25 blocks out.
+say "modularrouters install 82 100 0 0 $SENDER2"
+expect_chat "Modular Router: $SENDER2 in slot 0"
+say "modularrouters direction 82 100 0 0 front"
+expect_chat "Modular Router: slot 0 points front"
+expect_info 82 100 0 "module 0 at 82,100,0: $SENDER2 dir=front target=north range=24"
+say "modularrouters install 84 100 0 0 $SENDER2"
+expect_chat "Modular Router: $SENDER2 in slot 0"
+say "modularrouters target 84 100 0 0 84,100,-25"
+expect_chat "Modular Router: slot 0 targets the inventory at 84,100,-25"
+expect_info 84 100 0 "module 0 at 84,100,0: $SENDER2 dir=none target=none at=84,100,-25 range=24"
+
+for x in 80 82 84; do
+    ctl command "data merge block $x 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:8}]}" >/dev/null
+done
+ctl wait 4
+for x in 80 82 84; do
+    echo "  $x,100,0 buffer before: $(count "$x" 100 0 minecraft:stone) stone"
+done
+# Fifteen operations at this pin's 20-tick interval (`ctl wait 100` is five).
+ctl wait 300 >/dev/null
+sent=$(count 80 100 -10 minecraft:stone)
+kept=$(count 82 100 0 minecraft:stone)
+out_of_range=$(count 84 100 0 minecraft:stone)
+echo "  R1 (Mk2 with the chest selected): the chest holds $sent, the buffer $(count 80 100 0 minecraft:stone)"
+echo "  R2 (the same Mk2, no target): the buffer holds $kept, its chest $(count 82 100 -10 minecraft:stone)"
+echo "  R3 (target 25 blocks out, range 24): the buffer holds $out_of_range, the chest $(count 84 100 -25 minecraft:stone)"
+[ "$sent" = 8 ] || fail "the selected Mk2 delivered $sent of the buffer's 8 into the chest"
+[ "$(count 80 100 0 minecraft:stone)" = 0 ] || fail "the selected Mk2 left $(count 80 100 0 minecraft:stone) in the buffer"
+[ "$kept" = 8 ] || fail "an unselected Mk2 sent $(( 8 - kept )) item(s): it is scanning, not using a target"
+[ "$(count 82 100 -10 minecraft:stone)" = 0 ] || fail "an unselected Mk2 filled the chest along its facing"
+[ "$out_of_range" = 8 ] || fail "a target 25 blocks out sent $(( 8 - out_of_range )) item(s) at range=24"
+[ "$(count 84 100 -25 minecraft:stone)" = 0 ] || fail "a target 25 blocks out took items at range=24"
+
+# R4: the reach boundary itself. One Range Up augment (sender2MaxRange 48 allows
+# 24 of them) takes the Mk2 from 24 to 25 blocks, and the chest 25 out receives
+# exactly one item per operation.
+say "modularrouters augment 84 100 0 0 add range_up"
+expect_chat "Modular Router: installed modularrouters:range_up_augment (1 in module 0"
+expect_info 84 100 0 "module 0 at 84,100,0: $SENDER2 dir=none target=none at=84,100,-25 range=25 augments range_up"
+sample_steps 84 -25 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "a target 25 blocks out sent $STEPS operation(s) at range=25"
+delivered=$(count 84 100 -25 minecraft:stone)
+left=$(count 84 100 0 minecraft:stone)
+echo "  after one Range Up augment (range=25): the chest holds $delivered, the buffer $left"
+[ "$delivered" -ge 3 ] || fail "only $delivered item(s) reached the chest at range=25"
+[ "$left" = $(( 8 - delivered )) ] || fail "the buffer holds $left after delivering $delivered of 8"
+ctl command "clear @s" >/dev/null
+
 echo "== I: one package — the .hmod carries the code and the content =="
 python3 - "$HMOD" "$PORT/src/runtime.rs" <<'PY'
 import hashlib
@@ -1289,7 +1393,7 @@ ctl wait 4
 sample_steps 2 5 minecraft:stone 2 12
 [ "$STEPS" -ge 3 ] || fail "the upgraded router stopped moving two items after a relaunch"
 
-echo "== J1: the seventeen carried recipes craft in a real crafting table =="
+echo "== J1: the nineteen carried recipes craft in a real crafting table =="
 # A carried recipe whose ingredient is in the 1.21.1 object form
 # (`{"item": "..."}`) is rejected by the 26.3 parser at load, so the recipe is
 # dead data. The server names it once, at startup: print those lines as the
@@ -1315,14 +1419,14 @@ ctl wait 3
 [ -z "$rejected" ] || fail "the server rejected a carried recipe ingredient (see the lines above)"
 
 echo "== J2: every carried item is give-able, and an unknown id is refused =="
-for id in "$BLANK" "$PULLER" "$PULLER2" "$SENDER" "$VOID" "$ROUTER"; do
+for id in "$BLANK" "$PULLER" "$PULLER2" "$SENDER" "$SENDER2" "$VOID" "$ROUTER"; do
     ctl command "clear @s" >/dev/null
     ctl give "$id" 1 >/dev/null || fail "give $id failed"
     ctl wait 3
     held=$(ctl inventory | jq -r --arg i "$id" '.counts[$i] // 0')
     [ "$held" -ge 1 ] || fail "$id is not in the inventory after give ($held)"
 done
-echo "  blank module, both pullers, sender, void module and router each read back from the inventory"
+echo "  blank module, both pullers, both senders, void module and router each read back from the inventory"
 unknown=$(ctl command "give @s modularrouters:not_a_module 1" | jq -r '.chat[]?' | tr '\n' ' ')
 echo "  give modularrouters:not_a_module: $unknown"
 case "$unknown" in
@@ -1427,4 +1531,4 @@ say "modularrouters remove 8 100 4 0"
 expect_chat "Modular Router: removed example:foreign_module"
 expect_info 8 100 4 "1 of 9 module(s)"
 
-echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the five module recipes, the two Puller Mk2 recipes, the three upgrade recipes and the seven augment recipes craft their declared id and count in a real table with the grid emptied (or the recipe's vanilla bucket remainder left) and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all fourteen item ids read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch; the Range Augments are *module* augments in four slots, one block of reach each: a Mk2 whose target is fourteen blocks out moves nothing at range=12 and exactly one item per operation once four Range Up augments (installed by sneak right-click) take it to 16, one Range Down augment on a twelve-block target stops the pull at range=11 and comes back to the inventory when removed, a Sender Mk1's twelve-block scan starts delivering at range=16 with eight Range Up augments, a Range augment is refused on a module that is not ranged, a saved slot of fifteen reads as twelve (range=24, the hard maximum) and a fifth slot is cut, and the augments survive a relaunch; the Stack Augment is the augment whose number overrides the router rather than adding to it: a Mk1 whose router holds one Stack Upgrade (2 item(s) per operation) and whose module holds two Stack Augments moves exactly four per operation, not eight, the identical module with no upgrade at all moves four as well while the plain Mk1 beside them moves one, six augments in one slot read items=64 and fill the one-slot buffer with a whole stack in one operation, a seventh is refused at the slot's limit, and the count survives a relaunch; the Regulator Augment makes a pull leave the module's saved amount in the source — a Mk1 pulling from twelve stone with the amount at 3 stops with nine in its buffer and three still in the chest, the identical rig with no augment empties the chest into its buffer, the amount is refused on a module without the augment, and a source of exactly three is never touched; the Void Module destroys the router's own buffer down to its saved amount — eight stone written into its buffer are gone, the same module with a Regulator Augment and an amount of 3 stops with three left, a Sender Mk1 with no target beside it keeps all eight (the differential), and a Void whose whitelist omits the item touches nothing, while its recipe crafts in a real table and leaves the lava bucket's bucket in the grid"
+echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the five module recipes, the two Puller Mk2 and two Sender Mk2 recipes, the three upgrade recipes and the seven augment recipes craft their declared id and count in a real table with the grid emptied (or the recipe's vanilla bucket remainder left) and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all fifteen item ids read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch; the Range Augments are *module* augments in four slots, one block of reach each: a Mk2 whose target is fourteen blocks out moves nothing at range=12 and exactly one item per operation once four Range Up augments (installed by sneak right-click) take it to 16, one Range Down augment on a twelve-block target stops the pull at range=11 and comes back to the inventory when removed, a Sender Mk1's twelve-block scan starts delivering at range=16 with eight Range Up augments, a Range augment is refused on a module that is not ranged, a saved slot of fifteen reads as twelve (range=24, the hard maximum) and a fifth slot is cut, and the augments survive a relaunch; the Stack Augment is the augment whose number overrides the router rather than adding to it: a Mk1 whose router holds one Stack Upgrade (2 item(s) per operation) and whose module holds two Stack Augments moves exactly four per operation, not eight, the identical module with no upgrade at all moves four as well while the plain Mk1 beside them moves one, six augments in one slot read items=64 and fill the one-slot buffer with a whole stack in one operation, a seventh is refused at the slot's limit, and the count survives a relaunch; the Regulator Augment makes a pull leave the module's saved amount in the source — a Mk1 pulling from twelve stone with the amount at 3 stops with nine in its buffer and three still in the chest, the identical rig with no augment empties the chest into its buffer, the amount is refused on a module without the augment, and a source of exactly three is never touched; the Void Module destroys the router's own buffer down to its saved amount — eight stone written into its buffer are gone, the same module with a Regulator Augment and an amount of 3 stops with three left, a Sender Mk1 with no target beside it keeps all eight (the differential), and a Void whose whitelist omits the item touches nothing, while its recipe crafts in a real table and leaves the lava bucket's bucket in the grid; the Sender Mk2 is a targeted ranged sender — eight stone in a router's buffer reach a chest ten blocks out that was selected with a sneak right-click (chest 8, buffer 0), an identical Mk2 with no target keeps all eight although a chest sits ten blocks along its facing, a target 25 blocks out moves nothing at range=24 and exactly one item per operation once one Range Up augment takes it to 25, and no line of sight is needed anywhere in it"

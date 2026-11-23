@@ -1,5 +1,74 @@
 # Modular Routers — validation ladder
 
+## 0.2.10 — the Sender Module Mk2 (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 10: `ModuleKind::SenderMk2` in
+`runtime` with `sender2_range(boost)` — `max(1, min(48, 24 + up − down))`, the jar's
+`sender2BaseRange`/`sender2MaxRange` — targeted like the Puller Mk2 (`is_targeted`), so the existing
+sneak-right-click selector and `/modularrouters target` work unchanged, and the Range Augment limits
+fall out of `base_range`/`max_range` (24 Up, 23 Down). Glue: `send` splits into `send_to` (the Mk1's
+insert into a known container) and `send` (its scan), with `send_target` as the Mk2's half — no
+target, another level or `distSqr > range²` is no operation, otherwise the same insert at the selected
+block through the clicked face, before any direction is resolved
+(`CompiledSenderModule2.findTargetInventory`). Content: the item definition, the jar model and
+`sender_module_2.png`, the jar's two shapeless recipes (`sender_module_1` + `c:ender_pearls` → 1, ×4),
+the `modules` tag entry, the creative tab and lang. Unit work: 2 new tests (one `runtime`, one
+`support`), 67 in all; README updated (five modules, the Mk2's use and recipe).
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the names existed (red) | **15 errors** (`SENDER2_BASE_RANGE`, `SenderMk2`, `sender2_range`), `could not compile … (lib test)`, exit 101 | `slice10-test-red.log` |
+| 2 | `tools/e2e.sh` phase R on the **0.2.9** game (red) | `FAIL: give modularrouters:sender_module_2 failed (is the sender Mk2 in this package?)`, `EXIT:1` | `modularrouters-e2e/e2e-red-sender2.log` |
+| 3 | `launcher-game.sh build modularrouters` (manifest 0.2.9 → 0.2.10) | `Compiling modularrouters (1 of 1)` — no cached-package reuse; export `native-mods.json` names **0.2.10**, `libmodularrouters.so` `3780533…` | `modularrouters-e2e/game-build-0.2.10.log` |
+| 4 | `cargo test --offline` | **67 passed**, 0 failed | `slice10-test.log` (= `sdk-test.log`) |
+| 5 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice10-clippy.log` |
+| 6 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice10-fmt.log` |
+| 7 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **124,155 B** | `slice10-build.log`, `slice10-build-second.log` |
+| 8 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.10 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `124155 bytes, SHA-256 a6da9bf8…469e`, **exit 0** | `sdk-check.log` |
+| 9 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 10 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 11 | `unzip -l modularrouters.hmod` | **111 entries**, no `Cargo.lock` | `slice10-entries.txt` |
+| 12 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, K, L, M, N, O, P, Q, **R**, J1–J4 (package `a6da9bf8…`) | `modularrouters-e2e/e2e-launcher-0.2.10.log` |
+| 13 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.10.log` |
+| 14 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.10.log` |
+| 15 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=45 ok=45`, 0 missing/bad exit lines | — |
+| 16 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (67 tests, package = tree, no lock) | `verify-sdk-package.log` |
+
+### What phase R proves (parity rule)
+
+Three routers in the End, each with **eight stone** written into its buffer with `/data merge block`
+(exactly one stone slot; `ctl container` fills only an empty slot), then fifteen operations at the
+20-tick interval (`ctl wait 100` is five):
+
+| rig | module | target | result |
+|---|---|---|---|
+| R1 (80,100,0) | Sender Mk2, selected with a sneak right-click, installed by right-click | chest `80,100,-10` (10 blocks) | **chest 8, buffer 0** |
+| R2 (82,100,0) | the same Sender Mk2, **no target**, `dir=front` | chest `82,100,-10` (10 blocks, in range) | **chest 0, buffer 8** |
+| R3 (84,100,0) | Sender Mk2, target by command at 25 blocks | chest `84,100,-25` | **chest 0, buffer 8** at `range=24` |
+| R4 (84,100,0) | the same, after one Range Up augment | chest `84,100,-25` | `at=… range=25`, **7 operation(s), +1 each**, chest 8 / buffer 0 |
+
+- **R1 is the feature**: the selected block receives the buffer's items through the clicked face, and
+  the sneak click left the screen at `playing` — the chest did not swallow it.
+- **R2 is the differential**: a chest lies ten blocks along the module's facing, inside its 24-block
+  reach; an unselected Mk2 still sends nothing, so the Mk2 never falls back to the Mk1's scan.
+- **R3/R4 are the range boundary**: the same module and chest one augment apart, nothing at 24 and
+  exactly one item per operation at 25.
+- **The recipes** (J1) craft their declared id and count in a real table (1 and 4), consume the ender
+  pearl, and a stick where the pearl goes crafts nothing.
+- **Unit tests** drive the reach (`24`, `25`, `48`, `1`), the 24/23 augment limits, the `in_range`
+  boundary, the saved target and the readout.
+
+### Delivered package (0.2.10)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 124,155 B | `a6da9bf8dac0b6082b52e6d4832e966e74a3b8f219acfbbe4a97e0687b15469e` | 111 |
+
 ## 0.2.9 — the Void Module (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

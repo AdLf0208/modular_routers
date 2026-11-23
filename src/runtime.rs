@@ -45,6 +45,10 @@ pub const BUFFER_SLOTS: usize = 1;
 pub const SENDER_BASE_RANGE: i32 = 8;
 /// `CommonConfig.module.sender1MaxRange`.
 pub const SENDER_MAX_RANGE: i32 = 16;
+/// `CommonConfig.module.sender2BaseRange`: a Sender Mk2 reaches 24 blocks.
+pub const SENDER2_BASE_RANGE: i32 = 24;
+/// `CommonConfig.module.sender2MaxRange`: up to 48 with Range Augments.
+pub const SENDER2_MAX_RANGE: i32 = 48;
 /// `CommonConfig.module.puller2BaseRange`: a Puller Mk2 reaches 12 blocks.
 pub const PULLER_BASE_RANGE: i32 = 12;
 /// `CommonConfig.module.puller2MaxRange`: up to 24 with Range Augments.
@@ -264,7 +268,7 @@ impl Relative {
     }
 }
 
-/// Which module is installed: one of the three transfer modules this port runs,
+/// Which module is installed: one of the four transfer modules this port runs,
 /// or any other module id a save or an add-on carries.
 ///
 /// The second case is the **registered** path: `modularrouters:modules` is the
@@ -278,8 +282,10 @@ pub enum ModuleKind {
     PullerMk1,
     /// `modularrouters:puller_module_2`: a selected container in range → buffer.
     PullerMk2,
-    /// `modularrouters:sender_module_1`: buffer → container.
+    /// `modularrouters:sender_module_1`: buffer → container along its facing.
     SenderMk1,
+    /// `modularrouters:sender_module_2`: buffer → the selected container in range.
+    SenderMk2,
     /// `modularrouters:void_module`: destroys the filtered stack in the buffer.
     Void,
     /// A module this port does not implement, carried by its id.
@@ -290,6 +296,7 @@ impl ModuleKind {
     pub const PULLER: &'static str = "modularrouters:puller_module_1";
     pub const PULLER2: &'static str = "modularrouters:puller_module_2";
     pub const SENDER: &'static str = "modularrouters:sender_module_1";
+    pub const SENDER2: &'static str = "modularrouters:sender_module_2";
     pub const VOID: &'static str = "modularrouters:void_module";
 
     /// The kind an item id names: one of the modules this port runs, or a
@@ -300,6 +307,7 @@ impl ModuleKind {
             Self::PULLER => ModuleKind::PullerMk1,
             Self::PULLER2 => ModuleKind::PullerMk2,
             Self::SENDER => ModuleKind::SenderMk1,
+            Self::SENDER2 => ModuleKind::SenderMk2,
             Self::VOID => ModuleKind::Void,
             other => ModuleKind::Registered(other.to_string()),
         }
@@ -313,6 +321,7 @@ impl ModuleKind {
             ModuleKind::PullerMk1
                 | ModuleKind::PullerMk2
                 | ModuleKind::SenderMk1
+                | ModuleKind::SenderMk2
                 | ModuleKind::Void
         )
     }
@@ -322,7 +331,7 @@ impl ModuleKind {
     /// so its relative direction names nothing).
     #[must_use]
     pub fn is_targeted(&self) -> bool {
-        matches!(self, ModuleKind::PullerMk2)
+        matches!(self, ModuleKind::PullerMk2 | ModuleKind::SenderMk2)
     }
 
     /// The item id this module is.
@@ -332,6 +341,7 @@ impl ModuleKind {
             ModuleKind::PullerMk1 => Self::PULLER,
             ModuleKind::PullerMk2 => Self::PULLER2,
             ModuleKind::SenderMk1 => Self::SENDER,
+            ModuleKind::SenderMk2 => Self::SENDER2,
             ModuleKind::Void => Self::VOID,
             ModuleKind::Registered(item) => item,
         }
@@ -344,6 +354,7 @@ impl ModuleKind {
         match self {
             ModuleKind::PullerMk2 => Some(PULLER_BASE_RANGE),
             ModuleKind::SenderMk1 => Some(SENDER_BASE_RANGE),
+            ModuleKind::SenderMk2 => Some(SENDER2_BASE_RANGE),
             ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
         }
     }
@@ -354,6 +365,7 @@ impl ModuleKind {
         match self {
             ModuleKind::PullerMk2 => Some(PULLER_MAX_RANGE),
             ModuleKind::SenderMk1 => Some(SENDER_MAX_RANGE),
+            ModuleKind::SenderMk2 => Some(SENDER2_MAX_RANGE),
             ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
         }
     }
@@ -575,6 +587,7 @@ impl Module {
         match self.kind {
             ModuleKind::PullerMk2 => Some(puller_range(boost)),
             ModuleKind::SenderMk1 => Some(sender_range(boost)),
+            ModuleKind::SenderMk2 => Some(sender2_range(boost)),
             ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
         }
     }
@@ -1161,6 +1174,12 @@ pub fn is_operation_tick(game_time: u64, phase: u64, tick_rate: u64) -> bool {
 /// (`IRangedModule.getCurrentRange` with `sender1BaseRange`/`sender1MaxRange`).
 pub fn sender_range(boost: i32) -> i32 {
     (SENDER_BASE_RANGE + boost).clamp(1, SENDER_MAX_RANGE)
+}
+
+/// A Sender Mk2's reach: `max(1, min(48, 24 + range_up − range_down))`
+/// (`IRangedModule.getCurrentRange` with `sender2BaseRange`/`sender2MaxRange`).
+pub fn sender2_range(boost: i32) -> i32 {
+    (SENDER2_BASE_RANGE + boost).clamp(1, SENDER2_MAX_RANGE)
 }
 
 /// A Puller Mk2's reach: `max(1, min(24, 12 + range_up − range_down))`
@@ -1875,6 +1894,50 @@ mod tests {
             ModuleKind::of(ModuleKind::PULLER2).item(),
             "modularrouters:puller_module_2"
         );
+    }
+
+    #[test]
+    fn the_targeted_sender_reaches_twenty_four_blocks_and_forty_eight_with_augments() {
+        // `SenderModule2 implements IRangedModule, ITargetedModule`: the jar's Mk2
+        // inserts into a block the player selected (its direction names nothing),
+        // so it is targeted like the Puller Mk2 and its base reach is
+        // `sender2BaseRange` 24 (`sender2MaxRange` 48 with Range Augments).
+        let sender2 = ModuleKind::of(ModuleKind::SENDER2);
+        assert_eq!(sender2, ModuleKind::SenderMk2);
+        assert!(sender2.is_known(), "this build runs it");
+        assert_eq!(sender2.item(), "modularrouters:sender_module_2");
+        assert!(
+            sender2.is_targeted(),
+            "its container is the one the player selected"
+        );
+        assert!(
+            !ModuleKind::SenderMk1.is_targeted(),
+            "the Mk1 scans along its direction"
+        );
+        assert_eq!(SENDER2_BASE_RANGE, 24, "CommonConfig sender2BaseRange");
+        assert_eq!(SENDER2_MAX_RANGE, 48, "CommonConfig sender2MaxRange");
+        assert_eq!(sender2_range(0), SENDER2_BASE_RANGE);
+        assert_eq!(sender2_range(1), 25, "one Range Up augment is one block");
+        assert_eq!(sender2_range(-23), 1, "never shorter than one block");
+        assert_eq!(sender2_range(30), SENDER2_MAX_RANGE, "capped at 48");
+        // `RangeAugments.getMaxAugments`: up = hardMax − base, down = base − 1.
+        assert_eq!(sender2.augment_limit(&AugmentKind::RangeUp), 24);
+        assert_eq!(sender2.augment_limit(&AugmentKind::RangeDown), 23);
+        // The module's own reach, as the tick and the readout ask for it.
+        let module = Module::new(ModuleKind::SenderMk2, Relative::None, Filter::any());
+        assert!(module.uses_target());
+        assert_eq!(module.current_range(), Some(SENDER2_BASE_RANGE));
+        let boosted = module.clone().with_augments(Augments::new(vec![
+            Augment::new(AugmentKind::RangeUp, 1).expect("one range up"),
+        ]));
+        assert_eq!(boosted.current_range(), Some(25));
+        let capped = module.clone().with_augments(Augments::new(vec![
+            Augment::new(AugmentKind::RangeUp, 24).expect("twenty-four range up"),
+        ]));
+        assert_eq!(capped.current_range(), Some(SENDER2_MAX_RANGE));
+        // The reach rule is the one the Mk2 already uses (`isTargetValid`).
+        assert!(!in_range([80, 100, 0], [80, 100, -25], 24));
+        assert!(in_range([80, 100, 0], [80, 100, -25], 25));
     }
 
     #[test]

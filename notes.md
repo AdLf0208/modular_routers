@@ -6,13 +6,13 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.9** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.10** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
 (the three of those on 2026-11-22), 0.2.6 the Range Augments in a module's four augment slots,
-0.2.7 the Stack Augment (both on 2026-11-23), 0.2.8 the Regulator Augment and 0.2.9 the Void
-Module (both on 2026-11-23). Pin: SDK
+0.2.7 the Stack Augment (both on 2026-11-23), 0.2.8 the Regulator Augment, 0.2.9 the Void
+Module and 0.2.10 the targeted Sender Mk2 (all three on 2026-11-23). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -1628,6 +1628,154 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.9: **119,968 B**, SHA-256 `24a902dd7bdaa9872e453cb82f74104d266d61b3fa42980d99b7758fa93ea685`,
 105 entries, no `Cargo.lock`.
 
+## Slice 10 (2026-11-23) — the Sender Module Mk2 (0.2.10)
+
+Slice chosen from this file's own gap list, item 1 — *"**Modules**: `sender_module_2`/`_3`, …"* — and
+the 0.2.9 next-slice, which named `sender_module_2` first. It is the remaining transfer module of the
+pair the shipped Puller Mk2's family already reads (a **targeted, ranged** module), and it reuses the
+`Target` / `current_range` / sneak-right-click machinery slice 5 built: this slice adds the constants
+(24/48), the kind, the saved target path it already had, and an insert into the selected block through
+the same handler the Sender Mk1 uses. Tier fit: **machines**, the ledger row — the module's saved
+entry, the router's tick and carried items; no renderer and no new machine.
+
+### The artefact's numbers, re-read
+
+At the same commit as slices 5–9 (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`):
+
+| upstream | what it says | used for |
+|---|---|---|
+| `item/module/SenderModule2.java` | `implements ItemModule, IRangedModule, IPositionProvider, ITargetedModule`; `getBaseRange` = `sender2BaseRange`, `getHardMaxRange` = `sender2MaxRange` | `SENDER2_BASE_RANGE` 24, `SENDER2_MAX_RANGE` 48, `is_targeted` |
+| `config/CommonConfig.java` | `sender2BaseRange` **24**, `sender2MaxRange` **48** | `sender2_range(boost)` = `max(1, min(48, 24 + up − down))` |
+| `logic/compiled/CompiledSenderModule2.java` | `extends CompiledSenderModule1`, overriding only `findTargetInventory` (its `getEffectiveTarget` is the stored target), `playParticles` and `getBeamColor` | the Mk1 insert, into the selected block through the clicked face |
+| `logic/compiled/CompiledModule.java:isTargetValid` | same world and `distSqr <= range²`; no target ⇒ empty targets ⇒ the router skips it | `send_target`'s two guards, both reused from slice 5 |
+| `item/module/ModuleItem.java:isDirectional` | `false` for an `ITargetedModule` | `dir=` is inert; the tick never resolves it |
+| `data/modularrouters/recipe/sender_module_2{,_x4}.json` | shapeless `sender_module_1` + `c:ender_pearls` → 1; four Mk1s + one pearl → 4 | the two carried recipes (`c:ender_pearls` → `minecraft:ender_pearl`, gap 10) |
+| `assets/.../models/item/sender_module_2.json` | `layer0/1` = the module base, `layer2` = `sender_module_2.png` | the carried model and texture |
+
+### How it works here
+
+- **`src/runtime.rs`** — `ModuleKind::SenderMk2` beside the other three; `SENDER2_BASE_RANGE` /
+  `SENDER2_MAX_RANGE`; `sender2_range(boost)`; `is_targeted()` now names both Mk2s (so the
+  sneak-right-click selector and `/modularrouters target` work for it unchanged); `base_range`/
+  `max_range` make the Range Augment limits fall out of the existing rule (24 Up, 23 Down);
+  `Module::current_range()` asks `sender2_range`.
+- **`src/support.rs`** — `send` splits into `send_to` (the Mk1's insert into a known container, the
+  body the Mk1 always ran) and `send` (the Mk1 scan, then `send_to`); `send_target` is the Mk2's half:
+  no selected block, another level or `distSqr > range²` ⇒ **no operation**, otherwise `send_to` at the
+  target's position through the clicked face. `run_tick` routes `SenderMk2` through it **before** the
+  direction is resolved, because the module is not directional.
+- **Content** — the item definition, the jar model and its `sender_module_2.png` (MIT, rank 0, carried),
+  the jar's two recipes, the `modularrouters:modules` tag entry, the creative tab and lang
+  (`Sender Module Mk2`).
+
+### TDD, in the order the ruling asks for
+
+**Red, unit** — the two tests written first (`runtime::tests::the_targeted_sender_reaches_twenty_four_blocks_and_forty_eight_with_augments`,
+`support::tests::a_sender_mk2s_readout_names_its_target_and_its_twenty_four_blocks`); run on the
+untouched tree (`../_shared/evidence/modularrouters/slice10-test-red.log`, **15 errors**, `cargo` exit 101):
+
+```
+error[E0425]: cannot find value `SENDER2_BASE_RANGE` in this scope
+error[E0599]: no variant, associated function, or constant named `SenderMk2` found for enum `runtime::ModuleKind` in the current scope
+error[E0425]: cannot find function `sender2_range` in this scope
+error: could not compile `modularrouters` (lib test) due to 15 previous errors
+```
+
+**Red, in game** — phase R written first and run on the shipped **0.2.9** game
+(`../_shared/evidence/modularrouters-e2e/e2e-red-sender2.log`, package `0722b5a5…`): the item is not
+in that package, so the first give fails and no assertion after it can run.
+
+```
+FAIL: give modularrouters:sender_module_2 failed (is the sender Mk2 in this package?)
+EXIT:1
+```
+
+Then the minimal implementation, then the same phase green.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.10.log`)
+
+```
+== R: the Sender Mk2 — a selected container, twenty-four blocks, no scan ==
+  Modular Router: target set: block at 80,100,-10 in minecraft:the_end
+  after the sneak right-click the screen is 'playing' (the module took the click)
+  module 0 at 80,100,0: modularrouters:sender_module_2 dir=none target=none at=80,100,-10 range=24 filter blacklist none
+  Modular Router: modularrouters:sender_module_2 in slot 0
+  Modular Router: slot 0 points front
+  module 0 at 82,100,0: modularrouters:sender_module_2 dir=front target=north range=24 filter blacklist none
+  Modular Router: modularrouters:sender_module_2 in slot 0
+  Modular Router: slot 0 targets the inventory at 84,100,-25
+  module 0 at 84,100,0: modularrouters:sender_module_2 dir=none target=none at=84,100,-25 range=24 filter blacklist none
+  80,100,0 buffer before: 7 stone
+  82,100,0 buffer before: 8 stone
+  84,100,0 buffer before: 8 stone
+  R1 (Mk2 with the chest selected): the chest holds 8, the buffer 0
+  R2 (the same Mk2, no target): the buffer holds 8, its chest 0
+  R3 (target 25 blocks out, range 24): the buffer holds 8, the chest 0
+  Modular Router: installed modularrouters:range_up_augment (1 in module 0, 1 of 4 augment slot(s) used)
+  module 0 at 84,100,0: modularrouters:sender_module_2 dir=none target=none at=84,100,-25 range=25 augments range_up filter blacklist none
+  84,100,-25: 7 operation(s), +1 item(s) each
+  after one Range Up augment (range=25): the chest holds 8, the buffer 0
+```
+
+and the two new recipes in the same run (`craft_check.py`, J1):
+
+```
+  sender Mk2: a sender Mk1 and an ender pearl, shapeless -> {"count": 1, "item": "modularrouters:sender_module_2", "slot": 200}
+  sender Mk2 x4: four sender Mk1s and an ender pearl, shapeless, four at a time -> {"count": 4, "item": "modularrouters:sender_module_2", "slot": 200}
+  sender Mk2 with a stick where the ender pearl goes -> null
+  nineteen carried recipes craft their declared id and count, the grid empties,
+  each distinctive ingredient is consumed, and twelve wrong-ingredient controls craft nothing
+```
+
+**Why the assertions can fail, four ways.** (1) The 0.2.9 run above fails on the item's own give
+(`EXIT:1`). (2) **R2 is the differential**: the identical Mk2 with **no** target keeps all eight
+although a chest stands ten blocks along its facing inside its 24-block reach — the reading a
+scan-based Mk2 (or a target that silently falls back to the facing) would produce — while R1 beside
+it delivers eight. (3) **R3/R4 are the range boundary itself**: the same module, the same chest
+twenty-five blocks out — nothing at `range=24`, then exactly one item per operation after one Range
+Up augment takes it to `range=25`, so the reach (and the augment's one block) is what sends. (4) The
+unit tests drive the same arithmetic (`sender2_range` at 24/25/48/1, the 24/23 augment limits, the
+`in_range` boundary) and the saved target, so an implementation that ignored the reach or the target
+cannot pass. `SELFTEST=1` fails phase A
+(`FAIL: SELFTEST: the target chest holds stone, so the check is alive`, `EXIT:1`) and the unmodded
+control game exits 1 at its first `give` (`FAIL: give modularrouters:modular_router failed`,
+`EXIT:1`) — `e2e-selftest-0.2.10.log`, `e2e-control-0.2.10.log`.
+
+### A harness finding worth recording (R1)
+
+**A running module moves items while the rig is being set up.** The three buffers are written in one
+`/data merge` block after every module is configured, but rig A's target was already selected and in
+range, so its first operation fired between the write and the "buffer before" read: the log prints
+**7** stone there, not 8. The final assertion is still the honest one (the chest holds **8** and the
+buffer **0**), and R4's `left = 8 − delivered` reconciles it; the lesson is that the informational
+"before" line may already be one operation old, so an assertion is never written on it.
+
+### Ladder (every command in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | **15 errors** (`SENDER2_BASE_RANGE`, `SenderMk2`, `sender2_range`), `could not compile … (lib test)`, exit 101 | `slice10-test-red.log` |
+| red, in game | `tools/e2e.sh` phase R on the **0.2.9** game | `FAIL: give modularrouters:sender_module_2 failed …`, `EXIT:1` | `modularrouters-e2e/e2e-red-sender2.log` |
+| tests | `cargo test --offline` | **67 passed**, 0 failed | `slice10-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice10-clippy.log` |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice10-fmt.log` |
+| manifest bump | `launcher-game.sh build modularrouters` | `Compiling modularrouters (1 of 1)` — the 0.2.10 sources were compiled, not a cached package (`native-mods.json` names `0.2.10`, `libmodularrouters.so` `3780533…`) | `modularrouters-e2e/game-build-0.2.10.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **124,155 B** | `slice10-build.log`, `slice10-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.10 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `124155 bytes, SHA-256 a6da9bf8…469e`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, `EXIT:0` | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` | `sdk-fits-0b14f8a.log` |
+| package contents | `unzip -l modularrouters.hmod` | **111 entries**, no `Cargo.lock` | `slice10-entries.txt` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (67 tests, package = tree) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | **PASS** + `EXIT:0` (package `a6da9bf8…`) | `modularrouters-e2e/e2e-launcher-0.2.10.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.10.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-control-0.2.10.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=45 ok=45`, 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.10: **124,155 B**, SHA-256 `a6da9bf8dac0b6082b52e6d4832e966e74a3b8f219acfbbe4a97e0687b15469e`,
+111 entries, no `Cargo.lock`.
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -1641,18 +1789,19 @@ Every family the jar carries, against what this port does with it. `tested` name
 | Puller Mk1 (container → buffer, 1 item / 20 ticks, range/filter) | tested | E2E A (6 items, one per operation), B, C, D; M5 (ten blocks out: nothing — it reaches the block beside it) |
 | **Puller Mk2 (selected container → buffer, 12 blocks, 24 with augments)** | **tested** | E2E M — the target is selected by a sneak right-click with the module in hand (the chest does not open), the install copies it into the router's save and `info` names it (`at=`, `range=12`), it pulls exactly one item per operation from ten blocks away, an **unselected** Mk2 and a target **13** blocks out both leave the buffer empty while a target at **12** pulls, `dir=left` does not change the block it pulls from, and the target survives a relaunch; `runtime::tests` cover `puller_range` (12/24/1), the Euclidean `in_range`, `Target`, `parse_pos` and `side_towards`; `support::tests` cover the saved target and the readout line |
 | Sender Mk1 (buffer → first container along the facing) | tested | E2E A, B (no sender ⇒ no delivery), D (wall stops it) |
+| **Sender Mk2 (buffer → the selected container, 24 blocks, 48 with augments)** | **tested** | E2E R — the target is selected by a sneak right-click with the module in hand (the chest does not open) and installed by right-click, `info` names it (`at=80,100,-10 range=24`), and **8 stone written into the buffer all reach that chest ten blocks away (chest 8, buffer 0)**; an **identical Mk2 with no target keeps all 8** although a chest stands ten blocks along its facing (the differential), a target **25** blocks out moves **nothing** at `range=24` and **exactly one item per operation** after one Range Up augment takes it to `range=25`; `runtime::tests` cover `sender2_range` (24/25/48/1), the kind and its 24/23 augment limits, `current_range`, the `in_range` boundary and the saved target, `support::tests` the readout and the save |
 | **Void Module (buffer → nothing: the filtered stack is destroyed, down to the module's regulation amount)** | **tested** | E2E Q — eight stone written into a router's buffer are **gone** after fifteen operations, the same module with a Regulator Augment and an amount of 3 stops at **3**, a Sender Mk1 with **no direction** (so no target) beside it keeps all **8** (the differential), and a Void whose whitelist names only dirt destroys **nothing** of the stone (the filter); its readout is `modularrouters:void_module dir=none target=none`, with `regulate=3 augments regulator` once augmented; an empty buffer is no operation; `runtime::tests` cover the count rule, the floor, the filter and the kind, `support::tests` the readout |
 | module install by right-click and by command | tested | E2E F (click), A/C (commands) |
 | placement facing | tested | E2E G (a real placement, not a setblock) |
 | state + persistence across relaunch | tested | E2E H |
-| the four module recipes (blank module, router, puller, sender) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, two wrong-ingredient controls empty) — **now five** with the Void Module (J1: its lava bucket leaves the vanilla bucket remainder, and a stick in its place crafts nothing) |
-| **the two Puller Mk2 recipes** (Mk1 + ender pearl → 1; four Mk1s + one pearl → 4) | **tested** | E2E J1 — each crafts its declared id and count in a real table, the grid empties, the pearl is consumed, and a stick in its place crafts nothing |
-| the five module items (blank module, router, both pullers, sender) | tested | E2E J2 (give + read back, plus the one give in phase M) — **now six** with the Void Module |
+| the five base module recipes (blank module, router, puller, sender, void) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, wrong-ingredient controls empty; the Void Module's lava bucket leaves the vanilla bucket remainder, and a stick in its place crafts nothing) |
+| **the two Puller Mk2 and two Sender Mk2 recipes** (Mk1 + ender pearl → 1; four Mk1s + one pearl → 4; the same pair from the Sender Mk1) | **tested** | E2E J1 — each crafts its declared id and count in a real table, the grid empties, the pearl is consumed, and a stick in its place crafts nothing |
+| the seven module items (blank module, router, both pullers, both senders, void) | tested | E2E J2 (give + read back, plus the one give in phase M and the one in phase R) |
 | the router's loot table | tested | E2E J3 (iron pickaxe, with a vanilla block as the differential) |
 | the `minecraft:mineable/pickaxe` + `needs_iron_tool` block tags | tested | E2E J3 (the router breaks with an iron pickaxe and drops) |
-| the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers and the sender (M installs the Mk2 through it) |
+| the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers, both senders and the void module (M installs the Puller Mk2 and R the Sender Mk2 through it) |
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
-| the other 17 modules (`sender_module_2`/`_3`, `vacuum`, `dropper`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| the other 17 modules (`sender_module_3`, `vacuum`, `dropper`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
 | **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
 | the three upgrade recipes (blank, Speed, Stack) | tested | E2E J1 (real table: id, count, grid emptied, distinctive ingredient consumed, one wrong-ingredient control each) |
 | the three upgrade items | tested | E2E L (give + read back from the inventory) |
@@ -1720,17 +1869,24 @@ binary does not list the port's own tests.
 
 ## Gaps (not in this slice)
 
-1. **Modules**: `sender_module_2`/`_3`, `vacuum`,
+1. **Modules**: `sender_module_3`, `vacuum`,
    `dropper`, `flinger`, `placer`, `breaker`, `extruder_1`/`_2`, `detector`,
    `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`,
    `player`, `activator`, `creative` — and their settings screens.
    **`puller_module_2` ships** (slice 5, E2E M): a selected container within 12
    blocks, 24 with the Range Augments that ship (slice 6, E2E N).
+   **`sender_module_2` ships** (slice 10, E2E R): a selected container within 24
+   blocks, 48 with the Range Augments, with no scan along its facing.
    **`void_module` ships** (slice 9, E2E Q): it destroys the router's own buffer
    down to the module's regulation amount, and its recipe crafts in a real table.
-   1b. **The Mk2's other half**: the item-beam particles `CompiledPullerModule2` adds; a sneak right-click **in air**
-   does not clear a target (the click hook is block-only; `/modularrouters target …
-   none` does).
+   1b. **The Mk2s' other half**: the item-beam particles `CompiledPullerModule2`
+   and `CompiledSenderModule2` add; a sneak right-click **in air** does not clear
+   a target (the click hook is block-only; `/modularrouters target … none` does).
+   1c. **The sender's regulator amount**: upstream's
+   `CompiledSenderModule1.execute` also reads `getRegulationAmount()` — it counts
+   the target's contents and sends only while the target holds fewer than the
+   amount. Slice 8 implemented the rule on the **pull** side only, so a Regulator
+   Augment on a sender is carried and shown but changes nothing here.
 2. **Upgrades**: the other 8 upgrade items (Blast, Camouflage, Energy, Fluid,
    Muffler, Security, Sync, Blank) and their mechanics (gaps 6 and 9).
    **Speed, Stack and the blank base ship, with the five slots and their insert

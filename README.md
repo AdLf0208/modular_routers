@@ -1,11 +1,13 @@
 # Modular Routers for Horizon
 
-A router block that runs item-transfer modules every 20 ticks, four modules of
+A router block that runs item-transfer modules every 20 ticks, five modules of
 the original mod — a **Puller Module Mk1** that takes items from the container
 beside the router into its one-slot buffer, a **Puller Module Mk2** that takes
 them from the container you select with it, up to 12 blocks away (24 with Range
 Augments in its four augment slots), a **Sender Module Mk1** that pushes them
 into the first container along its facing (up to 8 blocks, 16 with range upgrades),
+a **Sender Module Mk2** that inserts them into the container you select with it,
+up to 24 blocks away (48 with Range Augments; no line of sight needed),
 and a **Void Module** that permanently destroys the stack in the buffer, item by
 item (or by the operation's count with a Stack Augment), leaving the module's
 regulation amount behind if one is set — the two upgrades the router's own
@@ -41,7 +43,8 @@ its code).
 
 Craft the router (4 per recipe), a blank module (6), then a puller (blank module
 + sticky piston), a ranged Puller Mk2 (a puller + an ender pearl, or four pullers
-+ + one pearl for four), a sender (blank module + bow + arrows) or a void module
++ + one pearl for four), a sender (blank module + bow + arrows), a Sender Mk2 (a
++sender + an ender pearl, or four senders + one pearl for four) or a void module
 +(blank module + lava bucket, which leaves its bucket). A blank upgrade takes
 4 paper, 3 gold nuggets and a lapis; a Speed Upgrade (3) is redstone, gold and
 gunpowder around it with a blaze rod; a Stack Upgrade is a blank upgrade, stone
@@ -74,7 +77,11 @@ Mk2** ignores the direction and works on the block you gave it: sneak-right-clic
 an inventory with the module in hand to select it (the block is not opened; the
 reply says `target set`), then install the module — it reaches 12 blocks, in the
 router's own level, with no line of sight needed. With no block selected it does
-nothing, and a block out of reach is no operation either. Each Speed
+nothing, and a block out of reach is no operation either. A **Sender Mk2** is the
+same kind of targeted module in the other direction: select a container the same
+way and it inserts the buffer's items there, up to 24 blocks away, with no line
+of sight and no scan along its facing — with no block selected it sends nothing.
+Each Speed
 Upgrade takes two ticks off that second, each Stack Upgrade doubles what one
 operation moves — and a Stack Augment on a module overrides that count for that
 module (one augment 2, two 4, six 64), which is the one augment whose number is
@@ -98,7 +105,7 @@ not implement installs like any other, is listed by `/modularrouters info`,
 keeps its slot, direction and filter in the router's saved data across a
 relaunch, and `/modularrouters remove` takes it out; its behaviour is the owning
 mod's to run. A held item that is not a module this build runs (both pullers,
-the sender and the void module) and is not in the tag is refused
+both senders and the void module) and is not in the tag is refused
 (`Unknown module '…'`).
 
 The tag is a data file (`data/modularrouters/tags/item/modules.json`). At SDK

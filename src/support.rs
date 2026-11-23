@@ -638,13 +638,17 @@ fn airs(host: &dyn Host) -> Option<Vec<BlockKey>> {
     AIRS.iter().map(|name| host.block_key(name)).collect()
 }
 
-/// One Sender Mk1 operation: move from the buffer into the first container in
-/// range (`CompiledSenderModule1.execute`). An item the target refuses stays in
-/// the buffer, as upstream's `insertItem` remainder does.
-fn send(
+/// One sender operation into the container at `target`, reached through `face`.
+///
+/// Both Senders share this insert: the Mk1 finds its target by scanning its
+/// direction, the Mk2's is the block the player selected
+/// (`CompiledSenderModule2.findTargetInventory` overrides only *which* handler,
+/// and `CompiledSenderModule1.execute` is the move either way). An item the
+/// target refuses stays in the buffer, as upstream's `insertItem` remainder does.
+fn send_to(
     host: &mut dyn ServerHost,
     level: LevelRef,
-    pos: Pos,
+    target: Pos,
     face: usize,
     module: &Module,
     entity: &mut mod_api::ModBlockEntityView<'_>,
@@ -660,14 +664,6 @@ fn send(
     };
     let buffer = saved_stack(&*host, &stack);
     let Some((_, wanted)) = pick_send(Some(&buffer), &module.filter, items) else {
-        return false;
-    };
-    // The module's own reach (`IRangedModule.getCurrentRange`): the Sender Mk1
-    // scans 8 blocks, 16 with Range Up augments, 1 at the least.
-    let Some(range) = module.current_range() else {
-        return false;
-    };
-    let Some(target) = sender_target(host, level, pos, face, range) else {
         return false;
     };
     let Some(container) = handler(host, level, target, face) else {
@@ -691,6 +687,61 @@ fn send(
         None => write_buffer(entity, None),
     }
     true
+}
+
+/// One Sender Mk1 operation: move from the buffer into the first container in
+/// range (`CompiledSenderModule1.execute`).
+fn send(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    face: usize,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    items: u32,
+) -> bool {
+    // The module's own reach (`IRangedModule.getCurrentRange`): the Sender Mk1
+    // scans 8 blocks, 16 with Range Up augments, 1 at the least.
+    let Some(range) = module.current_range() else {
+        return false;
+    };
+    let Some(target) = sender_target(host, level, pos, face, range) else {
+        return false;
+    };
+    send_to(host, level, target, face, module, entity, items)
+}
+
+/// One Sender Mk2 operation: move from the buffer into the block the player
+/// selected (`CompiledSenderModule2.findTargetInventory`), reached through the
+/// face the player clicked (`ModuleTarget`).
+///
+/// `CompiledModule.isTargetValid` keeps a target only when it stands in the
+/// router's own level and inside the module's reach (`distSqr <= range²`), so an
+/// out-of-reach or cross-level target is no operation at all. A Mk2 with **no**
+/// selected block does nothing: it never falls back to scanning its direction
+/// (upstream `setupTargets` returns an empty list for an unselected targeted
+/// module, and the router then skips it).
+fn send_target(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    items: u32,
+    dimension: &str,
+) -> bool {
+    let Some(target) = &module.target else {
+        return false;
+    };
+    // The reach is the module's own (`getCurrentRange`), so its Range Augments
+    // decide whether the selected block is in range at all.
+    let Some(range) = module.current_range() else {
+        return false;
+    };
+    if !target.same_world(dimension) || !in_range(pos, target.pos, range) {
+        return false;
+    }
+    send_to(host, level, target.pos, target.face, module, entity, items)
 }
 
 /// One void operation: destroy the buffered items the filter accepts, leaving the
@@ -817,6 +868,17 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
             // A targeted module acts on its selected block, wherever its direction
             // points (upstream's `isDirectional` is false for it).
             ModuleKind::PullerMk2 => pull_target(
+                host,
+                level,
+                pos,
+                module,
+                &mut event.entity,
+                items,
+                &dimension,
+            ),
+            // A targeted sender inserts into the block the player selected, wherever
+            // its direction points (`isDirectional` is false for it too).
+            ModuleKind::SenderMk2 => send_target(
                 host,
                 level,
                 pos,
@@ -2269,6 +2331,45 @@ mod tests {
             lines[1],
             "module 0 at 0,100,0: modularrouters:puller_module_1 dir=front target=north \
              filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn a_sender_mk2s_readout_names_its_target_and_its_twenty_four_blocks() {
+        // The jar's `SenderModule2` is an `ITargetedModule` with `sender2BaseRange`
+        // 24: the module line says where it inserts and how far it reaches, exactly
+        // as the Puller Mk2's does, and the selected block is part of the save the
+        // install rewrites (`CompiledSenderModule2.findTargetInventory`).
+        let target = Target::new([80, 100, -10], crate::runtime::NORTH, "minecraft:the_end");
+        let modules = vec![
+            Module::new(ModuleKind::SenderMk2, Relative::None, Filter::any())
+                .with_target(target.clone()),
+        ];
+        let lines = describe([80, 100, 0], Facing::North, false, &modules, None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 80,100,0: modularrouters:sender_module_2 dir=none target=none \
+             at=80,100,-10 range=24 filter blacklist none"
+        );
+        let mut nbt = Compound::new();
+        write_modules(&mut nbt, &modules);
+        assert_eq!(
+            read_modules(&nbt),
+            modules,
+            "the selected block is part of the module's save"
+        );
+        // Unselected it still reports the reach: a player can see why it does
+        // nothing (an unselected targeted module has no target at all).
+        let bare = vec![Module::new(
+            ModuleKind::SenderMk2,
+            Relative::Front,
+            Filter::any(),
+        )];
+        let lines = describe([80, 100, 0], Facing::North, false, &bare, None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 80,100,0: modularrouters:sender_module_2 dir=front target=north \
+             range=24 filter blacklist none"
         );
     }
 

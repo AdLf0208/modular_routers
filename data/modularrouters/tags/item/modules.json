@@ -3,6 +3,7 @@
     "modularrouters:puller_module_1",
     "modularrouters:puller_module_2",
     "modularrouters:sender_module_1",
+    "modularrouters:sender_module_2",
     "modularrouters:void_module"
   ]
 }

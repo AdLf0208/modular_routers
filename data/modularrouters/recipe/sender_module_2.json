@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    "modularrouters:sender_module_1",
+    "minecraft:ender_pearl"
+  ],
+  "result": { "count": 1, "id": "modularrouters:sender_module_2" }
+}
