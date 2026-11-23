@@ -6,12 +6,12 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.7** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.8** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
-(the three of those on 2026-11-22), 0.2.6 the Range Augments in a module's four augment slots and
-0.2.7 the Stack Augment (both on 2026-11-23). Pin: SDK
+(the three of those on 2026-11-22), 0.2.6 the Range Augments in a module's four augment slots,
+0.2.7 the Stack Augment (both on 2026-11-23) and 0.2.8 the Regulator Augment (2026-11-23). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -1322,6 +1322,162 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.7: **110,063 B**, SHA-256 `5d540a0da4df2fe08465b4cc0591800d8cf0ccbe7b3db7ae4b9a216aece33516`,
 95 entries, no `Cargo.lock`.
 
+## Slice 8 (2026-11-23) — the Regulator Augment (0.2.8)
+
+Slice chosen from this file's own gap list, item 3 — *"The other 8 augments (Mimic, Regulator,
+Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum)"* — the second entry
+(slice 7 took Stack) and the only remaining augment that **acts on the transfer modules this port
+ships**. `CompiledModule.getRegulationAmount` is
+`augmentCount(REGULATOR_AUGMENT) > 0 ? commonSettings.regulatorAmount() : 0`, and
+`findItemToPull` reads it as *"leave at least this many of the item in the source"*. Tier fit:
+**machines**, the ledger row — the module's saved settings, the router's own pull and the carried
+item; no renderer and no new machine.
+
+### The artefact's numbers, re-read
+
+At the same commit as slices 5–7 (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`):
+
+| upstream | what it says | used for |
+|---|---|---|
+| `item/augment/RegulatorAugment.java:14` | `getMaxAugments` = **1**, and **0** for `DetectorModule`/`ExtruderModule2` | `REGULATOR_LIMIT`, `NO_REGULATOR_AUGMENT` (two ids), `ModuleKind::regulator_limit` |
+| `logic/compiled/CompiledModule.java:154` | `getRegulationAmount` is the saved amount only while the augment is installed | `Module::regulation_amount` |
+| `logic/compiled/CompiledModule.java:267` | `transferToRouter` builds a `CountedItemStacks` only when the amount is not 0 | the count over the source's slots |
+| `logic/compiled/CompiledModule.java:305` | `findItemToPull`: `count.getInt(stack) - nToTake >= getRegulationAmount()` for the buffered resource **and** each scanned slot | `pick_pull`'s `keep` rule |
+| `logic/settings/ModuleSettings.java:13` | `regulatorAmount` defaults to **0** | the module's saved default |
+| `data/modularrouters/recipe/regulator_augment.json` | shaped `" Q ", "CMC", " Q "` → **1** (Q = `c:gems/quartz`, C = comparator, M = augment core) | the carried recipe, `c:` mapped to `minecraft:quartz` as gap 10 records |
+
+The rule is **whole-operation**, not a partial take: a source whose total minus the operation's
+`nToTake` would fall below the floor refuses the pull entirely, so the source stops at exactly the
+amount. A module that saves an amount **without** the augment reads 0, because the augment is the
+switch.
+
+### How it works here
+
+- **`src/runtime.rs`** — `AugmentKind::Regulator` (with `of`/`from_name("regulator")`/`is_known`/
+  `item`/`name`) beside the three shipped augments; `ModuleKind::regulator_limit` is one on every
+  module except `modularrouters:detector_module` and `modularrouters:extruder_module_2`, which take
+  none (a module this port only carries takes one, because upstream's rule is a list of classes that
+  take none). `Module` gains the saved `regulation` amount, `regulation()`/`with_regulation`/
+  `set_regulation`, and `regulation_amount()` — the amount only while a Regulator augment is in its
+  slots. `pick_pull` gains `keep`: it counts the wanted resource **over the source's slots**, refuses
+  when `total − items < keep`, and skips a scan candidate at the floor (upstream `findItemToPull`).
+  `keep = 0` is exactly the pre-augment behaviour.
+- **`src/support.rs`** — `read_modules`/`write_modules` keep the amount as `Modules[i].Regulate` (an
+  int, written only when it is not zero, so an untouched module's entry keeps its shape);
+  `pull` passes `module.regulation_amount()`; the readout names `regulate=<n>` **only when the
+  augment is installed** (every existing line stays byte-identical); `/modularrouters regulate <pos>
+  <slot> <amount>` is the module screen's text field at level 2 and **refuses a module without the
+  augment**, as the screen hides the field and the value would be ignored.
+- **Content** — the item, its 26.3 item model (the jar's `augment/regulator_augment.png`), the
+  jar's recipe with `c:gems/quartz` → `minecraft:quartz`, the `modularrouters:augments` tag entry,
+  lang and the creative tab.
+
+### TDD, in the order the ruling asks for
+
+**Red, unit** — three tests (two `runtime`, one `support`) written before any of the names existed
+(`slice8-test-red.log`, **38 errors**, `cargo` exit 101):
+
+```
+error[E0599]: no variant, associated function, or constant named `Regulator` found for enum `runtime::AugmentKind` in the current scope
+error[E0599]: no method named `with_regulation` found for struct `runtime::Module` in the current scope
+error[E0061]: this function takes 5 arguments but 6 arguments were supplied
+error[E0425]: cannot find value `MODULE_REGULATE` in this scope
+error: could not compile `modularrouters` (lib test) due to 38 previous errors
+```
+
+**Red, in game** — phase P written first and run on the shipped **0.2.7** game
+(`../_shared/evidence/modularrouters-e2e/e2e-red-regulator.log`, package `5d540a0d…`): the item is
+not in that package, so the first give fails and no assertion after it can run.
+
+```
+FAIL: give modularrouters:regulator_augment failed (is the regulator in this package?)
+EXIT:1
+```
+
+Then the minimal implementation, then the same phase green.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.8.log`)
+
+```
+  package: f03fcc7bff45d7620dab1435bf41bd8ec396f5f12fa85da7a92953b05167dad1  modularrouters.hmod
+== P: the Regulator Augment — a pull leaves the amount in the source ==
+  Modular Router: installed modularrouters:regulator_augment into module 0 (1 augment(s), 1 of 4 slots used)
+  module 0 at 66,100,0: modularrouters:puller_module_1 dir=left target=east regulate=0 augments regulator filter blacklist none
+  Modular Router: module 0 leaves 3 item(s) in the source
+  module 0 at 66,100,0: modularrouters:puller_module_1 dir=left target=east regulate=3 augments regulator filter blacklist none
+  module 0 at 70,100,0: modularrouters:puller_module_1 dir=left target=east regulate=0 augments regulator filter blacklist none
+  Modular Router: module 0 leaves 3 item(s) in the source
+  module 0 at 70,100,0: modularrouters:puller_module_1 dir=left target=east regulate=3 augments regulator filter blacklist none
+  Modular Router: module 0 has no regulator augment
+  module 0 at 68,100,0: modularrouters:puller_module_1 dir=left target=east filter blacklist none
+  module 0 at 66,100,0: modularrouters:puller_module_1 dir=front target=north regulate=3 augments regulator filter blacklist none
+  rig A: the buffer holds 9 and the chest 3 of its 12
+  rig B (no augment): the buffer holds 12 and the chest 0 of its 12
+  rig C (a source of exactly 3): the buffer holds 0 and the chest 3
+```
+
+and the new recipe in the same run (`craft_check.py`, J1):
+
+```
+  regulator augment: quartz above and below an augment core, a comparator either side -> {"count": 1, "item": "modularrouters:regulator_augment", "slot": 200}
+  sixteen carried recipes craft their declared id and count, the grid empties,
+  each distinctive ingredient is consumed, and ten wrong-ingredient controls craft nothing
+```
+
+**Why the assertions can fail, four ways.** (1) The 0.2.7 run above fails on the item's own give
+(`EXIT:1`). (2) Rig B is the differential: the same Mk1, chest and interval with **no** augment
+reads 12/0 — the shape a regulator implemented as "stop the router" or "take 12 anyway" produces —
+while rig A beside it reads 9/3, so the augment and its amount are what leave three. (3) Rig C is
+the boundary: a chest of exactly three is **never touched**, so the rule is "the operation would
+drop the total below the floor" and not "take up to total − floor" (which would take one and leave
+two). (4) The unit test drives the same arithmetic over the source's slots (`pick_pull`), including
+the two-slot total and `keep = 0`, so a save with the amount and no augment cannot pass.
+`SELFTEST=1` fails phase A (`FAIL: SELFTEST: the target chest holds stone, so the check is alive`,
+`EXIT:1`) and the unmodded control game exits 1 at its first `give`
+(`FAIL: give modularrouters:modular_router failed`, `EXIT:1`) — `e2e-selftest-0.2.8.log`,
+`e2e-control-0.2.8.log`.
+
+**The brief's `ctl wait 100` cannot produce 9 pulls.** At this pin one operation is 20 ticks and
+`ctl wait 100` is five operations, so a twelve-stone source still holds seven; the leg waits **300
+ticks** (fifteen operations), which is what makes "nine in the buffer, three left" observable at
+all. The numbers asserted are the brief's 9/3, 12/0 and 0/3.
+
+### A harness finding worth recording (P3)
+
+**A regulator set after the first operation regulates nothing already taken.** The first green
+attempt pointed all three rigs at their chests while the augment/amount were being installed, and
+rig C's chest of three was empty by the time `regulate` ran (`FAIL: the regulated puller took 3 from
+a source of exactly three`, `../_shared/evidence/modularrouters-e2e/e2e-0.2.8-p3-prerun-red.log`).
+The modules now start `dir=left` (air, as O4 does) and turn `front` **after** the amount is saved;
+the assertion was right and stayed.
+
+### Ladder (every command in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | **38 errors**, `could not compile … (lib test)`, exit 101 | `slice8-test-red.log` |
+| red, in game | `tools/e2e.sh` phase P on the **0.2.7** game | `FAIL: give modularrouters:regulator_augment failed …`, `EXIT:1` | `modularrouters-e2e/e2e-red-regulator.log` |
+| red, in game (harness) | the first phase P3 on the fixed port | `FAIL: the regulated puller took 3 from a source of exactly three` (rigs ran before the amount was saved) | `modularrouters-e2e/e2e-0.2.8-p3-prerun-red.log` |
+| tests | `cargo test --offline` | **62 passed**, 0 failed | `slice8-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice8-clippy.log` (= `sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice8-fmt.log` (= `sdk-fmt.log`) |
+| manifest bump | `launcher-game.sh build modularrouters` | `Compiling modularrouters (1 of 1)` — the 0.2.8 sources were compiled, not a cached package | `modularrouters-e2e/game-build-0.2.8.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second `cmp`-identical, **115,961 B** | `slice8-build.log`, `slice8-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.8 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `115961 bytes, SHA-256 f03fcc7b…dad1`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, `EXIT:0` | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` | `sdk-fits-0b14f8a.log` |
+| package contents | `unzip -l modularrouters.hmod` | **100 entries**, no `Cargo.lock` | `slice8-entries.txt` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (62 tests) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` | `modularrouters-e2e/e2e-launcher-0.2.8.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.8.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-control-0.2.8.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=37 ok=37`, 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.8: **115,961 B**, SHA-256 `f03fcc7bff45d7620dab1435bf41bd8ec396f5f12fa85da7a92953b05167dad1`,
+100 entries, no `Cargo.lock`.
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -1352,10 +1508,12 @@ Every family the jar carries, against what this port does with it. `tested` name
 | the `modularrouters:upgrades` item tag (the upgrade registry) | tested | E2E L (the package's tag lists both; a world pack's tag makes `minecraft:gunpowder` an upgrade, which is refused by message and changes nothing) |
 | the other 8 upgrade items (Blast, Camouflage, Energy, Fluid, Muffler, Security, Sync, Blank) | not ported (their mechanics are gaps 6 and 9; a tagged upgrade this build does not run is refused) | gap 2 for the items, gaps 6/9 for the behaviour |
 | **Range Up/Down Augments and a module's four augment slots** (one kind per slot, the module's own per-augment limit, removal, the saved entry) | **tested** | E2E N — a Mk2 whose target is **14** blocks out moves nothing at `range=12` and **exactly one item per operation** after four Range Up augments (installed by sneak right-click) take it to `range=16`; one Range Down augment on a **12**-block target freezes the pull at `range=11` and comes back to the inventory when removed; a Sender Mk1's twelve-block scan only starts delivering at `range=16` with eight Range Up augments; a Range augment is refused on a module that is not ranged; a saved slot of fifteen reads as twelve (`range=24`, the hard maximum) and a fifth slot is cut; the augments survive a relaunch; `runtime::tests` cover the limits (12/11 for the Mk2, 8/7 for the Sender, 0 for the Mk1), the one-kind-per-slot rule, the carried foreign id and the capped read |
-| the three augment items and the five augment recipes (core, Range Up, Range Down, and the two conversions) | tested | E2E N1 (three items given and read back, the `augments` tag lists both) and J1 (each crafts its declared id and count ×4/×4/×4/×1/×1 in a real table, the grid empties, the distinctive ingredient is consumed, two wrong-ingredient controls craft nothing) → **now four items and six recipes** with the Stack Augment (below) |
+| the three augment items and the five augment recipes (core, Range Up, Range Down, and the two conversions) | tested | E2E N1 (three items given and read back, the `augments` tag lists both) and J1 (each crafts its declared id and count ×4/×4/×4/×1/×1 in a real table, the grid empties, the distinctive ingredient is consumed, two wrong-ingredient controls craft nothing) → **now five items and seven recipes** with the Stack and Regulator Augments (below) |
 | **the Stack Augment and the count one operation moves** (`CompiledModule.getItemsPerTick`: `n > 0 ? min(1 << n, 64) : router`) | **tested** | E2E O — a Mk1 whose router holds one Stack Upgrade (`2 item(s) every 20 ticks`) and whose module holds two Stack Augments moves **exactly 4** per operation (7 operations, +4 each; a multiplying augment would move 8 and `sample_steps` fails on any other delta), the identical module with **no** upgrade moves **4 as well** while the plain Mk1 beside them moves **1**, a seventh augment in the slot is refused, six augments read `items=64` and one operation empties a 64-strong chest into the one-slot buffer, the count reads back after a relaunch and it moves four again; `runtime::tests` cover the override (4 not 8, 4 not 1), the 64 cap, the six-per-slot limit and the capped saved count; the Stack Augment's recipe and item are in N1/J1 |
 | the Stack Augment's `getMaxAugments = 0` modules (Detector, both Extruders, Breaker, Placer, both Fluid modules) | `blocked(module-kind)` — unit-tested only | `runtime::tests::a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items` asserts the seven ids take none (and a foreign module takes upstream's six); none of those seven kinds is implemented here (gap 1), so there is no module in game that could show the refusal |
-| the other 8 augments (Mimic, Regulator, Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum) | not ported (a tagged augment is carried inertly, one per slot, and its saved count is kept) | gap 3 |
+| **the Regulator Augment and a module's saved regulation amount** (`getRegulationAmount`: the amount only with the augment; `findItemToPull` refuses an operation that would drop the source below it) | **tested** | E2E P — a Mk1 whose chest holds twelve stone, with the augment (installed by sneak right-click) and `/modularrouters regulate … 3`, ends with **nine in its buffer and three in the chest**; the identical rig with no augment empties the chest into its buffer (**12 / 0**, the differential), `regulate` is refused on a module without the augment, and a chest of **exactly three is never touched** (the boundary); the amount is named `regulate=3` only with the augment and survives the save; `runtime::tests` cover the whole-operation rule (`6 − 4 < 3` refuses), the two-slot total, `keep = 0`, and the one-per-slot limit with none on the Detector/Extruder Mk2; `support::tests` cover the saved amount and the readout |
+| the Regulator Augment's `getMaxAugments = 0` half (the Detector and the Extruder Mk2) | `blocked(module-kind)` — unit-tested only | `runtime::tests::a_regulator_augment_fills_one_slot_and_none_on_the_detector_and_the_second_extruder` asserts the two ids take none (and every other id, including a carried one, takes one); neither kind is implemented here (gap 1), so no module in game can show the refusal |
+| the other 7 augments (Mimic, Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum) | not ported (a tagged augment is carried inertly, one per slot, and its saved count is kept) | gap 3 |
 | the router screen and every module screen | not ported | gap 4 (commands + a right-click readout stand in) |
 | item beams, particles, sounds | not ported | gap 5 |
 | redstone modes, eco mode, security upgrade | not ported | gap 6 |
@@ -1425,7 +1583,7 @@ binary does not list the port's own tests.
    **Speed, Stack and the blank base ship, with the five slots and their insert
    rules** (slice 4, E2E L): those two are what the tick-rate and stack formulas
    are about.
-3. **The other 8 augments** (Mimic, Regulator, Pickup Delay, Redstone, Fast
+3. **The other 7 augments** (Mimic, Pickup Delay, Redstone, Fast
    Pickup, Filter Round Robin, Pushing, XP Vacuum) and **smart filters** (5:
    bulk item, mod, tag, regex, inspection) and the RegexMatcher; this slice's
    filter is a whitelist/blacklist over item ids. **The Range Up/Down Augments and
@@ -1436,6 +1594,12 @@ binary does not list the port's own tests.
    `getMaxAugments = 0` half (the Detector, both Extruders, the Breaker, the
    Placer and both Fluid modules) is unit-tested and `blocked(module-kind)` —
    those seven kinds are gap 1, so no module in game can show the refusal.
+   **The Regulator Augment ships** (slice 8, E2E P) with the module's saved
+   `regulate` amount and upstream's whole-operation rule ("the source must still
+   hold at least N after the take"); its `getMaxAugments = 0` half (the Detector
+   and the Extruder Mk2) is unit-tested and `blocked(module-kind)` for the same
+   reason. The regulator's other upstream users (the Dropper, the Extruders and
+   the Fluid modules) are gap 1.
 4. **GUI**: the router screen (module/upgrade/buffer slots, redstone/eco
    buttons) and every module screen. Replaced here by commands and a right-click
    readout — a player-facing deviation.

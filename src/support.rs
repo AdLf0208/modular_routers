@@ -49,6 +49,11 @@ const MODULE_ITEM: &str = "item";
 const MODULE_DIR: &str = "dir";
 const MODULE_WHITELIST: &str = "whitelist";
 const MODULE_FILTER: &str = "filter";
+/// The amount a Regulator Augment makes the module leave in the source
+/// (`ModuleSettings.regulatorAmount`). Upstream keeps it in the item's settings
+/// component; this port keeps the module's settings in the router's save, so it
+/// rides beside them. Written only when it is not the default of zero.
+const MODULE_REGULATE: &str = "Regulate";
 /// A targeted module's selected block inside its `Modules` entry: upstream keeps
 /// it on the module item (`ModDataComponents.MODULE_TARGET_LIST`); this port keeps
 /// the module's settings in the router's save, so the target travels with them.
@@ -90,7 +95,7 @@ const MODULE_TAG: &str = "modularrouters:modules";
 /// Speed and Stack have a behaviour here; a tagged upgrade this build does not
 /// run is refused rather than counted as one it can.
 const UPGRADE_TAG: &str = "modularrouters:upgrades";
-/// The item tag that declares a module augment. The three this build runs have a
+/// The item tag that declares a module augment. The four this build runs have a
 /// behaviour here; a tagged augment it does not run is carried one per slot and
 /// stays inert.
 const AUGMENT_TAG: &str = "modularrouters:augments";
@@ -305,7 +310,8 @@ fn read_modules(nbt: &Compound) -> Vec<Module> {
                     .collect(),
                 _ => Vec::new(),
             };
-            let module = Module::new(kind, direction, Filter::new(whitelist, items));
+            let module = Module::new(kind, direction, Filter::new(whitelist, items))
+                .with_regulation(count(entry, MODULE_REGULATE));
             let module = match read_target(entry) {
                 Some(target) => module.with_target(target),
                 None => module,
@@ -338,6 +344,12 @@ fn write_modules(nbt: &mut Compound, modules: &[Module]) {
                 .map(|item| Tag::String(item.as_str().into()))
                 .collect();
             entry.insert(MODULE_FILTER.into(), Tag::List(items));
+            if module.regulation() > 0 {
+                entry.insert(
+                    MODULE_REGULATE.into(),
+                    Tag::Int(i32::try_from(module.regulation()).unwrap_or(i32::MAX)),
+                );
+            }
             if let Some(target) = &module.target {
                 write_target(&mut entry, target);
             }
@@ -574,6 +586,7 @@ fn pull(
         buffer.as_ref(),
         max_for,
         items,
+        module.regulation_amount(),
     ) else {
         return false;
     };
@@ -1389,6 +1402,13 @@ fn module_line(
         0 => String::new(),
         _ => format!(" items={}", module.items_per_operation(router_items)),
     };
+    // `getRegulationAmount`: the amount is in effect only with a Regulator
+    // Augment, which is also when the module screen shows its text field, so say
+    // both — a module without the augment keeps the line it always had.
+    let regulate = match module.augments().count(&AugmentKind::Regulator) {
+        0 => String::new(),
+        _ => format!(" regulate={}", module.regulation()),
+    };
     let augments = if module.augments().is_empty() {
         String::new()
     } else {
@@ -1404,7 +1424,7 @@ fn module_line(
         format!(" augments {}", list.join(","))
     };
     format!(
-        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{items}{augments} filter {mode} {list}",
+        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{items}{regulate}{augments} filter {mode} {list}",
         pos[0],
         pos[1],
         pos[2],
@@ -1468,7 +1488,7 @@ pub(crate) fn declare_commands(commands: &mut Vec<Command>) {
 /// player-chosen coordinates — and `install`/`upgrade`/`augment` add to it with no
 /// item cost — so they are gamemaster tools (level 2), as `/data` is; `info` is a
 /// readout.
-pub(crate) fn usages() -> [(&'static str, u8); 9] {
+pub(crate) fn usages() -> [(&'static str, u8); 10] {
     [
         ("modularrouters info <pos:block_pos>", 0),
         (
@@ -1494,6 +1514,10 @@ pub(crate) fn usages() -> [(&'static str, u8); 9] {
         ),
         (
             "modularrouters augment <pos:block_pos> <slot:integer> remove <augment:word>",
+            2,
+        ),
+        (
+            "modularrouters regulate <pos:block_pos> <slot:integer> <amount:integer>",
             2,
         ),
         (
@@ -1532,8 +1556,7 @@ fn say(host: &mut dyn ServerHost, line: &str) {
     let _ = host.commands().feedback(Text::literal(line));
 }
 
-const USAGE: &str =
-    "Usage: /modularrouters info|install|remove|direction|filter|upgrade|augment <x> <y> <z> …";
+const USAGE: &str = "Usage: /modularrouters info|install|remove|direction|filter|upgrade|augment|regulate <x> <y> <z> …";
 
 /// Run `/modularrouters info|install|remove|direction|filter`: the GUI's
 /// controls, as the harness and a player without the screen use them.
@@ -1614,6 +1637,16 @@ pub(crate) fn run_command(host: &mut dyn ServerHost, event: &mut RunModCommandEv
                 return Flow::Cancel;
             };
             let line = set_augment(host, level, pos, slot, mode, augment);
+            say(host, &line);
+        }
+        ["regulate"] => {
+            let (Some(slot), Some(amount)) =
+                (integer(invocation, "slot"), integer(invocation, "amount"))
+            else {
+                say(host, USAGE);
+                return Flow::Cancel;
+            };
+            let line = set_regulation(host, level, pos, slot, amount);
             say(host, &line);
         }
         ["target"] => {
@@ -1849,7 +1882,7 @@ fn set_upgrade(
     }
 }
 
-/// `/modularrouters augment <pos> <slot> <add|remove> <range_up|range_down|stack>`:
+/// `/modularrouters augment <pos> <slot> <add|remove> <range_up|range_down|stack|regulator>`:
 /// the module screen's four augment slots, for a player without the screen (the
 /// sneak-right-click path is the other half, in [`right_click`]).
 fn set_augment(
@@ -1865,7 +1898,7 @@ fn set_augment(
             .to_string();
     };
     let Some(kind) = AugmentKind::from_name(augment) else {
-        return "Unknown augment: range_up, range_down or stack".to_string();
+        return "Unknown augment: range_up, range_down, stack or regulator".to_string();
     };
     match mode {
         "add" => add_augment(host, level, pos, slot, &kind),
@@ -1953,6 +1986,37 @@ fn remove_augment(
     }
 }
 
+/// `/modularrouters regulate <pos> <slot> <amount>`: the module screen's regulator
+/// text field. Upstream shows and honours the amount only while a Regulator
+/// Augment is installed (`CompiledModule.getRegulationAmount`), so the command
+/// refuses a module without one rather than saving a number nothing reads.
+fn set_regulation(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    slot: i32,
+    amount: i32,
+) -> String {
+    let Ok(slot) = usize::try_from(slot) else {
+        return "Usage: /modularrouters regulate <x> <y> <z> <slot> <amount>".to_string();
+    };
+    let Ok(amount) = u32::try_from(amount) else {
+        return "Modular Router: the regulation amount cannot be negative".to_string();
+    };
+    let applied = edit_module(host, level, pos, slot, |module| {
+        if module.augments().count(&AugmentKind::Regulator) == 0 {
+            return false;
+        }
+        module.set_regulation(amount);
+        true
+    });
+    if applied {
+        format!("Modular Router: module {slot} leaves {amount} item(s) in the source")
+    } else {
+        format!("Modular Router: module {slot} has no regulator augment")
+    }
+}
+
 /// An item argument without a namespace is a vanilla item, as the GUI's list is.
 fn namespaced(item: &str) -> String {
     if item.contains(':') {
@@ -1977,7 +2041,7 @@ mod tests {
     #[test]
     fn the_readout_is_open_and_every_mutation_is_operator_gated() {
         let usages = usages();
-        assert_eq!(usages.len(), 9);
+        assert_eq!(usages.len(), 10);
         for (usage, level) in usages {
             let expected = if usage.contains(" info ") { 0 } else { 2 };
             assert_eq!(level, expected, "{usage}");
@@ -2488,6 +2552,58 @@ mod tests {
             lines[1],
             "module 0 at 0,100,0: modularrouters:puller_module_1 dir=front target=north \
              filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn a_regulation_amount_round_trips_and_is_named_only_with_its_augment() {
+        // `commonSettings.regulatorAmount()` is saved on the module, and
+        // `getRegulationAmount` reads it only while a Regulator Augment is in its
+        // slots. A value saved without the augment is kept but has no effect.
+        let module = Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any())
+            .with_regulation(3)
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::Regulator, 1).expect("one regulator augment"),
+            ]));
+        let mut nbt = Compound::new();
+        write_modules(&mut nbt, std::slice::from_ref(&module));
+        let read = read_modules(&nbt);
+        assert_eq!(
+            read,
+            vec![module],
+            "the regulation amount is part of the module's save"
+        );
+        assert_eq!(read[0].regulation(), 3);
+        assert_eq!(read[0].regulation_amount(), 3);
+        let lines = describe([0, 100, 0], Facing::North, false, &read, None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:puller_module_1 dir=front target=north \
+             regulate=3 augments regulator filter blacklist none"
+        );
+        // The amount is written only when it is not the default, so a module that
+        // never used the augment keeps the entry shape it had before it existed.
+        let mut plain = Compound::new();
+        write_modules(&mut plain, &[puller(Relative::Front, Filter::any())]);
+        let Some(Tag::List(entries)) = plain.get(&KEY_MODULES.into()) else {
+            panic!("the module list");
+        };
+        let Tag::Compound(entry) = &entries[0] else {
+            panic!("the module entry");
+        };
+        assert!(!entry.contains_key(&MODULE_REGULATE.into()));
+        // A module that saves an amount but has no Regulator augment reads 0 in
+        // effect and keeps its old line, exactly as `getRegulationAmount` is
+        // written. (The command refuses to set the amount in that state.)
+        let bare =
+            Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any()).with_regulation(7);
+        assert_eq!(bare.regulation_amount(), 0);
+        let lines = describe([0, 100, 0], Facing::North, false, &[bare], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:puller_module_1 dir=front target=north \
+             filter blacklist none",
+            "without the augment the line is the one it always had"
         );
     }
 }

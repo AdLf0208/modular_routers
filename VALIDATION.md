@@ -1,5 +1,73 @@
 # Modular Routers — validation ladder
 
+## 0.2.8 — the Regulator Augment (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 8: `AugmentKind::Regulator`
+in `runtime` with `ModuleKind::regulator_limit` (one, and none on the Detector and the Extruder
+Mk2), the module's saved `regulation` amount and `Module::regulation_amount()` (upstream's
+`getRegulationAmount`: the amount only while the augment is installed), and `pick_pull`'s `keep`
+rule — the source's whole count over its slots must still hold at least the amount **after** the
+operation's take, or the pull is refused whole. Glue: the saved `Regulate` int, the tick passing
+`regulation_amount()`, the readout's `regulate=<n>` on an augmented module and
+`/modularrouters regulate <pos> <slot> <amount>` (refused without the augment), plus the carried
+`regulator_augment` item with the jar's recipe, model, texture, tag, lang and creative-tab entry.
+Unit work: 3 new tests (two `runtime`, one `support`), 62 in all.
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the names existed (red) | **38 errors** (`no variant … Regulator`, `no method named with_regulation`, `this function takes 5 arguments but 6 were supplied`, `cannot find value MODULE_REGULATE`), `could not compile … (lib test)`, exit 101 | `slice8-test-red.log` |
+| 2 | `tools/e2e.sh` phase P on the **0.2.7** game (red) | `FAIL: give modularrouters:regulator_augment failed (is the regulator in this package?)`, `EXIT:1` | `modularrouters-e2e/e2e-red-regulator.log` |
+| 3 | `tools/e2e.sh` phase P3 on the fixed port, first attempt (harness red) | `FAIL: the regulated puller took 3 from a source of exactly three` — the modules ran at their chests while the amount was being saved; they now start `dir=left` and turn `front` after it | `modularrouters-e2e/e2e-0.2.8-p3-prerun-red.log` |
+| 4 | `launcher-game.sh build modularrouters` (manifest 0.2.7 → 0.2.8) | `Compiling modularrouters (1 of 1)` — no cached-package reuse | `modularrouters-e2e/game-build-0.2.8.log` |
+| 5 | `cargo test --offline` | **62 passed**, 0 failed | `slice8-test.log` (= `sdk-test.log`) |
+| 6 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice8-clippy.log` (= `sdk-clippy.log`) |
+| 7 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice8-fmt.log` (= `sdk-fmt.log`) |
+| 8 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **115,961 B** | `slice8-build.log`, `slice8-build-second.log` |
+| 9 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.8 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `115961 bytes, SHA-256 f03fcc7b…dad1`, **exit 0** | `sdk-check.log` |
+| 10 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 11 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 12 | `unzip -l modularrouters.hmod` | **100 entries**, no `Cargo.lock` | `slice8-entries.txt` |
+| 13 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (62 tests) | `verify-sdk-package.log` |
+| 14 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, K, L, M, **N**, **O**, **P**, J1–J4 | `modularrouters-e2e/e2e-launcher-0.2.8.log` |
+| 15 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.8.log` |
+| 16 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.8.log` |
+| 17 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=37 ok=37`, 0 missing/bad exit lines | — |
+| 18 | `python3 ports/tools/check-skills.py --notes ports/modularrouters --strict` | PASS | — |
+
+### What phase P proves (parity rule)
+
+Three rigs, one Puller Mk1 each with a chest one block north, all pointed at air until their
+augment and amount are saved, then all turned `front` together:
+
+| rig | augment | amount | chest | buffer after 300 ticks | chest after |
+|---|---|---:|---:|---:|---:|
+| A (66,100,0) | Regulator, installed by sneak right-click | 3 | 12 stone | **9** | **3** |
+| B (68,100,0) | none — `regulate` is refused | — | 12 stone | **12** | **0** |
+| C (70,100,0) | Regulator via `/modularrouters augment … add regulator` | 3 | 3 stone | **0** | **3** |
+
+- **A is the feature**: nine operations of one item, then the tenth is refused because
+  `12 − 9 = 3` is the floor. The readout names `regulate=3` only after the augment is in the module.
+- **B is the differential**: the same rig, chest and interval without the augment empties the chest
+  (`12 / 0`) — the reading a regulator that "stops the router" or ignores the amount would give, so
+  A's `9 / 3` is the augment's, not the harness's.
+- **C is the boundary**: a source holding exactly the amount is never touched, which separates
+  "refuse unless the total would stay ≥ N" from "take up to total − N".
+- **The recipe** (J1) crafts the item in a real table: quartz above and below an augment core, a
+  comparator either side, → 1; a stick in a comparator's place crafts nothing.
+- **Unit tests** drive the same arithmetic over a multi-slot source, the `6 − 4 < 3` refusal and
+  `keep = 0`, so a save that carries the amount without the augment cannot pass.
+
+### Delivered package (0.2.8)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 115,961 B | `f03fcc7bff45d7620dab1435bf41bd8ec396f5f12fa85da7a92953b05167dad1` | 100 |
+
 ## 0.2.7 — the Stack Augment (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

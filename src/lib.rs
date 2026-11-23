@@ -11,9 +11,11 @@
 //! takes from the container the player selects up to twelve blocks away, a
 //! **Sender Mk1** pushes them out of the buffer into the first container along its
 //! facing, a **Speed Upgrade** shortens the interval by two ticks, a **Stack
-//! Upgrade** doubles the items per operation, and the **Range Augments** in a
-//! module's four augment slots move that module's reach one block each. With no
-//! upgrades that is one operation a second, one item each.
+//! Upgrade** doubles the items per operation, the **Range Augments** in a
+//! module's four augment slots move that module's reach one block each, a **Stack
+//! Augment** sets how many items one operation of that module moves, and a
+//! **Regulator Augment** makes a pull leave the module's saved amount of the item
+//! in the source. With no upgrades that is one operation a second, one item each.
 //!
 //! The rules are what [`runtime`] decides (tick rate, items per operation, the
 //! relative module direction, the filter, the pull and send operations);

@@ -3,7 +3,7 @@
 
 Called by `tools/e2e.sh` with the open game's control socket. The harness's
 crafting table exposes the 3x3 grid as slots 100-108 (row-major) and the result
-as 200 (`ctl screen`). For each of the fourteen carried recipes this:
+as 200 (`ctl screen`). For each of the sixteen carried recipes this:
 
 1. replaces the table (a fresh block entity, so a stale grid cannot leak in)
    and clears the inventory;
@@ -14,7 +14,7 @@ as 200 (`ctl screen`). For each of the fourteen carried recipes this:
 6. asserts the grid is empty and the recipe's distinctive ingredient was
    consumed.
 
-Nine deliberately wrong patterns must leave the result empty, so the check cannot
+Ten deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -44,6 +44,7 @@ AUGMENT_CORE = "modularrouters:augment_core"
 RANGE_UP = "modularrouters:range_up_augment"
 RANGE_DOWN = "modularrouters:range_down_augment"
 STACK_AUGMENT = "modularrouters:stack_augment"
+REGULATOR_AUGMENT = "modularrouters:regulator_augment"
 
 
 def main() -> int:
@@ -319,6 +320,23 @@ def main() -> int:
         ],
         STACK_AUGMENT, 1, STACK_UPGRADE,
     )
+    # The Regulator Augment: the jar's shaped recipe, quartz above and below an
+    # augment core with a comparator either side (`c:gems/quartz` is the quartz
+    # item, as for the Range augments).
+    check(
+        "regulator augment: quartz above and below an augment core, a comparator either side",
+        [
+            ("minecraft:quartz", 2),
+            ("minecraft:comparator", 2),
+            (AUGMENT_CORE, 1),
+        ],
+        [
+            ("minecraft:quartz", every(GRID["tm"], GRID["bm"])),
+            ("minecraft:comparator", every(GRID["ml"], GRID["mr"])),
+            (AUGMENT_CORE, every(GRID["mm"])),
+        ],
+        REGULATOR_AUGMENT, 1, "minecraft:comparator",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -415,13 +433,28 @@ def main() -> int:
             ("minecraft:stick", every(GRID["mm"])),
         ],
     )
+    empty_control(
+        "regulator augment with a stick where a comparator goes",
+        [
+            ("minecraft:quartz", 2),
+            ("minecraft:comparator", 1),
+            ("minecraft:stick", 1),
+            (AUGMENT_CORE, 1),
+        ],
+        [
+            ("minecraft:quartz", every(GRID["tm"], GRID["bm"])),
+            ("minecraft:comparator", every(GRID["ml"])),
+            ("minecraft:stick", every(GRID["mr"])),
+            (AUGMENT_CORE, every(GRID["mm"])),
+        ],
+    )
 
     if failures:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  fifteen carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and nine wrong-ingredient controls craft nothing")
+    print("  sixteen carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and ten wrong-ingredient controls craft nothing")
     return 0
 
 

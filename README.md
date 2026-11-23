@@ -11,9 +11,10 @@ slots** (a **Speed Upgrade** shortens the operation interval by two ticks,
 20 → 18 → 16 … down to 2; a **Stack Upgrade** doubles the items one operation
 moves, 1 → 2 → 4 … up to 64), and the **augments** that fit a module's four
 augment slots: the **Range Up/Down Augments** move that module's reach one block
-each, and the **Stack Augment** sets how many items one operation of that module
+each, the **Stack Augment** sets how many items one operation of that module
 moves (`1 << n`, up to 64), overriding the router's Stack Upgrades rather than
-adding to them.
+adding to them, and the **Regulator Augment** makes a pull leave the module's
+saved amount of the item in the source.
 
 Ported from Modular Routers 13.2.7 (`desht/ModularRouters`, MIT) as a
 clean-room rewrite for Horizon 26.3, built against SDK nightly `0a875da`
@@ -71,11 +72,15 @@ nothing, and a block out of reach is no operation either. Each Speed
 Upgrade takes two ticks off that second, each Stack Upgrade doubles what one
 operation moves — and a Stack Augment on a module overrides that count for that
 module (one augment 2, two 4, six 64), which is the one augment whose number is
-not a range. The buffer is the block's item container on every side, so hoppers
+not a range. A **Regulator Augment** turns on the module's own regulation amount
+(`/modularrouters regulate <x> <y> <z> <slot> <amount>`, or the module screen's
+field upstream): a pull then stops while the source still holds that many of the
+item, so a chest of twelve with an amount of three keeps three. The buffer is the
+block's item container on every side, so hoppers
 and pipes can fill or empty it.
 
-The screen, the other 18 modules, the other 8 upgrades, the other 8 augments
-(Mimic, Regulator, Pickup Delay, …) and smart filters are not ported yet — see
+The screen, the other 18 modules, the other 8 upgrades, the other 7 augments
+(Mimic, Pickup Delay, …) and smart filters are not ported yet — see
 `notes.md`.
 
 ### Modules from another mod

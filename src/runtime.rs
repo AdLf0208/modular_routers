@@ -71,6 +71,16 @@ pub const NO_STACK_AUGMENT: [&str; 7] = [
     "modularrouters:fluid_module",
     "modularrouters:fluid_module_2",
 ];
+/// `RegulatorAugment.getMaxAugments`: one Regulator Augment per module.
+pub const REGULATOR_LIMIT: u32 = 1;
+/// `RegulatorAugment.getMaxAugments` names the modules that take **none** of it:
+/// the Detector and the Extruder Mk2. Every other module — including the ones this
+/// build only carries — takes one, because upstream's rule is a list of classes
+/// that take none.
+pub const NO_REGULATOR_AUGMENT: [&str; 2] = [
+    "modularrouters:detector_module",
+    "modularrouters:extruder_module_2",
+];
 
 /// The face's unit vector, as `Direction.normal()` gives it.
 pub const fn face_normal(face: Face) -> [i32; 3] {
@@ -357,6 +367,7 @@ impl ModuleKind {
                 .map(|(max, base)| max - base),
             AugmentKind::RangeDown => self.base_range().map(|base| base - 1),
             AugmentKind::Stack => self.stack_augment_limit(),
+            AugmentKind::Regulator => self.regulator_limit(),
             AugmentKind::Registered(_) => Some(OTHER_PER_SLOT as i32),
         };
         limit.map_or(0, |count| u32::try_from(count.max(0)).unwrap_or(u32::MAX))
@@ -371,6 +382,16 @@ impl ModuleKind {
     pub fn stack_augment_limit(&self) -> Option<i32> {
         (!NO_STACK_AUGMENT.contains(&self.item()))
             .then(|| i32::try_from(STACK_AUGMENT_LIMIT).unwrap_or(i32::MAX))
+    }
+
+    /// `RegulatorAugment.getMaxAugments`: one on every module except the Detector
+    /// and the Extruder Mk2, which take none (their operation does not read an
+    /// inventory count). Upstream tests the module class, so every other module —
+    /// including one this build only carries — takes one.
+    #[must_use]
+    pub fn regulator_limit(&self) -> Option<i32> {
+        (!NO_REGULATOR_AUGMENT.contains(&self.item()))
+            .then(|| i32::try_from(REGULATOR_LIMIT).unwrap_or(i32::MAX))
     }
 }
 
@@ -426,7 +447,8 @@ impl Filter {
 }
 
 /// A module installed in one slot: what it is, where it points, what it takes,
-/// the block a targeted one selected, and the augments in its four slots.
+/// the block a targeted one selected, the augments in its four slots and the
+/// amount a Regulator Augment makes it leave in the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub kind: ModuleKind,
@@ -436,6 +458,9 @@ pub struct Module {
     /// player sets one — an unselected targeted module does nothing.
     pub target: Option<Target>,
     augments: Augments,
+    /// `ModuleSettings.regulatorAmount`: what a Regulator Augment makes the
+    /// operation leave in the source. Zero, and inert without the augment.
+    regulation: u32,
 }
 
 impl Module {
@@ -446,6 +471,7 @@ impl Module {
             filter,
             target: None,
             augments: Augments::default(),
+            regulation: 0,
         }
     }
 
@@ -498,6 +524,38 @@ impl Module {
     #[must_use]
     pub fn remove_augment(&mut self, augment: &AugmentKind) -> bool {
         self.augments.remove_one(augment)
+    }
+
+    /// The amount a Regulator Augment makes this module leave in the source
+    /// (`ModuleSettings.regulatorAmount`), as the module saves it. It has no
+    /// effect until a Regulator Augment is in one of its slots.
+    #[must_use]
+    pub fn regulation(&self) -> u32 {
+        self.regulation
+    }
+
+    /// The same module saving `amount` as its regulation amount.
+    #[must_use]
+    pub fn with_regulation(mut self, amount: u32) -> Self {
+        self.regulation = amount;
+        self
+    }
+
+    /// Set the saved regulation amount (the module screen's text field).
+    pub fn set_regulation(&mut self, amount: u32) {
+        self.regulation = amount;
+    }
+
+    /// `CompiledModule.getRegulationAmount`: the saved amount **only while a
+    /// Regulator Augment is installed**, zero otherwise. The augment is the switch;
+    /// without it the saved number is carried but ignored.
+    #[must_use]
+    pub fn regulation_amount(&self) -> u32 {
+        if self.augments.count(&AugmentKind::Regulator) > 0 {
+            self.regulation
+        } else {
+            0
+        }
     }
 
     /// The reach this module works at now —
@@ -833,8 +891,8 @@ impl Upgrades {
     }
 }
 
-/// An augment installed in one of a module's four slots: a Range Up, Range Down or
-/// Stack augment, or any other id a save or another mod carries.
+/// An augment installed in one of a module's four slots: a Range Up, Range Down,
+/// Stack or Regulator augment, or any other id a save or another mod carries.
 ///
 /// The last case is the **registered** path, as [`ModuleKind::Registered`] is for
 /// modules and [`UpgradeKind::Registered`] for upgrades: an add-on's augment keeps
@@ -848,6 +906,9 @@ pub enum AugmentKind {
     /// `modularrouters:stack_augment`: how many items one operation moves,
     /// **instead of** the count the router's Stack Upgrades give it.
     Stack,
+    /// `modularrouters:regulator_augment`: make the saved regulation amount count,
+    /// so a pull leaves that many of the item in the source.
+    Regulator,
     /// An augment this port does not run, carried by its id.
     Registered(String),
 }
@@ -856,8 +917,9 @@ impl AugmentKind {
     pub const RANGE_UP: &'static str = "modularrouters:range_up_augment";
     pub const RANGE_DOWN: &'static str = "modularrouters:range_down_augment";
     pub const STACK: &'static str = "modularrouters:stack_augment";
+    pub const REGULATOR: &'static str = "modularrouters:regulator_augment";
 
-    /// The kind an item id names: one of the three augments this port runs, or a
+    /// The kind an item id names: one of the four augments this port runs, or a
     /// registered kind that keeps the id unchanged.
     #[must_use]
     pub fn of(item: &str) -> Self {
@@ -865,6 +927,7 @@ impl AugmentKind {
             Self::RANGE_UP => AugmentKind::RangeUp,
             Self::RANGE_DOWN => AugmentKind::RangeDown,
             Self::STACK => AugmentKind::Stack,
+            Self::REGULATOR => AugmentKind::Regulator,
             other => AugmentKind::Registered(other.to_string()),
         }
     }
@@ -876,6 +939,7 @@ impl AugmentKind {
             "range_up" => Some(AugmentKind::RangeUp),
             "range_down" => Some(AugmentKind::RangeDown),
             "stack" => Some(AugmentKind::Stack),
+            "regulator" => Some(AugmentKind::Regulator),
             _ => None,
         }
     }
@@ -885,7 +949,10 @@ impl AugmentKind {
     pub fn is_known(&self) -> bool {
         matches!(
             self,
-            AugmentKind::RangeUp | AugmentKind::RangeDown | AugmentKind::Stack
+            AugmentKind::RangeUp
+                | AugmentKind::RangeDown
+                | AugmentKind::Stack
+                | AugmentKind::Regulator
         )
     }
 
@@ -896,6 +963,7 @@ impl AugmentKind {
             AugmentKind::RangeUp => Self::RANGE_UP,
             AugmentKind::RangeDown => Self::RANGE_DOWN,
             AugmentKind::Stack => Self::STACK,
+            AugmentKind::Regulator => Self::REGULATOR,
             AugmentKind::Registered(item) => item,
         }
     }
@@ -907,6 +975,7 @@ impl AugmentKind {
             AugmentKind::RangeUp => "range_up",
             AugmentKind::RangeDown => "range_down",
             AugmentKind::Stack => "stack",
+            AugmentKind::Regulator => "regulator",
             AugmentKind::Registered(item) => item,
         }
     }
@@ -1135,27 +1204,65 @@ pub fn buffer_room(buffer: Option<&Stack>, stack: &Stack, max_stack: u32) -> u32
 /// components); an empty buffer takes the first acceptable stack, scanning the
 /// slots in order; a buffer stack the filter refuses stops the operation. Never
 /// more than `items` or the room left.
+///
+/// `keep` is `getRegulationAmount()`: a source whose total of the wanted resource
+/// minus `items` would fall below it refuses the operation **whole** (upstream's
+/// `count.getInt(stack) - nToTake >= getRegulationAmount()`), so the pull leaves at
+/// least that many behind instead of taking a partial stack. Zero is the old
+/// behaviour.
 pub fn pick_pull(
     slots: &[Slot],
     filter: &Filter,
     buffer: Option<&Stack>,
     max_stack: impl Fn(&str) -> u32,
     items: u32,
+    keep: u32,
 ) -> Option<(usize, u32)> {
     if items == 0 {
         return None;
     }
+    // The source's total for one resource, over every slot that holds it — the
+    // count upstream's `CountedItemStacks` keeps for the regulation check.
+    let total = |wanted: &Stack| -> u32 {
+        slots
+            .iter()
+            .filter(|slot| slot.is(wanted))
+            .map(|slot| slot.count)
+            .sum()
+    };
+    // `count - nToTake >= regulation`: taking `items` must still leave `keep`.
+    let leaves_enough = |wanted: &Stack| total(wanted).saturating_sub(items) >= keep;
     let wanted = match buffer {
         // A router whose buffer holds an item the filter refuses pulls nothing.
         Some(stack) if !filter.accepts(&stack.item) => return None,
-        Some(stack) => stack.clone(),
-        None => {
-            let slot = slots.iter().find(|slot| filter.accepts(&slot.item))?;
-            Stack {
-                item: slot.item.clone(),
-                count: 0,
-                extra: slot.extra.clone(),
+        Some(stack) => {
+            let stack = stack.clone();
+            // A buffer stack the regulation would starve also stops the operation
+            // rather than being filled from the source down to its floor.
+            if !leaves_enough(&stack) {
+                return None;
             }
+            stack
+        }
+        None => {
+            // Scan for the first acceptable stack that still leaves `keep` behind;
+            // upstream skips a stack at the floor and tries the next slot.
+            let mut found = None;
+            for slot in slots {
+                if !filter.accepts(&slot.item) {
+                    continue;
+                }
+                let candidate = Stack {
+                    item: slot.item.clone(),
+                    count: 0,
+                    extra: slot.extra.clone(),
+                };
+                if leaves_enough(&candidate) {
+                    found = Some(candidate);
+                    break;
+                }
+            }
+            found?
         }
     };
     let room = buffer_room(buffer, &wanted, max_stack(&wanted.item));
@@ -1391,7 +1498,7 @@ mod tests {
         };
         // Room left for the buffer's stone is 4, so only 4 are taken.
         assert_eq!(
-            pick_pull(&slots, &Filter::any(), Some(&buffer), |_| 64, 1),
+            pick_pull(&slots, &Filter::any(), Some(&buffer), |_| 64, 1, 0),
             Some((1, 1))
         );
         // With a full buffer stack nothing is pulled.
@@ -1401,7 +1508,7 @@ mod tests {
             extra: String::new(),
         };
         assert_eq!(
-            pick_pull(&slots, &Filter::any(), Some(&full), |_| 64, 1),
+            pick_pull(&slots, &Filter::any(), Some(&full), |_| 64, 1, 0),
             None
         );
     }
@@ -1413,16 +1520,16 @@ mod tests {
             Slot::new(1, "minecraft:stone", 64),
         ];
         let stone = Filter::new(true, vec!["minecraft:stone".to_string()]);
-        assert_eq!(pick_pull(&slots, &stone, None, |_| 64, 8), Some((1, 8)));
+        assert_eq!(pick_pull(&slots, &stone, None, |_| 64, 8, 0), Some((1, 8)));
         // A small max stack caps the take.
-        assert_eq!(pick_pull(&slots, &stone, None, |_| 16, 8), Some((1, 8)));
+        assert_eq!(pick_pull(&slots, &stone, None, |_| 16, 8, 0), Some((1, 8)));
         let one = Stack {
             item: "minecraft:stone".to_string(),
             count: 15,
             extra: String::new(),
         };
         assert_eq!(
-            pick_pull(&slots, &stone, Some(&one), |_| 16, 8),
+            pick_pull(&slots, &stone, Some(&one), |_| 16, 8, 0),
             Some((1, 1))
         );
         // A buffer stack the filter refuses stops the operation.
@@ -1431,10 +1538,10 @@ mod tests {
             count: 1,
             extra: String::new(),
         };
-        assert_eq!(pick_pull(&slots, &stone, Some(&dirt), |_| 64, 8), None);
+        assert_eq!(pick_pull(&slots, &stone, Some(&dirt), |_| 64, 8, 0), None);
         // No acceptable slot, no operation.
         assert_eq!(
-            pick_pull(&slots, &Filter::new(true, Vec::new()), None, |_| 64, 8),
+            pick_pull(&slots, &Filter::new(true, Vec::new()), None, |_| 64, 8, 0),
             None
         );
     }
@@ -1449,7 +1556,7 @@ mod tests {
         ];
         // An empty buffer takes the first acceptable resource: the named one.
         assert_eq!(
-            pick_pull(&slots, &Filter::any(), None, |_| 64, 8),
+            pick_pull(&slots, &Filter::any(), None, |_| 64, 8, 0),
             Some((0, 5))
         );
         // A buffer of the named diamond tops up from slot 0 only, never from
@@ -1460,7 +1567,7 @@ mod tests {
             extra: named.to_string(),
         };
         assert_eq!(
-            pick_pull(&slots, &Filter::any(), Some(&buffer), |_| 64, 8),
+            pick_pull(&slots, &Filter::any(), Some(&buffer), |_| 64, 8, 0),
             Some((0, 4))
         );
         // A full named stack pulls nothing, even with plain diamonds beside it.
@@ -1469,7 +1576,7 @@ mod tests {
             ..buffer.clone()
         };
         assert_eq!(
-            pick_pull(&slots, &Filter::any(), Some(&full), |_| 64, 8),
+            pick_pull(&slots, &Filter::any(), Some(&full), |_| 64, 8, 0),
             None
         );
         // And a pull onto an empty buffer keeps the resource's components.
@@ -2091,6 +2198,162 @@ mod tests {
         let mut mk2 = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any());
         assert!(mk2.add_augment(AugmentKind::Stack));
         assert_eq!(mk2.current_range(), Some(PULLER_BASE_RANGE));
+    }
+
+    #[test]
+    fn a_regulator_augment_makes_a_pull_leave_its_amount_in_the_source() {
+        // `CompiledModule.getRegulationAmount` is the module's saved amount **only
+        // when it holds a Regulator Augment**; `findItemToPull` then refuses an
+        // operation whose `nToTake` would drop the source's total below it.
+        assert_eq!(
+            AugmentKind::of("modularrouters:regulator_augment"),
+            AugmentKind::Regulator
+        );
+        assert!(AugmentKind::Regulator.is_known());
+        assert_eq!(
+            AugmentKind::Regulator.item(),
+            "modularrouters:regulator_augment"
+        );
+        assert_eq!(AugmentKind::Regulator.name(), "regulator");
+        assert_eq!(
+            AugmentKind::from_name("regulator"),
+            Some(AugmentKind::Regulator)
+        );
+
+        let without =
+            Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any()).with_regulation(3);
+        assert_eq!(
+            without.regulation_amount(),
+            0,
+            "no Regulator augment: getRegulationAmount is 0 whatever the module saves"
+        );
+        let mut module = without.clone().with_augments(Augments::new(vec![
+            Augment::new(AugmentKind::Regulator, 1).expect("one regulator augment"),
+        ]));
+        assert_eq!(module.regulation_amount(), 3);
+        assert_eq!(module.regulation(), 3);
+        module.set_regulation(0);
+        assert_eq!(module.regulation_amount(), 0);
+
+        // Twelve stone in one slot, one item per operation, leave three: nine moves
+        // and then nothing, so the chest keeps exactly three (the game assertion's
+        // 12 -> 9 in the buffer / 3 in the source).
+        let mut slots = vec![Slot::new(0, "minecraft:stone", 12)];
+        let mut moved = 0;
+        while let Some((slot, count)) = pick_pull(&slots, &Filter::any(), None, |_| 64, 1, 3) {
+            let held = slots
+                .iter_mut()
+                .find(|held| held.slot == slot)
+                .expect("the slot the pull named");
+            held.count -= count;
+            moved += count;
+        }
+        assert_eq!(moved, 9);
+        assert_eq!(slots[0].count, 3);
+
+        // The rule is "the total would still be at least N after taking `items`",
+        // not "take at most total − N": a source of six with four per operation
+        // cannot satisfy `6 − 4 >= 3`, so the whole operation is refused.
+        assert_eq!(
+            pick_pull(
+                &[Slot::new(0, "minecraft:stone", 6)],
+                &Filter::any(),
+                None,
+                |_| 64,
+                4,
+                3
+            ),
+            None,
+            "six minus four is two, below the three to leave, so nothing is taken"
+        );
+        assert_eq!(
+            pick_pull(
+                &[Slot::new(0, "minecraft:stone", 7)],
+                &Filter::any(),
+                None,
+                |_| 64,
+                4,
+                3
+            ),
+            Some((0, 4))
+        );
+        // The count is over the source's slots: two stacks of six are twelve.
+        let split = [
+            Slot::new(0, "minecraft:stone", 6),
+            Slot::new(1, "minecraft:stone", 6),
+        ];
+        assert_eq!(
+            pick_pull(&split, &Filter::any(), None, |_| 64, 1, 3),
+            Some((0, 1))
+        );
+        // With the amount at zero the behaviour is exactly what it was before the
+        // augment existed (`keep = 0` never refuses), and the buffered resource is
+        // counted the same way.
+        assert_eq!(
+            pick_pull(&slots, &Filter::any(), None, |_| 64, 1, 0),
+            Some((0, 1))
+        );
+        let buffered = Stack::of("minecraft:stone", 1);
+        assert_eq!(
+            pick_pull(&slots, &Filter::any(), Some(&buffered), |_| 64, 1, 3),
+            None,
+            "three left in the source is the floor for the buffered resource too"
+        );
+    }
+
+    #[test]
+    fn a_regulator_augment_fills_one_slot_and_none_on_the_detector_and_the_second_extruder() {
+        // `RegulatorAugment.getMaxAugments`: one on every module except the
+        // Detector and the Extruder Mk2, which take none (their operation does not
+        // read an inventory count).
+        for known in [
+            ModuleKind::PullerMk1,
+            ModuleKind::PullerMk2,
+            ModuleKind::SenderMk1,
+        ] {
+            assert_eq!(
+                known.augment_limit(&AugmentKind::Regulator),
+                1,
+                "{} takes one",
+                known.item()
+            );
+        }
+        for id in [
+            "modularrouters:detector_module",
+            "modularrouters:extruder_module_2",
+        ] {
+            let kind = ModuleKind::of(id);
+            assert_eq!(
+                kind.augment_limit(&AugmentKind::Regulator),
+                0,
+                "{id} takes none"
+            );
+            let mut module = Module::new(kind, Relative::Front, Filter::any());
+            assert!(!module.add_augment(AugmentKind::Regulator), "{id}");
+            assert_eq!(module.augments().used(), 0);
+        }
+        // Only those two: upstream's list does not name the Extruder Mk1, and a
+        // module this port only carries is not a class that takes none.
+        assert_eq!(
+            ModuleKind::of("modularrouters:extruder_module_1")
+                .augment_limit(&AugmentKind::Regulator),
+            1
+        );
+        assert_eq!(
+            ModuleKind::Registered("example:other_module".to_string())
+                .augment_limit(&AugmentKind::Regulator),
+            1,
+            "upstream tests the classes that take none, so the rest take one"
+        );
+        let mut module = Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any());
+        assert!(module.add_augment(AugmentKind::Regulator));
+        assert!(
+            !module.add_augment(AugmentKind::Regulator),
+            "one per module"
+        );
+        assert_eq!(module.augments().used(), 1);
+        assert!(module.remove_augment(&AugmentKind::Regulator));
+        assert_eq!(module.regulation_amount(), 0);
     }
 
     #[test]
