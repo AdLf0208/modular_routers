@@ -19,6 +19,7 @@
     "modularrouters:vacuum_module",
     "modularrouters:void_module",
     "modularrouters:dropper_module",
-    "modularrouters:flinger_module"
+    "modularrouters:flinger_module",
+    "modularrouters:placer_module"
   ]
 }

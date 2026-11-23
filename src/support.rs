@@ -20,9 +20,10 @@ use std::collections::BTreeMap;
 use mod_api::{
     BlockEntityPart, BlockEntityTickEvent, BlockEntityTicksEvent, BlockKey, BlockPart, BlockState,
     BlockUpdateFlags, Capability, Command, CommandArgumentValue, Compound, Direction, Flow,
-    GameMode, Hand, Host, HostSide, HostTransaction, ITEMS, Identifier, ItemKey, ItemResource,
-    ItemStack, LevelHost, LevelRef, ModContainer, PlayerRef, Registrar, ResourceHandler,
-    RightClickBlockEvent, RunModCommandEvent, ServerHost, StateForPlacementEvent, Tag, Text,
+    GameMode, Hand, Host, HostBlockStates, HostSide, HostTransaction, ITEMS, Identifier, ItemKey,
+    ItemResource, ItemStack, LevelHost, LevelRef, ModContainer, PlayerRef, Registrar,
+    ResourceHandler, RightClickBlockEvent, RunModCommandEvent, ServerHost, StateForPlacementEvent,
+    Tag, Text,
 };
 
 use crate::runtime::{
@@ -31,8 +32,8 @@ use crate::runtime::{
     Stack, Target, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, VacuumOp, buffer_after_pull,
     buffer_after_send, drop_point, face_of_normal, facing_for_placement, facing_of_state,
     fling_velocity, in_range, is_operation_tick, items_per_operation, parse_pos, phase_of,
-    pick_drop, pick_pull, pick_send, pick_void, scan_positions, send_quota, side_towards, step,
-    tick_rate, vacuum_box, vacuum_centre,
+    pick_drop, pick_place, pick_pull, pick_send, pick_void, scan_positions, send_quota,
+    side_towards, step, tick_rate, vacuum_box, vacuum_centre,
 };
 
 /// The router block (and its item).
@@ -927,6 +928,78 @@ fn drop_from_buffer(
     true
 }
 
+/// One Placer operation: put **one** buffered item back into the world as a block
+/// (`CompiledPlacerModule.execute` + `BlockUtil.tryPlaceAsBlock`).
+///
+/// The rules are [`pick_place`]'s — one item, the filter's test, the buffer's
+/// regulation floor — and the world half is upstream's: only an item with a block
+/// form can be placed (`toPlace.getItem() instanceof BlockItem`), only into a
+/// state that is replaceable (`canBeReplaced(BlockPlaceContext)`), and the item
+/// leaves the buffer only once the write reports the block changed. This port has
+/// no fake player to run the item's `useOn` with, so the block goes in at its
+/// default state (`LevelRef::set_block`, `NEIGHBORS | CLIENTS` — vanilla's
+/// `UPDATE_ALL`): stone and dirt are exact, while a block whose placement
+/// orientation comes from the click (stairs, slabs, logs) is placed unrotated.
+fn place_from_buffer(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    face: Face,
+) -> bool {
+    let Some(stack) = entity
+        .items
+        .get(BUFFER_SLOT)
+        .and_then(Option::as_ref)
+        .cloned()
+    else {
+        return false;
+    };
+    let buffer = saved_stack(&*host, &stack);
+    let Some(count) = pick_place(Some(&buffer), &module.filter, module.regulation_amount()) else {
+        return false;
+    };
+    let target = step(pos, face);
+    // `BlockUtil.tryPlaceAsBlock`: the item's block form, the destination's
+    // replaceability, and a write that reports the change. Each refusal is no
+    // operation at all — the buffer keeps its stack, as upstream's `return false`
+    // does before `extractBuffer`.
+    let Ok(id) = Identifier::parse(&buffer.item) else {
+        return false;
+    };
+    let Some(item) = host.item_key(&id) else {
+        return false;
+    };
+    let Some(block) = host.item_block(item) else {
+        return false;
+    };
+    let Some(state) = host.block_state_default(block) else {
+        return false;
+    };
+    let Some(current) = level.block_state(&*host, target) else {
+        return false;
+    };
+    if host.block_states().replaceable(current) != Some(true) {
+        return false;
+    }
+    let flags = BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS;
+    if !matches!(level.set_block(&mut *host, target, state, flags), Ok(true)) {
+        return false;
+    }
+    match buffer_after_send(&buffer, count) {
+        Some(after) => {
+            let mut left = stack;
+            if left.set_count(after.count).is_err() {
+                return false;
+            }
+            write_buffer(entity, Some(left));
+        }
+        None => write_buffer(entity, None),
+    }
+    true
+}
+
 /// Put a stack in the buffer slot, growing the list when the entity has none.
 fn write_buffer(entity: &mut mod_api::ModBlockEntityView<'_>, stack: Option<ItemStack>) {
     if entity.items.len() == BUFFER_SLOT {
@@ -1226,6 +1299,11 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
                                 ),
                             },
                         )
+                    }
+                    // A placer takes the adjacent block its direction names and
+                    // writes one buffered item into it as a block.
+                    ModuleKind::Placer => {
+                        place_from_buffer(host, level, pos, module, &mut event.entity, face)
                     }
                     _ => false,
                 }
@@ -3453,5 +3531,33 @@ mod tests {
         let mut nbt = Compound::new();
         write_modules(&mut nbt, std::slice::from_ref(&bare));
         assert_eq!(read_modules(&nbt), vec![bare]);
+    }
+
+    #[test]
+    fn a_placer_modules_line_names_its_direction() {
+        // The placer's target is the block beside the router, so the readout names it
+        // the way the dropper's does; it has no settings of its own to print.
+        let placer = Module::new(ModuleKind::Placer, Relative::Front, Filter::any());
+        let lines = describe(
+            [201, 100, 0],
+            Facing::North,
+            false,
+            std::slice::from_ref(&placer),
+            None,
+            0,
+            0,
+        );
+        assert_eq!(
+            lines[1],
+            "module 0 at 201,100,0: modularrouters:placer_module dir=front target=north \
+             filter blacklist none"
+        );
+        let none = Module::new(ModuleKind::Placer, Relative::None, Filter::any());
+        let lines = describe([201, 100, 0], Facing::North, false, &[none], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 201,100,0: modularrouters:placer_module dir=none target=none \
+             filter blacklist none"
+        );
     }
 }

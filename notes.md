@@ -2596,6 +2596,176 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.14: **151,564 B**, SHA-256 `5f5bc461a58c94e3829a17f68dfc80c9c7789f7f54b576c9643566cf21e57e5d`,
 126 entries, no `Cargo.lock`.
 
+## Slice 15 (2026-11-23) — the Placer Module (0.2.15)
+
+Pin: SDK nightly `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` + mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3. Slice 15 is gap 1's next
+entry, the one after the flinger — *"**Modules**: `sender_module_3` (**blocked**),
+`flinger`, `placer`, `breaker`, …"* — at the ledger's tier **machines**: the module
+reads the router's one-slot buffer and one block position; no new machine, no new
+block entity, no renderer. `sender_module_3` stays
+`blocked(cross-level-capability)` and was not re-attempted.
+
+### The artefact's rule (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`)
+
+| upstream | what it says | used for |
+|---|---|---|
+| `item/module/PlacerModule.java` | a plain `ModuleItem` (not `ITargetedModule`), so `isDirectional()` is **true** — the target is the block beside the router in the module's absolute facing, and `dir=none` leaves `setupTargets` empty so `shouldExecute()` is false | `ModuleKind::Placer`; the existing directional arm resolves the face and `dir=none` `continue`s |
+| `logic/compiled/CompiledPlacerModule.execute` | `isRegulationOK(router, false)` → `peekBuffer(1)` → `getFilter().test(toPlace)` → `BlockUtil.tryPlaceAsBlock` → **then** `extractBuffer(1)` | `pick_place(buffer, filter, keep)` (always one) and `place_from_buffer` |
+| `CompiledModule.isRegulationOK(router, false)` | `amount == 0` ⇒ OK, else `amount < buffer count` — the buffer's **floor** | the `keep` argument |
+| `CompiledModule.getItemsPerTick` | never called by this module | `pick_place` takes no count at all, so no augment or upgrade can widen it |
+| `util/BlockUtil.tryPlaceAsBlock` | `toPlace.getItem() instanceof BlockItem` else null; the current state must be `canBeReplaced(BlockPlaceContext)`; `toPlace.useOn(ctx)` must `indicateItemUse()`; the new state is read back | `Host::item_block` → `block_state_default` → `host.block_states().replaceable` → `LevelRef::set_block(NEIGHBORS | CLIENTS)` |
+| `StackAugment.getMaxAugments` | the Placer takes **0** (already in `NO_STACK_AUGMENT`) | shown in game on a real placer (phase W5) |
+| `RegulatorAugment.getMaxAugments` | the Placer is not in the list, so it takes **1** | shown in game (phase W8/W9) |
+| `data/modularrouters/recipe/placer_module.json` | shapeless `blank_module` + `dispenser` + `dirt` → **1** | the carried recipe in 26.3's bare-string form |
+| jar model + `textures/item/module/placer_module.png` | the three-layer module model (re-expressed as the 26.3 `items/` definition) and the jar's own texture (byte-identical, MIT rank 0) | carried content |
+
+**One destination takes one placement, so the brief's arithmetic is not the
+artefact's.** The brief expected "after eight operations the ninth places nothing
+(occupied, buffer 0)". A placer places into **one** block, and
+`tryPlaceAsBlock` returns null the moment that state is not replaceable — so the
+first operation consumes one item and every later operation consumes nothing: the
+buffer stops at **7**, not 0. The port follows the artefact; phase W therefore
+asserts 7 and adds the pre-filled-destination rig (W6) that shows a target which is
+*already* occupied takes nothing at all. The brief's "buffer holds 7 after
+`ctl wait 40`" is exactly what the run shows (one placement in the first two
+operations; the second is refused).
+
+### How it works here
+
+- `runtime.rs`: `ModuleKind::Placer` (+ `PLACER`), the exhaustive matches, and
+  `pick_place(buffer, filter, keep) -> Option<u32>` — `Some(1)` only while the
+  buffer's item passes the filter and its count is above the floor. It deliberately
+  has no count parameter: `getItemsPerTick` is not part of this module's rule, which
+  is the same fact as `NO_STACK_AUGMENT` naming it.
+- `support.rs`: `place_from_buffer` — the buffer's item id → `ItemKey` →
+  `item_block` (no block form, no operation) → `block_state_default` → the target
+  (`step(pos, face)`) must read replaceable → `LevelRef::set_block` with
+  `NEIGHBORS | CLIENTS`; only a write that reports the change takes one item out of
+  the buffer.
+- Content: the item definition, item model, jar texture, recipe, `modules` tag,
+  lang and creative tab entry.
+
+### Deviations, stated
+
+- **Placement uses the block's default state, not the item's `useOn`.** The pin has
+  no way to invoke an item's use-on from a tick (`native_use_on` is a hook the game
+  calls, not a helper a mod calls), so `LevelRef::set_block` with
+  `block_state_default` is the closest supported write. Stone and dirt — this
+  slice's items — are exact; a block whose orientation comes from the click
+  (stairs, slabs, logs) is placed unrotated. A user would notice a placer putting a
+  rotated block in its default orientation.
+- **The regulation amount is augment-gated**, as everywhere else in the port
+  (`Module::regulation_amount`), where upstream's `isRegulationOK` reads the raw
+  saved setting. The setting is only reachable through the Regulator Augment here
+  (`/modularrouters regulate` refuses a module without one), so the observable rule
+  is the same.
+
+### The augment half, in game (the row that was `blocked(module-kind)`)
+
+The port has unit-tested since 0.2.7 that the seven `StackAugment.getMaxAugments`
+ids take **none** of the Stack Augment and that every id outside
+`NO_REGULATOR_AUGMENT` (the Placer among them) takes **one** of the Regulator
+Augment. Until this slice no module of those kinds existed in game, so the note read
+`blocked(module-kind)`. Phase W now shows both halves on a real placer:
+
+```
+Modular Router: module 0 does not take a stack augment
+module 0 at 213,100,0: modularrouters:placer_module dir=front target=north filter blacklist none
+Modular Router: installed modularrouters:regulator_augment (1 in module 0, 1 of 4 augment slot(s) used)
+```
+
+The six other ids (Detector, both Extruders, Breaker, both Fluid modules) stay
+`blocked(module-kind)` — gap 1 — and the unit test keeps asserting them.
+
+### TDD, in the order the ruling asks for
+
+1. **Unit red** — `a_placer_module_places_one_item_at_a_time_down_to_its_saved_amount`,
+   `a_placer_module_places_only_what_its_filter_accepts`,
+   `a_placer_takes_no_stack_augment_and_one_regulator_augment`,
+   `a_placers_block_is_the_one_its_direction_names` and
+   `support::tests::a_placer_modules_line_names_its_direction`, written before the
+   names existed:
+
+   ```
+   error[E0599]: no variant or associated item named `Placer` found for enum `runtime::ModuleKind`
+   error: could not compile `modularrouters` (lib test) due to 24 previous errors
+   ```
+
+   `slice15-test-red.log`, exit 101.
+2. **In-game red** — phase W on the shipped **0.2.14** game:
+
+   ```
+   Unknown module 'modularrouters:placer_module': modularrouters:puller_module_1, modularrouters:sender_module_1 or an item in #modularrouters:modules
+   FAIL: expected the reply to say 'Modular Router: modularrouters:placer_module in slot 0'
+   EXIT:1
+   ```
+
+   `modularrouters-e2e/e2e-red-placer.log`.
+3. **One test bug, caught by the red run itself**: the first version asserted
+   `pick_place(Some(8 stone), …, keep = 64) == Some(1)` — with a floor above the
+   count that is correctly `None`. The test was fixed, not the rule
+   (`left: None, right: Some(1)`).
+4. **In-game green** — the first green attempt failed at the `regulate` call
+   (`modularrouters regulate 222 100 0 3`: the subcommand needs the slot —
+   `… <slot> <amount>`), then at the pre-write buffer read (a placement landed in
+   the 4-tick settle). Both were harness faults, fixed in the script; the module
+   itself never failed an assertion.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.15.log`)
+
+Phase W: nine routers at x = 201…225, three blocks apart, at y = 100 facing north on
+the arena floor, every module installed and configured before any item is written,
+then 40 ticks (one placement window) and 300 more (fifteen operations):
+
+| Rig | Module | After fifteen operations |
+|---|---|---|
+| W1 201 | placer `dir=front`, 8 stone, target air | target **stone**, buffer **7** — one item went, the occupied block refused the rest |
+| W2 204 | the same, no direction | target **air**, buffer **8** (the direction) |
+| W3 207 | `dir=front`, 8 `minecraft:stick` | target **air**, buffer **8** (no block form) |
+| W4 210 | `dir=front`, whitelist `minecraft:dirt`, 8 stone | target **air**, buffer **8** (the filter) |
+| W5 213 | `dir=front`, Stack Augment attempted, 8 stone | the augment is **refused** (`module 0 does not take a stack augment`); target **stone**, buffer **7** — still one per placement |
+| W6 216 | `dir=front`, target **pre-filled with stone**, 8 stone | target **stone** (unchanged), buffer **8** (replaceability) |
+| W7 219 | `dir=up`, 8 stone | **(219,101,0) stone**, (219,100,-1) **air**, buffer **7** (the direction resolves) |
+| W8 222 | `dir=front`, Regulator 3, **3** stone | target **air**, buffer **3** (the floor refuses) |
+| W9 225 | `dir=front`, Regulator 3, **4** stone | target **stone**, buffer **3** (the floor is left) |
+
+The mid-run read (after 40 ticks = two operations) is the load-bearing one for the
+count: `W1 … buffer 7` and `W5 … buffer 7` — a placer that took its Stack Augment's
+2 per operation would read 6, and one that took the whole stack would read 0.
+
+Its recipe crafts in a real table (`craft_check.py`: `placer module: a blank module,
+a dispenser and dirt, shapeless` → 1, grid emptied, dispenser consumed; a stick in
+the dispenser's place crafts nothing), and J2 gives and reads back the item.
+
+### Ladder (every compile step in a `build-slot.sh` lease; `BUILD_LOCAL=1` on the package steps)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | **24 errors** (`Placer`, `pick_place`), `could not compile … (lib test)`, exit 101 | `slice15-test-red.log` |
+| red, in game | `tools/e2e.sh` phase W on the **0.2.14** game | `Unknown module 'modularrouters:placer_module'`, `FAIL`, `EXIT:1` | `modularrouters-e2e/e2e-red-placer.log` |
+| tests | `cargo test --offline` | **88 passed**, 0 failed (83 + 5) | `slice15-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice15-clippy.log` (= `sdk-clippy.log`) |
+| format | `cargo fmt` then `cargo fmt --check` | exit 0, empty diff | `slice15-fmt.log` (= `sdk-fmt.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **157,030 B**, sha256 `dd7db493…3805` | `slice15-build.log`, `slice15-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.15 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `157030 bytes, SHA-256 dd7db493…3805`, exit 0 | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| recipe types | `check-recipe-types.py modularrouters` | `modularrouters: ok`, exit 0 | (this session) |
+| data shape | `tools/data_shape.py modularrouters.hmod` | 24 recipe/loot file(s), all 26.3 dialect | (this session) |
+| package contents | `unzip -l` | **131 entries** (126 + item definition, item model, texture, recipe, model), no `Cargo.lock` | the gate below |
+| manifest bump | `launcher-game.sh build modularrouters` (the stale `native-0a875da-4a7e12ef12cb` removed first) | `Compiling modularrouters (1 of 1)`; export names **0.2.15** (`1b98563a3e64`), one `libmodularrouters.so` | `modularrouters-e2e/game-build-0.2.15.log` |
+| the gate | `verify-sdk-package.py modularrouters` | **1/1** (88 tests, package = tree, no lock) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | **PASS** + `EXIT:0` (phases A–I, K, L–W, J1–J4, 131-entry package) | `modularrouters-e2e/e2e-launcher-0.2.15.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.15.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` (unknown block and item, block is air) | `e2e-control-0.2.15.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=65 ok=65`, 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.15: **157,030 B**, SHA-256 `dd7db49377876fd14d18f2abeca0e9d78b72bf460105ede8a96e9f93c4bf3805`,
+131 entries, no `Cargo.lock`.
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -2616,16 +2786,17 @@ Every family the jar carries, against what this port does with it. `tested` name
 | module install by right-click and by command | tested | E2E F (click), A/C (commands) |
 | placement facing | tested | E2E G (a real placement, not a setblock) |
 | state + persistence across relaunch | tested | E2E H |
-| the eight base module recipes (blank module, router, puller, sender, void, dropper, vacuum, flinger) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, wrong-ingredient controls empty; the Void Module's lava bucket leaves the vanilla bucket remainder, the Vacuum Module's hopper and ender eye are consumed, the Flinger Module's gunpowder is consumed, and a stick in any of their places crafts nothing) |
+| the nine base module recipes (blank module, router, puller, sender, void, dropper, vacuum, flinger, placer) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, wrong-ingredient controls empty; the Void Module's lava bucket leaves the vanilla bucket remainder, the Vacuum Module's hopper and ender eye are consumed, the Flinger Module's gunpowder is consumed, the Placer Module's dispenser is consumed, and a stick in any of their places crafts nothing) |
 | **the two Puller Mk2 and two Sender Mk2 recipes** (Mk1 + ender pearl → 1; four Mk1s + one pearl → 4; the same pair from the Sender Mk1) | **tested** | E2E J1 — each crafts its declared id and count in a real table, the grid empties, the pearl is consumed, and a stick in its place crafts nothing |
-| the ten module items (blank module, router, both pullers, both senders, void, dropper, vacuum, flinger) | tested | E2E J2 (give + read back, plus the one give in phase M, the one in phase R, T's install and V's installs) |
+| the eleven module items (blank module, router, both pullers, both senders, void, dropper, vacuum, flinger, placer) | tested | E2E J2 (give + read back, plus the one give in phase M, the one in phase R, T's install, V's installs and W's nine) |
 | the router's loot table | tested | E2E J3 (iron pickaxe, with a vanilla block as the differential) |
 | the `minecraft:mineable/pickaxe` + `needs_iron_tool` block tags | tested | E2E J3 (the router breaks with an iron pickaxe and drops) |
-| the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers, both senders, the void, the dropper, the vacuum and the flinger module (M installs the Puller Mk2 and R the Sender Mk2 through it) |
+| the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers, both senders, the void, the dropper, the vacuum, the flinger and the placer module (M installs the Puller Mk2, R the Sender Mk2 and W the placer through it) |
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
 | **`sender_module_3`** (a targeted sender with `isRangeLimited()` false: no distance limit, the target in the router's world *or* a permitted dimension) | `blocked(cross-level-capability)` — probed in game, not shipped | the probe (§ *Blocked: the Sender Module Mk3*): the Mk3 kind installs, its readout prints **no `range=`** where the Mk2's prints `range=24`, and a same-level target **60 blocks** out receives all eight — but a target in the Overworld is unreachable from an End tick: `{loaded: 1b, in_place: 0b, capability: 0b, merge: "stale"}`, buffer 8 kept; the Mk2 keeps its 8 too (the differential) and a blacklisted dimension is refused |
 | **Flinger Module (the Dropper Module with a velocity: the same filtered stack thrown the same way, given the module's saved speed, pitch and yaw)** | **tested** | E2E V — eight stone in a flinger's buffer with `dir=front` on an east-facing router at **speed 1** land as **eight stone in a column past the adjacent block** with the buffer **0**; the identical flinger at **speed 0** leaves them in the **adjacent** block, exactly as a dropper does (the speed differential); a `dir=up` flinger (base pitch 90°) throws them **above the router** with **none east**; a **pitch 90** throw on a horizontal aim goes straight up and back into the adjacent block with none in the far column; a **yaw 60** throw lands **north** of the row and none in it; and a flinger whose whitelist names dirt keeps all **8** and throws **0** (the filter); its readout is `modularrouters:flinger_module dir=front target=east fling=speed=1 pitch=0 yaw=0`; `runtime::tests` cover `fling_velocity` for every quadrant, the speed scale and zero, ±pitch, ±yaw, the router-facing base of a tilted up/down fling and the spawn point, `Flinger::validated` at every bound, at infinity and at NaN, the shared `pick_drop` rule, and the save round trip (an out-of-range save reads as the default triple); `support::tests` the readout and the save |
-| the other 13 modules (`placer`, `breaker`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| the other 12 modules (`breaker`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| **Placer Module (buffer → one block in the module's direction: the item's block form is written into a replaceable state, one item per placement, down to the module's regulation amount)** | **tested** | E2E W — eight stone in a placer's buffer with `dir=front` on a north-facing router become **one stone block** at `(x,100,-1)`, the buffer **7**, and every later operation is refused because the block is occupied (the artefact's one-destination rule; the brief's "buffer 0 after eight operations" is arithmetically impossible and was not coded as a claim); the identical placer with **no direction** places nothing (buffer 8, air unchanged), a buffer of **stick** places nothing (no block form, buffer 8), a whitelist naming **dirt** places nothing (buffer 8), a placer whose destination **already holds stone** places nothing (buffer 8, block unchanged), `dir=up` places **above** the router with none north (buffer 7), and a Regulator Augment at **3** refuses a buffer of exactly three (buffer 3, air) and places one of **four** (buffer 3, stone) — the buffer's floor; the **Stack Augment is refused on the module itself** and its rig still takes exactly one item for its one placement, which is the row that was `blocked(module-kind)` until this slice; its readout is `modularrouters:placer_module dir=front target=north`, with `regulate=3 augments regulator` once augmented; `runtime::tests` cover `pick_place` (one per operation, the floor at/below the count, the filter, the empty buffer and no count parameter), the kind and its augment limits (none of the Stack Augment, one Regulator), the direction (`dir=none` has no face) and the target block; `support::tests` the readout lines |
 | **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
 | the three upgrade recipes (blank, Speed, Stack) | tested | E2E J1 (real table: id, count, grid emptied, distinctive ingredient consumed, one wrong-ingredient control each) |
 | the three upgrade items | tested | E2E L (give + read back from the inventory) |
@@ -2634,9 +2805,9 @@ Every family the jar carries, against what this port does with it. `tested` name
 | **Range Up/Down Augments and a module's four augment slots** (one kind per slot, the module's own per-augment limit, removal, the saved entry) | **tested** | E2E N — a Mk2 whose target is **14** blocks out moves nothing at `range=12` and **exactly one item per operation** after four Range Up augments (installed by sneak right-click) take it to `range=16`; one Range Down augment on a **12**-block target freezes the pull at `range=11` and comes back to the inventory when removed; a Sender Mk1's twelve-block scan only starts delivering at `range=16` with eight Range Up augments; a Range augment is refused on a module that is not ranged; a saved slot of fifteen reads as twelve (`range=24`, the hard maximum) and a fifth slot is cut; the augments survive a relaunch; `runtime::tests` cover the limits (12/11 for the Mk2, 8/7 for the Sender, 0 for the Mk1), the one-kind-per-slot rule, the carried foreign id and the capped read |
 | the three augment items and the five augment recipes (core, Range Up, Range Down, and the two conversions) | tested | E2E N1 (three items given and read back, the `augments` tag lists both) and J1 (each crafts its declared id and count ×4/×4/×4/×1/×1 in a real table, the grid empties, the distinctive ingredient is consumed, two wrong-ingredient controls craft nothing) → **now five items and seven recipes** with the Stack and Regulator Augments (below) |
 | **the Stack Augment and the count one operation moves** (`CompiledModule.getItemsPerTick`: `n > 0 ? min(1 << n, 64) : router`) | **tested** | E2E O — a Mk1 whose router holds one Stack Upgrade (`2 item(s) every 20 ticks`) and whose module holds two Stack Augments moves **exactly 4** per operation (7 operations, +4 each; a multiplying augment would move 8 and `sample_steps` fails on any other delta), the identical module with **no** upgrade moves **4 as well** while the plain Mk1 beside them moves **1**, a seventh augment in the slot is refused, six augments read `items=64` and one operation empties a 64-strong chest into the one-slot buffer, the count reads back after a relaunch and it moves four again; `runtime::tests` cover the override (4 not 8, 4 not 1), the 64 cap, the six-per-slot limit and the capped saved count; the Stack Augment's recipe and item are in N1/J1 |
-| the Stack Augment's `getMaxAugments = 0` modules (Detector, both Extruders, Breaker, Placer, both Fluid modules) | `blocked(module-kind)` — unit-tested only | `runtime::tests::a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items` asserts the seven ids take none (and a foreign module takes upstream's six); none of those seven kinds is implemented here (gap 1), so there is no module in game that could show the refusal |
+| the Stack Augment's `getMaxAugments = 0` modules (Detector, both Extruders, Breaker, Placer, both Fluid modules) | **the Placer is tested in game (E2E W5)**; the other six are `blocked(module-kind)` — unit-tested only | E2E W5: `/modularrouters augment 213 100 0 0 add stack` answers `Modular Router: module 0 does not take a stack augment`, the module's line keeps no `augments` segment, and its rig still takes exactly one item per placement (buffer 7 after two operations — a wrongly accepted augment's 2 would read 6). `runtime::tests::a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items` still asserts all seven ids; the six kinds other than the Placer are gap 1, so no module in game can show their refusal yet |
 | **the Regulator Augment and a module's saved regulation amount** (`getRegulationAmount`: the amount only with the augment; `findItemToPull` refuses an operation that would drop the source below it; `CompiledSenderModule1.execute` tops the **target** up to it) | **tested** | E2E P — a Mk1 whose chest holds twelve stone, with the augment (installed by sneak right-click) and `/modularrouters regulate … 3`, ends with **nine in its buffer and three in the chest**; the identical rig with no augment empties the chest into its buffer (**12 / 0**, the differential), `regulate` is refused on a module without the augment, and a chest of **exactly three is never touched** (the boundary); the amount is named `regulate=3` only with the augment and survives the save; **and on a sender the same amount is the target's floor** — E2E S: a Mk1 sending into a chest of six with an amount of ten adds **exactly four and stops** (chest 10, buffer 4), the identical Mk1 with **no** augment empties all eight into it (**14 / 0**, the differential), a chest already holding the amount takes **nothing** (**10 / 8**, the boundary), a Sender Mk2 with the same amount and a selected chest does the same (**10 / 4**), and re-setting the amount answers that it is already set; `runtime::tests` cover the whole-operation rule (`6 − 4 < 3` refuses), the two-slot total, `keep = 0`, the send quota (`0`, `4`, the items cap, `0` at the amount) and the one-per-slot limit with none on the Detector/Extruder Mk2; `support::tests` cover the saved amount and the readouts on both halves |
-| the Regulator Augment's `getMaxAugments = 0` half (the Detector and the Extruder Mk2) | `blocked(module-kind)` — unit-tested only | `runtime::tests::a_regulator_augment_fills_one_slot_and_none_on_the_detector_and_the_second_extruder` asserts the two ids take none (and every other id, including a carried one, takes one); neither kind is implemented here (gap 1), so no module in game can show the refusal |
+| the Regulator Augment's `getMaxAugments = 0` half (the Detector and the Extruder Mk2) | `blocked(module-kind)` — unit-tested only (the **one-fits** half is shown on the Placer in E2E W8/W9) | `runtime::tests::a_regulator_augment_fills_one_slot_and_none_on_the_detector_and_the_second_extruder` asserts the two ids take none (and every other id, including a carried one, takes one); neither of those two kinds is implemented here (gap 1), so no module in game can show their refusal. E2E W8/W9 installs one on a placer and its amount is the buffer's floor |
 | the other 7 augments (Mimic, Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum) | not ported (a tagged augment is carried inertly, one per slot, and its saved count is kept) | gap 3 |
 | the router screen and every module screen | not ported | gap 4 (commands + a right-click readout stand in) |
 | item beams, particles, sounds | not ported | gap 5 |
@@ -2693,8 +2864,8 @@ binary does not list the port's own tests.
 
 ## Gaps (not in this slice)
 
-1. **Modules**: `sender_module_3` (**blocked**, see below), `flinger`,
-   `placer`, `breaker`, `extruder_1`/`_2`, `detector`,
+1. **Modules**: `sender_module_3` (**blocked**, see below),
+   `breaker`, `extruder_1`/`_2`, `detector`,
    `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`,
    `player`, `activator`, `creative` — and their settings screens.
    **`sender_module_3` is `blocked(cross-level-capability)`**: probed in game on 2026-11-23 (see
@@ -2733,6 +2904,14 @@ binary does not list the port's own tests.
    for up/down with the router's facing as the base yaw); `/modularrouters fling
    <pos> <slot> <speed> <pitch> <yaw>` and `fling=` in the readout stand in for
    its settings screen (gap 4), and its particle puff and sound are gap 5.
+   **`placer_module` ships** (slice 15, E2E W): it takes one buffered item whose
+   id has a block form and writes that block's default state into the adjacent
+   block its direction names, only while that state is replaceable, and takes the
+   item out only after the write reports the change — one item per placement, with
+   its filter deciding which item and a Regulator Augment's amount the buffer's
+   floor. `dir=none` has no target and places nothing. The place-at-default-state
+   deviation (no `useOn` from a tick) is recorded in slice 15, and its placement
+   particles are gap 5.
    1b. **The Mk2s' other half**: the item-beam particles `CompiledPullerModule2`
    and `CompiledSenderModule2` add; a sneak right-click **in air** does not clear
    a target (the click hook is block-only; `/modularrouters target … none` does).
@@ -2755,13 +2934,15 @@ binary does not list the port's own tests.
    keeps its saved count. **The Stack Augment ships** (slice 7, E2E O) with
    upstream's `min(1 << n, 64)` override and its six-per-slot limit; its
    `getMaxAugments = 0` half (the Detector, both Extruders, the Breaker, the
-   Placer and both Fluid modules) is unit-tested and `blocked(module-kind)` —
-   those seven kinds are gap 1, so no module in game can show the refusal.
+   Placer and both Fluid modules) is **shown in game on the Placer since slice 15
+   (E2E W5)**; the other six kinds are unit-tested and `blocked(module-kind)` —
+   they are gap 1, so no module in game can show those refusals yet.
    **The Regulator Augment ships** (slice 8, E2E P) with the module's saved
    `regulate` amount and upstream's whole-operation rule ("the source must still
    hold at least N after the take"); its `getMaxAugments = 0` half (the Detector
    and the Extruder Mk2) is unit-tested and `blocked(module-kind)` for the same
-   reason. The regulator's other upstream users (the Dropper, the Vacuum and the
+   reason, while its **one-fits** half is shown on the Placer (E2E W8/W9). The
+   regulator's other upstream users (the Dropper, the Vacuum and the
    Extruders and Fluid modules) are gap 1.
 4. **GUI**: the router screen (module/upgrade/buffer slots, redstone/eco
    buttons) and every module screen. Replaced here by commands and a right-click

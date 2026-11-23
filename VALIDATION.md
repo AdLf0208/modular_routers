@@ -1,5 +1,68 @@
 # Modular Routers — validation ladder
 
+## 0.2.15 — the Placer Module (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 15: the Placer Module —
+`CompiledPlacerModule.execute` (regulator floor → `peekBuffer(1)` → filter → `BlockUtil.tryPlaceAsBlock`
+→ `extractBuffer(1)`) and `BlockUtil.tryPlaceAsBlock` itself (an item with a block form, a replaceable
+destination, a write that reports the change). `getItemsPerTick` is never read, which is the same rule
+as `StackAugment.getMaxAugments` giving the placer none. The module is directional: its target is the
+block beside the router in its absolute facing, and `dir=none` has no target at all. The slice also
+turns the Stack-Augment/Regulator-Augment `blocked(module-kind)` row into an in-game proof on a real
+placer.
+
+**One destination, one placement.** The brief expected "after eight operations the ninth places
+nothing (occupied, buffer 0)". The artefact places into a single block, and `tryPlaceAsBlock` returns
+null once that block is not replaceable — so the first operation takes one item and every later one
+takes nothing: the buffer is **7**, never 0. The port follows the artefact; phase W asserts 7 and adds
+a pre-filled-destination rig that shows an already-occupied target takes nothing at all.
+
+Every compile step ran inside a `ports/tools/build-slot.sh` lease (`BUILD_LOCAL=1` on the package
+steps; `cargo test`/`clippy`/`fmt` forwarded to the remote runner) with `CARGO_INCREMENTAL=0`; logs
+are in `ports/_shared/evidence/modularrouters/` and `ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the names existed (red) | **24 errors** (`Placer`, `pick_place`), `could not compile … (lib test)`, exit 101 | `slice15-test-red.log` |
+| 2 | `tools/e2e.sh` phase W on the **0.2.14** package (red) | `Unknown module 'modularrouters:placer_module' …`, `FAIL: expected the reply to say 'Modular Router: modularrouters:placer_module in slot 0'`, `EXIT:1` | `modularrouters-e2e/e2e-red-placer.log` |
+| 3 | `cargo test --offline` | **88 passed**, 0 failed (83 + 5) | `slice15-test.log` (= `sdk-test.log`) |
+| 4 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice15-clippy.log` (= `sdk-clippy.log`) |
+| 5 | `cargo fmt` (writes) + `cargo fmt --check` | exit 0, empty diff | `slice15-fmt.log` (= `sdk-fmt.log`) |
+| 6 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **157,030 B**, sha256 `dd7db49377876fd14d18f2abeca0e9d78b72bf460105ede8a96e9f93c4bf3805` | `slice15-build.log`, `slice15-build-second.log` |
+| 7 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.15 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `157030 bytes, SHA-256 dd7db493…3805`, exit 0 | `sdk-check.log` |
+| 8 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 9 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 10 | `python3 ports/tools/check-recipe-types.py modularrouters` | `modularrouters: ok`, exit 0 | (this session) |
+| 11 | `tools/data_shape.py modularrouters.hmod` | 24 recipe/loot file(s), every one in the 26.3 dialect | (this session) |
+| 12 | `unzip -l modularrouters.hmod` | **131 entries** (126 + the item definition, item model, jar texture, recipe and model), no `Cargo.lock` | the gate below |
+| 13 | `launcher-game.sh build modularrouters` (stale `native-0a875da-4a7e12ef12cb` removed first) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.15** (`1b98563a3e64`), one library `libmodularrouters.so` | `modularrouters-e2e/game-build-0.2.15.log` |
+| 14 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, K, L–V, **W (W1–W9)**, J1–J4 (131-entry package `dd7db493…`) | `modularrouters-e2e/e2e-launcher-0.2.15.log` |
+| 15 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.15.log` |
+| 16 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.15.log` |
+| 17 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=65 ok=65`, 0 missing/bad exit lines | — |
+| 18 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (88 tests, package = tree, no lock) | `verify-sdk-package.log` |
+
+### What phase W proves (parity rule)
+
+Nine routers at x = 201…225, three blocks apart, at y = 100 facing north; each module installed and
+configured before any item is written; then 40 ticks (two operations) and 300 more (fifteen):
+
+| Rig | Module | After fifteen operations |
+|---|---|---|
+| W1 201 | placer `dir=front`, 8 stone, air target | target **stone**, buffer **7** after 40 ticks and after 300 — one item for the one placement, then the occupied block refuses |
+| W2 204 | the same with no direction | target **air**, buffer **8** (a directional module at NONE has no target) |
+| W3 207 | `dir=front`, 8 `minecraft:stick` | target **air**, buffer **8** (no block form) |
+| W4 210 | `dir=front`, whitelist `minecraft:dirt`, 8 stone | target **air**, buffer **8** (the filter) |
+| W5 213 | `dir=front`, Stack Augment attempted, 8 stone | `module 0 does not take a stack augment`; target **stone**, buffer **7** (one per placement, not the augment's 2) |
+| W6 216 | `dir=front`, target **pre-filled with stone**, 8 stone | target **stone** unchanged, buffer **8** (replaceability) |
+| W7 219 | `dir=up`, 8 stone | **(219,101,0) stone**, (219,100,-1) **air**, buffer **7** |
+| W8 222 | `dir=front`, Regulator 3, **3** stone | target **air**, buffer **3** (the floor refuses) |
+| W9 225 | `dir=front`, Regulator 3, **4** stone | target **stone**, buffer **3** (the floor is left) |
+
+Its recipe is crafted in J1 (`placer module: a blank module, a dispenser and dirt, shapeless` → 1,
+grid emptied, dispenser consumed; a stick in its place crafts nothing), and J2 gives and reads it back.
+
 ## 0.2.14 — the Flinger Module and the vacuum's review fix (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

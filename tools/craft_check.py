@@ -3,7 +3,7 @@
 
 Called by `tools/e2e.sh` with the open game's control socket. The harness's
 crafting table exposes the 3x3 grid as slots 100-108 (row-major) and the result
-as 200 (`ctl screen`). For each of the twenty-one carried recipes this:
+as 200 (`ctl screen`). For each of the twenty-three carried recipes this:
 
 1. replaces the table (a fresh block entity, so a stale grid cannot leak in)
    and clears the inventory;
@@ -14,7 +14,7 @@ as 200 (`ctl screen`). For each of the twenty-one carried recipes this:
 6. asserts the grid is empty (or holds exactly the recipe's vanilla crafting
    remainder) and the recipe's distinctive ingredient was consumed.
 
-Fourteen deliberately wrong patterns must leave the result empty, so the check cannot
+Sixteen deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -50,6 +50,7 @@ VOID_MODULE = "modularrouters:void_module"
 DROPPER_MODULE = "modularrouters:dropper_module"
 VACUUM_MODULE = "modularrouters:vacuum_module"
 FLINGER_MODULE = "modularrouters:flinger_module"
+PLACER_MODULE = "modularrouters:placer_module"
 
 
 def main() -> int:
@@ -413,6 +414,18 @@ def main() -> int:
         ],
         FLINGER_MODULE, 1, "minecraft:gunpowder",
     )
+    # The Placer Module: the jar's shapeless recipe from a blank module, a
+    # vanilla dispenser and dirt.
+    check(
+        "placer module: a blank module, a dispenser and dirt, shapeless",
+        [(BLANK, 1), ("minecraft:dispenser", 1), ("minecraft:dirt", 1)],
+        [
+            (BLANK, every(GRID["tl"])),
+            ("minecraft:dispenser", every(GRID["mm"])),
+            ("minecraft:dirt", every(GRID["br"])),
+        ],
+        PLACER_MODULE, 1, "minecraft:dispenser",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -548,6 +561,15 @@ def main() -> int:
         [(DROPPER_MODULE, every(GRID["tl"])), ("minecraft:stick", every(GRID["mm"]))],
     )
     empty_control(
+        "placer module with a stick where the dispenser goes",
+        [(BLANK, 1), ("minecraft:dirt", 1), ("minecraft:stick", 1)],
+        [
+            (BLANK, every(GRID["tl"])),
+            ("minecraft:stick", every(GRID["mm"])),
+            ("minecraft:dirt", every(GRID["br"])),
+        ],
+    )
+    empty_control(
         "vacuum module with a stick where the ender eye goes",
         [(BLANK, 1), ("minecraft:hopper", 1), ("minecraft:stick", 1)],
         [
@@ -561,8 +583,8 @@ def main() -> int:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  twenty-two carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and fifteen wrong-ingredient controls craft nothing")
+    print("  twenty-three carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and sixteen wrong-ingredient controls craft nothing")
     return 0
 
 

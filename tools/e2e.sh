@@ -25,9 +25,9 @@
 #  G  a placed router faces the opposite of its placer (real placement, not a
 #     setblock), and one package carries the code and the content.
 #  H  the modules and the buffer survive a relaunch.
-#  J  the nineteen carried recipes craft in a real crafting table (id, count, grid
+#  J  the twenty-three carried recipes craft in a real crafting table (id, count, grid
 #     emptied (or the recipe's vanilla bucket remainder), the distinctive ingredient
-#     consumed; twelve wrong-ingredient controls craft nothing), every carried item is
+#     consumed; sixteen wrong-ingredient controls craft nothing), every carried item is
 #     give-able and an unknown id is refused, the router's loot table drops it when
 #     broken (with a vanilla block as the harness's differential), and no carried
 #     recipe or loot table is in the 1.21.1 dialect the 26.3 parser rejects.
@@ -144,6 +144,21 @@
 #     whitelist names dirt throws none (the filter). Its recipe crafts in a real
 #     table.
 #
+#  W  the Placer Module (`CompiledPlacerModule` + `BlockUtil.tryPlaceAsBlock`): the
+#     module is directional, so its target is the block beside the router in its
+#     absolute facing (`dir=none` has no target at all); it checks the regulator
+#     floor, `peekBuffer`s **one** item, tests the filter, places the item's block
+#     form into a replaceable state and only then extracts one. Eight stone in a
+#     placer's buffer with `dir=front` on a north-facing router become **one** stone
+#     block at `(x,100,-1)` and the buffer keeps seven — the occupied block refuses
+#     every later operation, one item went per placement, and nothing is taken from
+#     an occupied destination (a pre-filled target leaves all eight); `dir=none`
+#     places nothing; a stick (no block form) places nothing; a whitelist naming
+#     dirt places nothing; the Stack Augment is **refused** on the module and still
+#     one item goes per placement; `dir=up` places above the router with none north;
+#     and a Regulator Augment at 3 refuses a buffer of exactly three and places one
+#     of four, leaving the floor. Its recipe crafts in a real table.
+#
 # The harness pack is the only data this script adds to the game: a world data
 # pack, not part of the package (see `harness_pack`).
 #
@@ -211,6 +226,7 @@ VOID=modularrouters:void_module
 DROPPER=modularrouters:dropper_module
 VACUUM=modularrouters:vacuum_module
 FLINGER=modularrouters:flinger_module
+PLACER=modularrouters:placer_module
 
 [ -x "$CTL" ] || { echo "missing horizon-ctl: $CTL" >&2; exit 1; }
 [ -n "$GAME" ] || {
@@ -316,6 +332,28 @@ arena() {
     # overlap. Same floor, clear air above.
     ctl command "execute in minecraft:the_end run fill 141 99 -20 200 99 16 minecraft:stone"
     ctl command "execute in minecraft:the_end run fill 141 100 -20 200 108 16 minecraft:air"
+    # The Placer Module rigs stand east again, three blocks apart: each places a
+    # block into the air block north of it, so no two rigs share a column. The
+    # same floor and clear air, and the far chunk is proved loaded before the fill
+    # because a refused fill is silent.
+    ctl command "execute in minecraft:the_end run tp @s 220.5 100 3.5"
+    local ploaded=false
+    for _ in $(seq 1 120); do
+        ctl wait 5
+        if [ "$(ctl block 232 99 0 | jq -r '.loaded // false')" = true ]; then
+            ploaded=true
+            break
+        fi
+    done
+    [ "$ploaded" = true ] || fail "the placer rigs' chunks never loaded"
+    ctl command "execute in minecraft:the_end run fill 201 99 -20 240 99 16 minecraft:stone"
+    ctl command "execute in minecraft:the_end run fill 201 100 -20 240 108 16 minecraft:air"
+    local ptries=0
+    while [ "$(state 236 99 0)" != "minecraft:stone" ] && [ "$ptries" -lt 3 ]; do
+        ctl command "execute in minecraft:the_end run fill 201 99 -20 240 99 16 minecraft:stone"
+        ctl wait 5
+        ptries=$(( ptries + 1 ))
+    done
     # A refused fill is silent, so the far floor is asserted (and retried) here: a
     # missing block is a harness fault, never a module's.
     local tries=0
@@ -1743,6 +1781,185 @@ ctl command "execute in minecraft:the_end run kill @e[type=minecraft:item]" >/de
 ctl tp 0.5 100 3.5 >/dev/null
 ctl wait 4
 
+echo "== W: the Placer Module — one buffered item becomes a block in its direction =="
+# `CompiledPlacerModule.execute` is the shortest operation in the mod: it checks the
+# regulator floor, `peekBuffer`s **one** item, tests the filter, tries
+# `BlockUtil.tryPlaceAsBlock` (an item with a block form, into a state
+# `canBeReplaced`) and only then `extractBuffer`s it. `getItemsPerTick` is never
+# read — the same rule as `StackAugment.getMaxAugments` giving the placer none.
+#
+# One destination block therefore takes **one** placement: the next operation finds
+# it occupied, `tryPlaceAsBlock` returns null and nothing leaves the buffer. That is
+# the artefact's rule, not a harness choice — so every rig below ends at `8 − 1`
+# (or at its regulator floor), never at 0, and the count in the buffer is itself the
+# proof that one item (not a stack) went per operation.
+#
+# Nine rigs at x = 201…225, three blocks apart, each a router at (x,100,0) facing
+# north, so `dir=front` places into (x,100,-1):
+#   201  dir=front, 8 stone           -> one stone block at -1, buffer 7 (then refused)
+#   204  the same with no direction   -> buffer 8, target air (the direction)
+#   207  dir=front, 8 stick           -> buffer 8, target air (no block form)
+#   210  dir=front, whitelist dirt    -> buffer 8, target air (the filter)
+#   213  dir=front, Stack Augment     -> the augment is refused; still one per operation
+#   216  dir=front, target pre-stone  -> buffer 8, the occupied block unchanged
+#   219  dir=up                       -> one block above the router, none north, buffer 7
+#   222  dir=front, Regulator 3, 3    -> buffer 3, target air (the floor refuses)
+#   225  dir=front, Regulator 3, 4    -> one block, buffer 3 (the floor is left)
+for x in 201 204 207 210 213 216 219 222 225; do block_at "$x" 0 "$ROUTER[facing=north]"; done
+ctl wait 6
+ctl tp 213.5 100 2.5 >/dev/null
+ctl wait 10
+for x in 201 204 207 210 213 219 222 225; do
+    [ "$(state "$x" 99 0)" = "minecraft:stone" ] \
+        || fail "the placer rig at $x,100,0 has no floor: $(state "$x" 99 0)"
+    [ "$(state "$x" 100 -1)" = "minecraft:air" ] \
+        || fail "the placer target at $x,100,-1 is not air: $(state "$x" 100 -1)"
+done
+[ "$(state 219 101 0)" = "minecraft:air" ] \
+    || fail "the block above the dir=up rig is not air: $(state 219 101 0)"
+# The W6 rig's destination already holds a block, so `canBeReplaced` is false before
+# the placer ever runs: nothing may be placed and nothing may be consumed.
+block_at 216 -1 minecraft:stone
+ctl wait 4
+[ "$(state 216 100 -1)" = "minecraft:stone" ] \
+    || fail "the occupied W6 target is $(state 216 100 -1), not stone"
+
+say "modularrouters install 201 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+say "modularrouters direction 201 100 0 0 front"
+expect_chat "Modular Router: slot 0 points front"
+expect_info 201 100 0 "module 0 at 201,100,0: $PLACER dir=front target=north filter blacklist none"
+say "modularrouters install 204 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+# No direction: `setupTargets` returns no target for a directional module at NONE,
+# so there is nothing to place into and the module does not run at all.
+expect_info 204 100 0 "module 0 at 204,100,0: $PLACER dir=none target=none filter blacklist none"
+say "modularrouters install 207 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+say "modularrouters direction 207 100 0 0 front"
+expect_chat "Modular Router: slot 0 points front"
+say "modularrouters install 210 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+say "modularrouters direction 210 100 0 0 front"
+expect_chat "Modular Router: slot 0 points front"
+say "modularrouters filter 210 100 0 0 whitelist minecraft:dirt"
+expect_chat "Modular Router: slot 0 filter updated"
+say "modularrouters install 213 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+say "modularrouters direction 213 100 0 0 front"
+expect_chat "Modular Router: slot 0 points front"
+# `StackAugment.getMaxAugments` names the Placer, so the augment is refused on the
+# module itself — the rule the port unit-tested only by id while the placer was a
+# carried kind (the coverage table's `blocked(module-kind)` row).
+say "modularrouters augment 213 100 0 0 add stack"
+expect_chat "Modular Router: module 0 does not take a stack augment"
+expect_info 213 100 0 "module 0 at 213,100,0: $PLACER dir=front target=north filter blacklist none"
+say "modularrouters install 216 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+say "modularrouters direction 216 100 0 0 front"
+expect_chat "Modular Router: slot 0 points front"
+say "modularrouters install 219 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+say "modularrouters direction 219 100 0 0 up"
+expect_chat "Modular Router: slot 0 points up"
+say "modularrouters install 222 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+say "modularrouters direction 222 100 0 0 front"
+expect_chat "Modular Router: slot 0 points front"
+# `RegulatorAugment.getMaxAugments` does **not** name the Placer: one fits, and its
+# amount is the buffer's floor (`isRegulationOK(router, false)` is `keep < count`).
+say "modularrouters augment 222 100 0 0 add regulator"
+expect_chat "installed modularrouters:regulator_augment (1 in module 0, 1 of 4 augment slot(s) used)"
+say "modularrouters regulate 222 100 0 0 3"
+expect_chat "Modular Router: module 0 leaves 3 item(s) in the source"
+expect_info 222 100 0 "module 0 at 222,100,0: $PLACER dir=front target=north regulate=3 augments regulator filter blacklist none"
+say "modularrouters install 225 100 0 0 $PLACER"
+expect_chat "Modular Router: $PLACER in slot 0"
+say "modularrouters direction 225 100 0 0 front"
+expect_chat "Modular Router: slot 0 points front"
+say "modularrouters augment 225 100 0 0 add regulator"
+expect_chat "installed modularrouters:regulator_augment (1 in module 0, 1 of 4 augment slot(s) used)"
+say "modularrouters regulate 225 100 0 0 3"
+expect_chat "Modular Router: module 0 leaves 3 item(s) in the source"
+
+ctl command "data merge block 201 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:8}]}" >/dev/null
+ctl command "data merge block 204 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:8}]}" >/dev/null
+ctl command "data merge block 207 100 0 {Items:[{Slot:0b,id:\"minecraft:stick\",count:8}]}" >/dev/null
+ctl command "data merge block 210 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:8}]}" >/dev/null
+ctl command "data merge block 213 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:8}]}" >/dev/null
+ctl command "data merge block 216 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:8}]}" >/dev/null
+ctl command "data merge block 219 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:8}]}" >/dev/null
+ctl command "data merge block 222 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:3}]}" >/dev/null
+ctl command "data merge block 225 100 0 {Items:[{Slot:0b,id:\"minecraft:stone\",count:4}]}" >/dev/null
+# Two operations after the write. The *first* one places the block and takes exactly
+# one item; the second finds the destination occupied and takes nothing — so an 8
+# buffer reads 7, and a placer that took a stack (or a wrongly accepted Stack
+# Augment's 2) would read lower.
+ctl wait 40 >/dev/null
+w1_block=$(state 201 100 -1)
+w1_buffer=$(count 201 100 0 minecraft:stone)
+w5_block=$(state 213 100 -1)
+w5_buffer=$(count 213 100 0 minecraft:stone)
+w6_buffer=$(count 216 100 0 minecraft:stone)
+echo "  W1 (dir=front): target $w1_block, buffer $w1_buffer after two operations"
+echo "  W5 (Stack Augment refused): target $w5_block, buffer $w5_buffer"
+echo "  W6 (target pre-filled): buffer $w6_buffer"
+[ "$w1_block" = "minecraft:stone" ] || fail "the placer put $w1_block at 201,100,-1, not the buffered stone"
+[ "$w1_buffer" = 7 ] || fail "the placer took $(( 8 - w1_buffer )) item(s) for one placement, not one"
+[ "$w5_block" = "minecraft:stone" ] || fail "the Stack-Augment-refused placer put $w5_block at 213,100,-1"
+[ "$w5_buffer" = 7 ] || fail "the Stack-Augment-refused placer took $(( 8 - w5_buffer )) item(s) for one placement, not one"
+[ "$w6_buffer" = 8 ] || fail "the placer moved $(( 8 - w6_buffer )) item(s) into an occupied block"
+
+ctl wait 300 >/dev/null
+w1_block=$(state 201 100 -1)
+w1_buffer=$(count 201 100 0 minecraft:stone)
+w2_block=$(state 204 100 -1)
+w2_buffer=$(count 204 100 0 minecraft:stone)
+w3_block=$(state 207 100 -1)
+w3_buffer=$(count 207 100 0 minecraft:stick)
+w4_block=$(state 210 100 -1)
+w4_buffer=$(count 210 100 0 minecraft:stone)
+w5_block=$(state 213 100 -1)
+w5_buffer=$(count 213 100 0 minecraft:stone)
+w6_block=$(state 216 100 -1)
+w6_buffer=$(count 216 100 0 minecraft:stone)
+w7_above=$(state 219 101 0)
+w7_north=$(state 219 100 -1)
+w7_buffer=$(count 219 100 0 minecraft:stone)
+w8_block=$(state 222 100 -1)
+w8_buffer=$(count 222 100 0 minecraft:stone)
+w9_block=$(state 225 100 -1)
+w9_buffer=$(count 225 100 0 minecraft:stone)
+echo "  W1 (dir=front, 8 stone):     target $w1_block, buffer $w1_buffer after fifteen operations"
+echo "  W2 (dir=none):               target $w2_block, buffer $w2_buffer"
+echo "  W3 (8 stick):                target $w3_block, buffer $w3_buffer"
+echo "  W4 (whitelist dirt):         target $w4_block, buffer $w4_buffer"
+echo "  W5 (Stack Augment refused):  target $w5_block, buffer $w5_buffer"
+echo "  W6 (target pre-filled):      target $w6_block, buffer $w6_buffer"
+echo "  W7 (dir=up):                 above $w7_above, north $w7_north, buffer $w7_buffer"
+echo "  W8 (Regulator 3, 3 stone):   target $w8_block, buffer $w8_buffer"
+echo "  W9 (Regulator 3, 4 stone):   target $w9_block, buffer $w9_buffer"
+[ "$w1_block" = "minecraft:stone" ] || fail "the placer's block at 201,100,-1 is $w1_block"
+[ "$w1_buffer" = 7 ] || fail "the placer left $w1_buffer stone in its buffer, not 7: one block was placed"
+[ "$w2_block" = "minecraft:air" ] || fail "a placer with no direction put $w2_block at 204,100,-1"
+[ "$w2_buffer" = 8 ] || fail "a placer with no direction moved $(( 8 - w2_buffer )) of its 8 stone"
+[ "$w3_block" = "minecraft:air" ] || fail "a placer placed $w3_block from a stick, which has no block form"
+[ "$w3_buffer" = 8 ] || fail "a placer moved $(( 8 - w3_buffer )) stick(s), which have no block form"
+[ "$w4_block" = "minecraft:air" ] || fail "a placer whose whitelist names dirt placed $w4_block"
+[ "$w4_buffer" = 8 ] || fail "a placer whose whitelist names dirt moved $(( 8 - w4_buffer )) stone"
+[ "$w5_block" = "minecraft:stone" ] || fail "the placer that refused the Stack Augment put $w5_block at 213,100,-1"
+[ "$w5_buffer" = 7 ] || fail "the placer that refused the Stack Augment left $w5_buffer stone, not 7"
+[ "$w6_block" = "minecraft:stone" ] || fail "the W6 placer's block at 216,100,-1 is $w6_block"
+[ "$w6_buffer" = 8 ] || fail "the W6 placer has $w6_buffer in its buffer, not 8: the occupied block was replaced"
+[ "$w7_above" = "minecraft:stone" ] || fail "the dir=up placer put $w7_above above the router, not stone"
+[ "$w7_north" = "minecraft:air" ] || fail "the dir=up placer placed $w7_north north as well"
+[ "$w7_buffer" = 7 ] || fail "the dir=up placer left $w7_buffer stone in its buffer, not 7"
+[ "$w8_block" = "minecraft:air" ] || fail "the regulated placer at its floor put $w8_block at 222,100,-1"
+[ "$w8_buffer" = 3 ] || fail "the placer at its floor of 3 holds $w8_buffer stone, not 3"
+[ "$w9_block" = "minecraft:stone" ] || fail "the regulated placer above its floor put $w9_block at 225,100,-1"
+[ "$w9_buffer" = 3 ] || fail "the placer above its floor left $w9_buffer stone, not 3"
+ctl command "execute in minecraft:the_end run kill @e[type=minecraft:item]" >/dev/null
+
 echo "== I: one package — the .hmod carries the code and the content =="
 python3 - "$HMOD" "$PORT/src/runtime.rs" <<'PY'
 import hashlib
@@ -1941,7 +2158,7 @@ ctl wait 4
 sample_steps 2 5 minecraft:stone 2 12
 [ "$STEPS" -ge 3 ] || fail "the upgraded router stopped moving two items after a relaunch"
 
-echo "== J1: the twenty-two carried recipes craft in a real crafting table =="
+echo "== J1: the twenty-three carried recipes craft in a real crafting table =="
 # A carried recipe whose ingredient is in the 1.21.1 object form
 # (`{"item": "..."}`) is rejected by the 26.3 parser at load, so the recipe is
 # dead data. The server names it once, at startup: print those lines as the
@@ -1967,14 +2184,14 @@ ctl wait 3
 [ -z "$rejected" ] || fail "the server rejected a carried recipe ingredient (see the lines above)"
 
 echo "== J2: every carried item is give-able, and an unknown id is refused =="
-for id in "$BLANK" "$PULLER" "$PULLER2" "$SENDER" "$SENDER2" "$VOID" "$DROPPER" "$VACUUM" "$FLINGER" "$ROUTER"; do
+for id in "$BLANK" "$PULLER" "$PULLER2" "$SENDER" "$SENDER2" "$VOID" "$DROPPER" "$VACUUM" "$FLINGER" "$PLACER" "$ROUTER"; do
     ctl command "clear @s" >/dev/null
     ctl give "$id" 1 >/dev/null || fail "give $id failed"
     ctl wait 3
     held=$(ctl inventory | jq -r --arg i "$id" '.counts[$i] // 0')
     [ "$held" -ge 1 ] || fail "$id is not in the inventory after give ($held)"
 done
-echo "  blank module, both pullers, both senders, void, dropper, vacuum and flinger modules and the router each read back from the inventory"
+echo "  blank module, both pullers, both senders, void, dropper, vacuum, flinger and placer modules and the router each read back from the inventory"
 unknown=$(ctl command "give @s modularrouters:not_a_module 1" | jq -r '.chat[]?' | tr '\n' ' ')
 echo "  give modularrouters:not_a_module: $unknown"
 case "$unknown" in
@@ -2079,4 +2296,4 @@ say "modularrouters remove 8 100 4 0"
 expect_chat "Modular Router: removed example:foreign_module"
 expect_info 8 100 4 "1 of 9 module(s)"
 
-echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the eight module recipes, the two Puller Mk2 and two Sender Mk2 recipes, the three upgrade recipes and the seven augment recipes craft their declared id and count in a real table with the grid emptied (or the recipe's vanilla bucket remainder left) and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all eighteen item ids read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch; the Range Augments are *module* augments in four slots, one block of reach each: a Mk2 whose target is fourteen blocks out moves nothing at range=12 and exactly one item per operation once four Range Up augments (installed by sneak right-click) take it to 16, one Range Down augment on a twelve-block target stops the pull at range=11 and comes back to the inventory when removed, a Sender Mk1's twelve-block scan starts delivering at range=16 with eight Range Up augments, a Range augment is refused on a module that is not ranged, a saved slot of fifteen reads as twelve (range=24, the hard maximum) and a fifth slot is cut, and the augments survive a relaunch; the Stack Augment is the augment whose number overrides the router rather than adding to it: a Mk1 whose router holds one Stack Upgrade (2 item(s) per operation) and whose module holds two Stack Augments moves exactly four per operation, not eight, the identical module with no upgrade at all moves four as well while the plain Mk1 beside them moves one, six augments in one slot read items=64 and fill the one-slot buffer with a whole stack in one operation, a seventh is refused at the slot's limit, and the count survives a relaunch; the Regulator Augment makes a pull leave the module's saved amount in the source — a Mk1 pulling from twelve stone with the amount at 3 stops with nine in its buffer and three still in the chest, the identical rig with no augment empties the chest into its buffer, the amount is refused on a module without the augment, and a source of exactly three is never touched; the Void Module destroys the router's own buffer down to its saved amount — eight stone written into its buffer are gone, the same module with a Regulator Augment and an amount of 3 stops with three left, a Sender Mk1 with no target beside it keeps all eight (the differential), and a Void whose whitelist omits the item touches nothing, while its recipe crafts in a real table and leaves the lava bucket's bucket in the grid; the Sender Mk2 is a targeted ranged sender — eight stone in a router's buffer reach a chest ten blocks out that was selected with a sneak right-click (chest 8, buffer 0), an identical Mk2 with no target keeps all eight although a chest sits ten blocks along its facing, a target 25 blocks out moves nothing at range=24 and exactly one item per operation once one Range Up augment takes it to 25, and no line of sight is needed anywhere in it; and a Sender's Regulator Augment is its target's floor rather than its source's — a Mk1 sending into a chest of six with an amount of ten adds exactly four and stops (chest 10, buffer 4), the identical Mk1 with no augment empties all eight into it (14/0, the differential), a chest already holding the amount takes nothing (10/8, the boundary), a Sender Mk2 with the same amount and a selected chest does the same (10/4), and re-setting the amount answers that it is already set; and the Dropper Module throws the filtered buffer stack into the block in its direction with no velocity — eight stone written into a dropper's buffer are eight stone on the floor of the block north of it with the buffer empty, a Void Module beside it destroys its eight and puts none on the ground (the differential), a dropper whose whitelist names dirt throws nothing (8 still in the buffer, 0 on the ground), a dropper with a Regulator Augment at 3 keeps three and throws five, and its recipe crafts in a real table; and the Vacuum Module fills the router's buffer from the dropped items in a box six blocks in every direction around it — eight stone summoned at the edge of that reach are eight in the buffer with none left on the ground, the same rig with a whitelist naming dirt collects none of the eight, an identical vacuum one block past the reach collects none, a vacuum whose buffer already holds eight dirt collects none of the stone (the buffer's own item decides what it collects), a vacuum with a Regulator Augment at 3 stops at three and leaves five, and a vacuum whose buffer is already full takes nothing from the sixty-four stone in its reach (it resolves no dropped item at all), and its recipe crafts in a real table; and the Flinger Module is the Dropper Module with a velocity — eight stone in a flinger's buffer with dir=front on an east-facing router at speed 1 land as eight stone past the adjacent block with the buffer empty, the identical flinger at speed 0 leaves them in the adjacent block exactly as a dropper does (the speed), a dir=up flinger throws them above the router with none east (the base pitch of 90 degrees), a pitch 90 throw on a horizontal aim puts them straight up and back into the adjacent block, a yaw 60 throw lands them north of the row, a flinger whose whitelist names dirt throws nothing, and its recipe crafts in a real table"
+echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the nine module recipes, the two Puller Mk2 and two Sender Mk2 recipes, the three upgrade recipes and the seven augment recipes craft their declared id and count in a real table with the grid emptied (or the recipe's vanilla bucket remainder left) and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all nineteen item ids read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch; the Range Augments are *module* augments in four slots, one block of reach each: a Mk2 whose target is fourteen blocks out moves nothing at range=12 and exactly one item per operation once four Range Up augments (installed by sneak right-click) take it to 16, one Range Down augment on a twelve-block target stops the pull at range=11 and comes back to the inventory when removed, a Sender Mk1's twelve-block scan starts delivering at range=16 with eight Range Up augments, a Range augment is refused on a module that is not ranged, a saved slot of fifteen reads as twelve (range=24, the hard maximum) and a fifth slot is cut, and the augments survive a relaunch; the Stack Augment is the augment whose number overrides the router rather than adding to it: a Mk1 whose router holds one Stack Upgrade (2 item(s) per operation) and whose module holds two Stack Augments moves exactly four per operation, not eight, the identical module with no upgrade at all moves four as well while the plain Mk1 beside them moves one, six augments in one slot read items=64 and fill the one-slot buffer with a whole stack in one operation, a seventh is refused at the slot's limit, and the count survives a relaunch; the Regulator Augment makes a pull leave the module's saved amount in the source — a Mk1 pulling from twelve stone with the amount at 3 stops with nine in its buffer and three still in the chest, the identical rig with no augment empties the chest into its buffer, the amount is refused on a module without the augment, and a source of exactly three is never touched; the Void Module destroys the router's own buffer down to its saved amount — eight stone written into its buffer are gone, the same module with a Regulator Augment and an amount of 3 stops with three left, a Sender Mk1 with no target beside it keeps all eight (the differential), and a Void whose whitelist omits the item touches nothing, while its recipe crafts in a real table and leaves the lava bucket's bucket in the grid; the Sender Mk2 is a targeted ranged sender — eight stone in a router's buffer reach a chest ten blocks out that was selected with a sneak right-click (chest 8, buffer 0), an identical Mk2 with no target keeps all eight although a chest sits ten blocks along its facing, a target 25 blocks out moves nothing at range=24 and exactly one item per operation once one Range Up augment takes it to 25, and no line of sight is needed anywhere in it; and a Sender's Regulator Augment is its target's floor rather than its source's — a Mk1 sending into a chest of six with an amount of ten adds exactly four and stops (chest 10, buffer 4), the identical Mk1 with no augment empties all eight into it (14/0, the differential), a chest already holding the amount takes nothing (10/8, the boundary), a Sender Mk2 with the same amount and a selected chest does the same (10/4), and re-setting the amount answers that it is already set; and the Dropper Module throws the filtered buffer stack into the block in its direction with no velocity — eight stone written into a dropper's buffer are eight stone on the floor of the block north of it with the buffer empty, a Void Module beside it destroys its eight and puts none on the ground (the differential), a dropper whose whitelist names dirt throws nothing (8 still in the buffer, 0 on the ground), a dropper with a Regulator Augment at 3 keeps three and throws five, and its recipe crafts in a real table; and the Vacuum Module fills the router's buffer from the dropped items in a box six blocks in every direction around it — eight stone summoned at the edge of that reach are eight in the buffer with none left on the ground, the same rig with a whitelist naming dirt collects none of the eight, an identical vacuum one block past the reach collects none, a vacuum whose buffer already holds eight dirt collects none of the stone (the buffer's own item decides what it collects), a vacuum with a Regulator Augment at 3 stops at three and leaves five, and a vacuum whose buffer is already full takes nothing from the sixty-four stone in its reach (it resolves no dropped item at all), and its recipe crafts in a real table; and the Flinger Module is the Dropper Module with a velocity — eight stone in a flinger's buffer with dir=front on an east-facing router at speed 1 land as eight stone past the adjacent block with the buffer empty, the identical flinger at speed 0 leaves them in the adjacent block exactly as a dropper does (the speed), a dir=up flinger throws them above the router with none east (the base pitch of 90 degrees), a pitch 90 throw on a horizontal aim puts them straight up and back into the adjacent block, a yaw 60 throw lands them north of the row, a flinger whose whitelist names dirt throws nothing, and its recipe crafts in a real table; and the Placer Module puts one buffered item back into the world as a block in the block its direction names — eight stone in a placer's buffer with dir=front on a north-facing router become one stone block at 201,100,-1 at exactly one item per placement (seven left in the buffer, and the occupied block refuses every later operation), nothing is taken from a pre-filled destination (buffer 8), dir=none places nothing (buffer 8), a stick places nothing (no block form, buffer 8), a whitelist naming dirt places nothing (buffer 8), the Stack Augment is refused on the module itself and it still takes one per placement, a dir=up placer places above the router with none north, a Regulator Augment at 3 refuses a buffer of exactly three and places one of four, and its recipe crafts in a real table"

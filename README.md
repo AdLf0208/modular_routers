@@ -1,6 +1,6 @@
 # Modular Routers for Horizon
 
-A router block that runs item-transfer modules every 20 ticks, eight modules of
+A router block that runs item-transfer modules every 20 ticks, nine modules of
 the original mod — a **Puller Module Mk1** that takes items from the container
 beside the router into its one-slot buffer, a **Puller Module Mk2** that takes
 them from the container you select with it, up to 12 blocks away (24 with Range
@@ -13,8 +13,9 @@ item (or by the operation's count with a Stack Augment), leaving the module's
 regulation amount behind if one is set, a **Dropper Module** that throws the
 buffer's items into the block in its direction instead of destroying them, with no
 velocity, keeping its regulation amount in the buffer, a **Flinger Module** that
-throws them the same way but with the speed, pitch and yaw you set on it — and a
-**Vacuum Module**
+throws them the same way but with the speed, pitch and yaw you set on it, a
+**Placer Module** that puts one item from the buffer back into the world as a block
+in the block its direction names, and a **Vacuum Module**
 that fills the buffer from the dropped items on the ground around it, six blocks in
 every direction (or in front of it only, when it is given a direction), the
 buffer's own item deciding what it collects — the two upgrades the
@@ -55,7 +56,8 @@ Craft the router (4 per recipe), a blank module (6), then a puller (blank module
 +sender + an ender pearl, or four senders + one pearl for four) or a void module
 +(blank module + lava bucket, which leaves its bucket). A dropper module is a
 blank module and a vanilla dropper; a flinger module is a dropper module and
-+gunpowder; a vacuum module is a blank module, a hopper and an ender eye. A blank
++gunpowder; a placer module is a blank module, a dispenser and dirt; a vacuum
++module is a blank module, a hopper and an ender eye. A blank
 +upgrade takes
 4 paper, 3 gold nuggets and a lapis; a Speed Upgrade (3) is redstone, gold and
 gunpowder around it with a blaze rod; a Stack Upgrade is a blank upgrade, stone
@@ -95,6 +97,11 @@ around the direction it is given, set with `/modularrouters fling <x> <y> <z>
 <slot> <speed> <pitch> <yaw>` and shown by `info` (`fling=speed=1 pitch=0 yaw=0`);
 at speed 1 the stack lands about six blocks along the aim, where the dropper's
 stays in the adjacent block, and with a `dir=up` it goes above the router. A
+**Placer Module** is the dropper's opposite: it takes **one** item from the buffer
+and puts it back into the world as a block in the block its direction names, if the
+item has a block form and that block can be replaced — one per operation whatever
+the router's Stack Upgrades say (it takes no Stack Augment), with its filter
+deciding which item and a Regulator Augment's amount left in the buffer. A
 **Vacuum Module** reads the world instead of a container: it pulls the dropped
 items inside a box six blocks in every direction around the router into its
 buffer, one item per operation (more with a Stack Upgrade or Augment), and only
@@ -122,7 +129,7 @@ no more — and a vacuum stops filling its buffer at it. The buffer is the
 block's item container on every side, so hoppers
 and pipes can fill or empty it.
 
-The screen, the other 13 modules, the other 8 upgrades, the other 7 augments
+The screen, the other 12 modules, the other 8 upgrades, the other 7 augments
 (Mimic, Pickup Delay, …) and smart filters are not ported yet — see
 `notes.md`.
 
@@ -135,8 +142,8 @@ not implement installs like any other, is listed by `/modularrouters info`,
 keeps its slot, direction and filter in the router's saved data across a
 relaunch, and `/modularrouters remove` takes it out; its behaviour is the owning
 mod's to run. A held item that is not a module this build runs (both pullers,
-both senders, the void, the dropper, the vacuum and the flinger module) and is not
-in the tag is
+both senders, the void, the dropper, the flinger, the placer and the vacuum
+module) and is not in the tag is
 refused (`Unknown module '…'`).
 
 The tag is a data file (`data/modularrouters/tags/item/modules.json`). At SDK

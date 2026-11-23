@@ -315,6 +315,9 @@ pub enum ModuleKind {
     /// same filtered stack thrown into the block its direction names, given the
     /// module's saved speed, pitch and yaw.
     Flinger,
+    /// `modularrouters:placer_module`: places one item out of the buffer as a block
+    /// in the adjacent block its direction names.
+    Placer,
     /// A module this port does not implement, carried by its id.
     Registered(String),
 }
@@ -328,6 +331,7 @@ impl ModuleKind {
     pub const DROPPER: &'static str = "modularrouters:dropper_module";
     pub const VACUUM: &'static str = "modularrouters:vacuum_module";
     pub const FLINGER: &'static str = "modularrouters:flinger_module";
+    pub const PLACER: &'static str = "modularrouters:placer_module";
 
     /// The kind an item id names: one of the modules this port runs, or a
     /// registered kind that keeps the id unchanged.
@@ -342,6 +346,7 @@ impl ModuleKind {
             Self::DROPPER => ModuleKind::Dropper,
             Self::VACUUM => ModuleKind::Vacuum,
             Self::FLINGER => ModuleKind::Flinger,
+            Self::PLACER => ModuleKind::Placer,
             other => ModuleKind::Registered(other.to_string()),
         }
     }
@@ -359,6 +364,7 @@ impl ModuleKind {
                 | ModuleKind::Dropper
                 | ModuleKind::Vacuum
                 | ModuleKind::Flinger
+                | ModuleKind::Placer
         )
     }
 
@@ -390,6 +396,7 @@ impl ModuleKind {
             ModuleKind::Dropper => Self::DROPPER,
             ModuleKind::Vacuum => Self::VACUUM,
             ModuleKind::Flinger => Self::FLINGER,
+            ModuleKind::Placer => Self::PLACER,
             ModuleKind::Registered(item) => item,
         }
     }
@@ -407,6 +414,7 @@ impl ModuleKind {
             | ModuleKind::Void
             | ModuleKind::Dropper
             | ModuleKind::Flinger
+            | ModuleKind::Placer
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -423,6 +431,7 @@ impl ModuleKind {
             | ModuleKind::Void
             | ModuleKind::Dropper
             | ModuleKind::Flinger
+            | ModuleKind::Placer
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -674,6 +683,7 @@ impl Module {
             | ModuleKind::Void
             | ModuleKind::Dropper
             | ModuleKind::Flinger
+            | ModuleKind::Placer
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -1464,6 +1474,30 @@ pub fn pick_void(buffer: Option<&Stack>, filter: &Filter, items: u32, keep: u32)
 #[must_use]
 pub fn pick_drop(buffer: Option<&Stack>, filter: &Filter, items: u32, keep: u32) -> Option<u32> {
     pick_void(buffer, filter, items, keep)
+}
+
+/// What one Placer operation places: **one** item out of the buffer, and nothing
+/// at all when the buffer is empty, the filter refuses its item, or the buffer is
+/// already down to `keep`.
+///
+/// `CompiledPlacerModule.execute` is the shortest operation in the mod: it checks
+/// `isRegulationOK(router, false)`, `peekBuffer`s **one** item, tests the filter,
+/// tries to place it as a block, and only then `extractBuffer`s it. It never calls
+/// `getItemsPerTick`, which is the same rule as `StackAugment.getMaxAugments`
+/// giving it none: a placer places one block per operation whatever the router's
+/// Stack Upgrades or a foreign save's augment count say. The count is therefore
+/// not a parameter here — the operation cannot be told to move more.
+///
+/// `keep` is `Module::regulation_amount()`, which is zero unless a Regulator
+/// Augment is installed; `isRegulationOK(router, false)` is `keep < count`, so the
+/// buffer's floor is the amount.
+#[must_use]
+pub fn pick_place(buffer: Option<&Stack>, filter: &Filter, keep: u32) -> Option<u32> {
+    let stack = buffer?;
+    if stack.count == 0 || !filter.accepts(&stack.item) || stack.count <= keep {
+        return None;
+    }
+    Some(1)
 }
 
 /// Where a Dropper's item is spawned: the middle of the block one step along
@@ -2787,9 +2821,10 @@ mod tests {
     fn a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items() {
         // `StackAugment.getMaxAugments`: six, except the Detector, both Extruders, the
         // Breaker, the Placer and both Fluid modules — their operation is not an item
-        // count. Those kinds are gap 1 in this port (carried by id, never run), so the
-        // rule is the module **id**'s; every other module, including one this port
-        // only carries, takes upstream's six.
+        // count. The Placer ships (slice 15), so its refusal is shown in game on the
+        // module itself; the other six kinds are gap 1 (carried by id, never run), so
+        // for them the rule is the module **id**'s; every other module, including one
+        // this port only carries, takes upstream's six.
         for known in [
             ModuleKind::PullerMk1,
             ModuleKind::PullerMk2,
@@ -3740,5 +3775,135 @@ mod tests {
         let (min, max) = vacuum_box([10, 100, 0], 1);
         assert_eq!(min, [9.0, 99.0, -1.0]);
         assert_eq!(max, [12.0, 102.0, 2.0]);
+    }
+
+    #[test]
+    fn a_placer_module_places_one_item_at_a_time_down_to_its_saved_amount() {
+        // `CompiledPlacerModule.execute`: `isRegulationOK(router, false)` first, then
+        // `peekBuffer(1)` and the filter's test, and `extractBuffer(1)` only after the
+        // block went in. `getItemsPerTick` is never read, so one item moves whatever
+        // the router's Stack Upgrades say.
+        assert_eq!(
+            ModuleKind::of("modularrouters:placer_module"),
+            ModuleKind::Placer
+        );
+        assert!(ModuleKind::Placer.is_known());
+        assert_eq!(ModuleKind::Placer.item(), ModuleKind::PLACER);
+        assert!(
+            !ModuleKind::Placer.is_targeted(),
+            "it places beside the router through its direction, not into a selected block"
+        );
+        assert!(
+            !ModuleKind::Placer.is_sender(),
+            "its amount is the buffer's floor, not a target's"
+        );
+        let placer = Module::new(ModuleKind::Placer, Relative::Front, Filter::any());
+        assert_eq!(
+            placer.current_range(),
+            None,
+            "a placer is not ranged: it places one block beside the router"
+        );
+
+        let eight = Stack::of("minecraft:stone", 8);
+        assert_eq!(pick_place(Some(&eight), &Filter::any(), 0), Some(1));
+        assert_eq!(
+            pick_place(Some(&Stack::of("minecraft:stone", 64)), &Filter::any(), 0),
+            Some(1),
+            "one item per operation however many the buffer holds"
+        );
+        assert_eq!(
+            pick_place(Some(&eight), &Filter::any(), 3),
+            Some(1),
+            "a floor of three still places one while the buffer is above it"
+        );
+        assert_eq!(
+            pick_place(Some(&Stack::of("minecraft:stone", 1)), &Filter::any(), 0),
+            Some(1),
+            "the last item goes too"
+        );
+        // `isRegulationOK(router, false)` is `amount < count`: a buffer at or below the
+        // floor is no operation at all.
+        let three = Stack::of("minecraft:stone", 3);
+        assert_eq!(pick_place(Some(&three), &Filter::any(), 3), None);
+        assert_eq!(pick_place(Some(&three), &Filter::any(), 8), None);
+        assert_eq!(pick_place(None, &Filter::any(), 0), None);
+    }
+
+    #[test]
+    fn a_placer_module_places_only_what_its_filter_accepts() {
+        let stone = Stack::of("minecraft:stone", 8);
+        let only_dirt = Filter::new(true, vec!["minecraft:dirt".to_string()]);
+        assert_eq!(
+            pick_place(Some(&stone), &only_dirt, 0),
+            None,
+            "a whitelist that does not list stone places nothing"
+        );
+        let not_dirt = Filter::new(false, vec!["minecraft:dirt".to_string()]);
+        assert_eq!(pick_place(Some(&stone), &not_dirt, 0), Some(1));
+        assert_eq!(
+            pick_place(Some(&stone), &Filter::new(true, Vec::new()), 0),
+            None,
+            "an empty whitelist accepts nothing"
+        );
+    }
+
+    #[test]
+    fn a_placer_takes_no_stack_augment_and_one_regulator_augment() {
+        // `StackAugment.getMaxAugments` names the Placer; `RegulatorAugment` does not.
+        // Until this slice the placer was a carried id (gap 1), so the refusal was
+        // unit-tested only (`blocked(module-kind)`); the kind exists now, so the same
+        // rule is what the in-game leg shows.
+        let placer = Module::new(ModuleKind::Placer, Relative::Front, Filter::any());
+        assert_eq!(placer.augment_limit(&AugmentKind::Stack), 0);
+        assert_eq!(placer.augment_limit(&AugmentKind::Regulator), 1);
+
+        let mut module = placer.clone();
+        assert!(!module.add_augment(AugmentKind::Stack));
+        assert_eq!(module.augments().used(), 0);
+        assert!(module.add_augment(AugmentKind::Regulator));
+        assert_eq!(module.augments().used(), 1);
+        assert_eq!(
+            module.regulation_amount(),
+            0,
+            "the saved amount starts at zero"
+        );
+        module.set_regulation(3);
+        assert_eq!(module.regulation_amount(), 3);
+
+        // The router's own count is not the placer's either: `getItemsPerTick` is not
+        // read by this module, so the operation stays one item.
+        assert_eq!(placer.items_per_operation(64), 64);
+        assert_eq!(
+            pick_place(Some(&Stack::of("minecraft:stone", 64)), &Filter::any(), 0),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_placers_block_is_the_one_its_direction_names() {
+        // `CompiledModule.setupTargets`: a directional module's target is the block
+        // beside the router in its absolute facing, and a `NONE` direction has **no**
+        // target at all — the module then has nothing to place into.
+        let placer = Module::new(ModuleKind::Placer, Relative::Front, Filter::any());
+        assert_eq!(
+            placer.direction.resolve(Facing::North),
+            Some(NORTH),
+            "dir=front on a north-facing router is north"
+        );
+        assert_eq!(
+            Module::new(ModuleKind::Placer, Relative::Up, Filter::any())
+                .direction
+                .resolve(Facing::North),
+            Some(UP)
+        );
+        assert_eq!(
+            Module::new(ModuleKind::Placer, Relative::None, Filter::any())
+                .direction
+                .resolve(Facing::North),
+            None,
+            "dir=none has no target, so nothing is placed"
+        );
+        assert_eq!(step([201, 100, 0], NORTH), [201, 100, -1]);
+        assert_eq!(step([201, 100, 0], UP), [201, 101, 0]);
     }
 }
