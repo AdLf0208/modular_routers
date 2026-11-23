@@ -288,6 +288,9 @@ pub enum ModuleKind {
     SenderMk2,
     /// `modularrouters:void_module`: destroys the filtered stack in the buffer.
     Void,
+    /// `modularrouters:dropper_module`: throws the filtered stack in the buffer into
+    /// the block its direction names.
+    Dropper,
     /// A module this port does not implement, carried by its id.
     Registered(String),
 }
@@ -298,6 +301,7 @@ impl ModuleKind {
     pub const SENDER: &'static str = "modularrouters:sender_module_1";
     pub const SENDER2: &'static str = "modularrouters:sender_module_2";
     pub const VOID: &'static str = "modularrouters:void_module";
+    pub const DROPPER: &'static str = "modularrouters:dropper_module";
 
     /// The kind an item id names: one of the modules this port runs, or a
     /// registered kind that keeps the id unchanged.
@@ -309,6 +313,7 @@ impl ModuleKind {
             Self::SENDER => ModuleKind::SenderMk1,
             Self::SENDER2 => ModuleKind::SenderMk2,
             Self::VOID => ModuleKind::Void,
+            Self::DROPPER => ModuleKind::Dropper,
             other => ModuleKind::Registered(other.to_string()),
         }
     }
@@ -323,6 +328,7 @@ impl ModuleKind {
                 | ModuleKind::SenderMk1
                 | ModuleKind::SenderMk2
                 | ModuleKind::Void
+                | ModuleKind::Dropper
         )
     }
 
@@ -351,6 +357,7 @@ impl ModuleKind {
             ModuleKind::SenderMk1 => Self::SENDER,
             ModuleKind::SenderMk2 => Self::SENDER2,
             ModuleKind::Void => Self::VOID,
+            ModuleKind::Dropper => Self::DROPPER,
             ModuleKind::Registered(item) => item,
         }
     }
@@ -363,7 +370,10 @@ impl ModuleKind {
             ModuleKind::PullerMk2 => Some(PULLER_BASE_RANGE),
             ModuleKind::SenderMk1 => Some(SENDER_BASE_RANGE),
             ModuleKind::SenderMk2 => Some(SENDER2_BASE_RANGE),
-            ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
+            ModuleKind::PullerMk1
+            | ModuleKind::Void
+            | ModuleKind::Dropper
+            | ModuleKind::Registered(_) => None,
         }
     }
 
@@ -374,7 +384,10 @@ impl ModuleKind {
             ModuleKind::PullerMk2 => Some(PULLER_MAX_RANGE),
             ModuleKind::SenderMk1 => Some(SENDER_MAX_RANGE),
             ModuleKind::SenderMk2 => Some(SENDER2_MAX_RANGE),
-            ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
+            ModuleKind::PullerMk1
+            | ModuleKind::Void
+            | ModuleKind::Dropper
+            | ModuleKind::Registered(_) => None,
         }
     }
 
@@ -596,7 +609,10 @@ impl Module {
             ModuleKind::PullerMk2 => Some(puller_range(boost)),
             ModuleKind::SenderMk1 => Some(sender_range(boost)),
             ModuleKind::SenderMk2 => Some(sender2_range(boost)),
-            ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
+            ModuleKind::PullerMk1
+            | ModuleKind::Void
+            | ModuleKind::Dropper
+            | ModuleKind::Registered(_) => None,
         }
     }
 
@@ -1365,6 +1381,36 @@ pub fn pick_void(buffer: Option<&Stack>, filter: &Filter, items: u32, keep: u32)
     }
     let to_void = items.min(stack.count.saturating_sub(keep));
     (to_void > 0).then_some(to_void)
+}
+
+/// What one Dropper operation throws: this many of the buffered stack, never more
+/// than the buffer holds or `items`, and never the `keep` the module's saved
+/// regulation amount reserves.
+///
+/// `CompiledDropperModule.execute` computes exactly what
+/// [`pick_void`] does — `min(getItemsPerTick, count − getRegulationAmount())`,
+/// nothing when that is not positive, the filter's test first — and only what
+/// happens to the stack differs: it is spawned as an item entity instead of
+/// destroyed. `keep` is `Module::regulation_amount()`, zero without the augment.
+#[must_use]
+pub fn pick_drop(buffer: Option<&Stack>, filter: &Filter, items: u32, keep: u32) -> Option<u32> {
+    pick_void(buffer, filter, items, keep)
+}
+
+/// Where a Dropper's item is spawned: the middle of the block one step along
+/// `face`, moved `0.2` blocks back toward the router. `CompiledDropperModule`
+/// builds its `ItemEntity` at `target.pos + 0.5 + 0.2 × target.face`, and the
+/// target block's face is the side the router is on — so the item appears just
+/// inside the adjacent block, nearest the router, never in the router's own space.
+#[must_use]
+pub fn drop_point(from: Pos, face: Face) -> [f64; 3] {
+    let [x, y, z] = step(from, face);
+    let [dx, dy, dz] = face_normal(face);
+    [
+        f64::from(x) + 0.5 - 0.2 * f64::from(dx),
+        f64::from(y) + 0.5 - 0.2 * f64::from(dy),
+        f64::from(z) + 0.5 - 0.2 * f64::from(dz),
+    ]
 }
 
 /// The buffer after `sent` items left it — a send, or the items a Void Module
@@ -2568,6 +2614,122 @@ mod tests {
             pick_void(Some(&stone), &Filter::new(true, Vec::new()), 64, 0),
             None,
             "an empty whitelist accepts nothing"
+        );
+    }
+
+    #[test]
+    fn a_dropper_module_throws_the_filtered_buffer_down_to_its_saved_amount() {
+        // `CompiledDropperModule.execute`: `min(getItemsPerTick, count −
+        // getRegulationAmount())`, and nothing at all when that is not positive — the
+        // Void Module's arithmetic with the stack thrown into the world instead of
+        // destroyed, so the saved amount is the buffer's floor.
+        assert_eq!(
+            ModuleKind::of("modularrouters:dropper_module"),
+            ModuleKind::Dropper
+        );
+        assert!(ModuleKind::Dropper.is_known());
+        assert_eq!(ModuleKind::Dropper.item(), ModuleKind::DROPPER);
+        assert!(
+            !ModuleKind::Dropper.is_targeted(),
+            "it drops through its direction, not a block the player selected"
+        );
+        assert!(
+            !ModuleKind::Dropper.is_sender(),
+            "its amount is the buffer's floor, not the target's"
+        );
+        let dropper = Module::new(ModuleKind::Dropper, Relative::Front, Filter::any());
+        assert_eq!(
+            dropper.current_range(),
+            None,
+            "a dropper is not ranged: it reaches the block beside it"
+        );
+
+        let eight = Stack::of("minecraft:stone", 8);
+        assert_eq!(pick_drop(Some(&eight), &Filter::any(), 1, 0), Some(1));
+        assert_eq!(
+            pick_drop(Some(&eight), &Filter::any(), 64, 0),
+            Some(8),
+            "never more than the buffer holds"
+        );
+        assert_eq!(
+            pick_drop(Some(&eight), &Filter::any(), 64, 3),
+            Some(5),
+            "a floor of three leaves three in the buffer"
+        );
+        assert_eq!(
+            pick_drop(Some(&eight), &Filter::any(), 1, 3),
+            Some(1),
+            "the operation's own count still applies above the floor"
+        );
+        // `nItems <= 0` is no operation: a buffer at or below the floor stays whole.
+        let three = Stack::of("minecraft:stone", 3);
+        assert_eq!(pick_drop(Some(&three), &Filter::any(), 64, 3), None);
+        assert_eq!(pick_drop(Some(&three), &Filter::any(), 64, 5), None);
+        assert_eq!(pick_drop(None, &Filter::any(), 64, 0), None);
+        assert_eq!(pick_drop(Some(&eight), &Filter::any(), 0, 0), None);
+    }
+
+    #[test]
+    fn a_dropper_module_only_throws_what_its_filter_accepts() {
+        let stone = Stack::of("minecraft:stone", 8);
+        let only_dirt = Filter::new(true, vec!["minecraft:dirt".to_string()]);
+        assert_eq!(
+            pick_drop(Some(&stone), &only_dirt, 64, 0),
+            None,
+            "a whitelist that does not list stone throws nothing"
+        );
+        let not_dirt = Filter::new(false, vec!["minecraft:dirt".to_string()]);
+        assert_eq!(pick_drop(Some(&stone), &not_dirt, 64, 0), Some(8));
+        assert_eq!(
+            pick_drop(Some(&stone), &Filter::new(true, Vec::new()), 64, 0),
+            None,
+            "an empty whitelist accepts nothing"
+        );
+    }
+
+    #[test]
+    fn a_droppers_item_lands_in_the_block_its_direction_names() {
+        // `CompiledDropperModule.execute` spawns the item at the **target block's**
+        // position plus `0.5 + 0.2 × face`, where the face is that block's side toward
+        // the router — so the item lands just inside the adjacent block, nearest the
+        // router, and one block (never two) away.
+        assert_eq!(step([90, 100, 0], NORTH), [90, 100, -1]);
+        let north = drop_point([90, 100, 0], NORTH);
+        assert_eq!(north[0], 90.5, "the target block's middle x");
+        assert_eq!(north[1], 100.5, "the target block's middle y");
+        assert!(
+            (north[2] - (-0.3)).abs() < 1e-9,
+            "the target block's z from its router-facing side: {}",
+            north[2]
+        );
+        let up = drop_point([90, 100, 0], UP);
+        assert_eq!((up[0], up[2]), (90.5, 0.5));
+        assert!(
+            (up[1] - 101.3).abs() < 1e-9,
+            "above the router, not below: {}",
+            up[1]
+        );
+        let down = drop_point([90, 100, 0], DOWN);
+        assert!(
+            (down[1] - 99.7).abs() < 1e-9,
+            "below the router: {}",
+            down[1]
+        );
+        let east = drop_point([90, 100, 0], EAST);
+        assert!(
+            (east[0] - 91.3).abs() < 1e-9,
+            "east of the router: {}",
+            east[0]
+        );
+        assert_eq!(east[2], 0.5);
+        // The module's direction is the router's own when it says `front`: a
+        // north-facing router throws into the block north of it.
+        assert_eq!(
+            step(
+                [90, 100, 0],
+                Relative::Front.resolve(Facing::North).expect("front")
+            ),
+            [90, 100, -1]
         );
     }
 }

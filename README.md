@@ -10,8 +10,10 @@ a **Sender Module Mk2** that inserts them into the container you select with it,
 up to 24 blocks away (48 with Range Augments; no line of sight needed),
 and a **Void Module** that permanently destroys the stack in the buffer, item by
 item (or by the operation's count with a Stack Augment), leaving the module's
-regulation amount behind if one is set — the two upgrades the router's own
-numbers are about, in its **five upgrade
+regulation amount behind if one is set, and a **Dropper Module** that throws the
+buffer's items into the block in its direction instead of destroying them, with no
+velocity, keeping its regulation amount in the buffer — the two upgrades the
+router's own numbers are about, in its **five upgrade
 slots** (a **Speed Upgrade** shortens the operation interval by two ticks,
 20 → 18 → 16 … down to 2; a **Stack Upgrade** doubles the items one operation
 moves, 1 → 2 → 4 … up to 64), and the **augments** that fit a module's four
@@ -46,7 +48,8 @@ Craft the router (4 per recipe), a blank module (6), then a puller (blank module
 + sticky piston), a ranged Puller Mk2 (a puller + an ender pearl, or four pullers
 + + one pearl for four), a sender (blank module + bow + arrows), a Sender Mk2 (a
 +sender + an ender pearl, or four senders + one pearl for four) or a void module
-+(blank module + lava bucket, which leaves its bucket). A blank upgrade takes
++(blank module + lava bucket, which leaves its bucket). A dropper module is a
++blank module and a vanilla dropper. A blank upgrade takes
 4 paper, 3 gold nuggets and a lapis; a Speed Upgrade (3) is redstone, gold and
 gunpowder around it with a blaze rod; a Stack Upgrade is a blank upgrade, stone
 bricks and bricks.
@@ -73,7 +76,11 @@ bricks and bricks.
 A puller takes one item per second from the container it points at; a sender
 delivers one per second to the first container in its line of sight. A **Void
 Module** is the opposite: it deletes what the buffer holds, one item per
-operation (its filter decides; its direction is irrelevant). A **Puller
+operation (its filter decides; its direction is irrelevant). A **Dropper
+Module** is the Void Module's sibling with a destination: it throws what the
+buffer holds into the block its direction names — the drop lands just inside that
+block, with no velocity (unlike a vanilla dropper's toss) — so with no direction
+it has no block to throw into and does nothing. A **Puller
 Mk2** ignores the direction and works on the block you gave it: sneak-right-click
 an inventory with the module in hand to select it (the block is not opened; the
 reply says `target set`), then install the module — it reaches 12 blocks, in the
@@ -95,7 +102,7 @@ and no more. The buffer is the
 block's item container on every side, so hoppers
 and pipes can fill or empty it.
 
-The screen, the other 17 modules, the other 8 upgrades, the other 7 augments
+The screen, the other 16 modules, the other 8 upgrades, the other 7 augments
 (Mimic, Pickup Delay, …) and smart filters are not ported yet — see
 `notes.md`.
 
@@ -108,8 +115,8 @@ not implement installs like any other, is listed by `/modularrouters info`,
 keeps its slot, direction and filter in the router's saved data across a
 relaunch, and `/modularrouters remove` takes it out; its behaviour is the owning
 mod's to run. A held item that is not a module this build runs (both pullers,
-both senders and the void module) and is not in the tag is refused
-(`Unknown module '…'`).
+both senders, the void module and the dropper module) and is not in the tag is
+refused (`Unknown module '…'`).
 
 The tag is a data file (`data/modularrouters/tags/item/modules.json`). At SDK
 pin `0a875da` a content mod may only write its own namespace (plus `minecraft`

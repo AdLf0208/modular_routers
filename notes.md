@@ -6,14 +6,14 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.11** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.12** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
 (the three of those on 2026-11-22), 0.2.6 the Range Augments in a module's four augment slots,
 0.2.7 the Stack Augment (both on 2026-11-23), 0.2.8 the Regulator Augment, 0.2.9 the Void
-Module, 0.2.10 the targeted Sender Mk2 and 0.2.11 the Regulator Augment's **sender** half
-(all on 2026-11-23). Pin: SDK
+Module, 0.2.10 the targeted Sender Mk2, 0.2.11 the Regulator Augment's **sender** half and
+0.2.12 the Dropper Module (all on 2026-11-23). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -1918,6 +1918,186 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.11: **125,520 B**, SHA-256 `3431d2f6491e8410bdab08682be453fa83cf4157e17c78b1b8f67b3543b594e4`,
 111 entries, no `Cargo.lock`.
 
+## Slice 12 (2026-11-23) — the Dropper Module (0.2.12)
+
+Slice chosen from this file's own gap list, **gap 1** — *"**Modules**: `sender_module_3`
+(**blocked**, see below), `vacuum`, **`dropper`**, `flinger`, …"* — the entry the 0.2.11 next-slice
+named after the blocked Mk3. It is the Void Module's sibling: it works on the router's **own buffer**
+(count and filter, the module's regulation amount as the floor) and its direction names only **where
+the item goes**, so no container and no selected target is involved. Tier fit: **machines**, the ledger
+row — the module's saved entry, the router's buffer, the router's tick and one carried item; no
+renderer and no new machine.
+
+### The artefact's rule, re-read
+
+At the same commit as slices 5–11 (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`):
+
+| upstream | what it says | used for |
+|---|---|---|
+| `logic/compiled/CompiledDropperModule.execute:24-49` | `if (getFilter().test(stack) && isRegulationOK(router, false)) { int nItems = min(getItemsPerTick(router), stack.getCount() − getRegulationAmount()); if (nItems <= 0) return false; ItemStack toDrop = router.peekBuffer(nItems); … router.extractBuffer(toDrop.getCount()); return true; }` | `runtime::pick_drop` (the Void's arithmetic), the buffer floor, take-after-drop |
+| same, `:31-38` | the `ItemEntity` is created at `target.pos + 0.5 + 0.2 × target.face` — the **target block** is the one in the module's direction, and its face is the side toward the router | `runtime::drop_point` |
+| same, `pickupDelay` + `setupItemVelocity` | pickup delay = `PickupDelayAugment.TICKS_PER_AUGMENT × count` (**0** without the augment) and `setDeltaMovement(0, 0, 0)` | the spawn's `pickup_delay = 0` and motion `[0,0,0]` |
+| `item/module/DropperModule.java` | a plain `ModuleItem` — **directional**, no `isDirectional` override, no ranged interface | the tick resolves its direction like the Mk1's; `base_range`/`max_range` are `None` |
+| `CompiledModule.setupTargets` / `isTargetValid` | target = `router.getBlockPos().relative(facing)`, always valid (the module is not ranged, not targeted) | `step(pos, face)` |
+| `data/modularrouters/recipe/dropper_module.json` | shapeless `blank_module` + `minecraft:dropper` → **1** | the carried recipe in 26.3's bare-string form |
+| `assets/…/models/item/dropper_module.json`, `textures/item/module/dropper_module.png` | the module base's `layer0`/`layer1` + `dropper_module.png` | the carried model and the jar's own texture (MIT, rank 0) |
+
+So a dropper is the Void Module with a destination: the same `min(items, count − keep)` out of the
+router's buffer, but the stack is **thrown into the adjacent block** instead of destroyed, and the
+buffer is written back only after the drop exists.
+
+### The pin's API: `spawn_item_with_motion`, not `drop_at`
+
+The brief named `Host::drop_at`. At `0a875da` it exists only on `ItemsBackendMut`
+(`horizon-mod-vocab/src/host/items.rs:491`), which is `#[doc(hidden)]` and reached through the hidden
+helper `backend_mut_of` — mods may not call it, and it has **no handle** (no generated `impl … { pub fn
+drop_at }` in `mod_api_generated_host.rs`). The supported handle for the same thing is
+`LevelRef::spawn_item_with_motion(host, x, y, z, stack, motion, pickup_delay)`
+(`host/levels.rs:1476`; `mod_api_generated_host.rs:2509`), a literal `new ItemEntity(...)` +
+`addFreshEntity`. It is also the **more faithful** route: upstream zeroes the velocity
+(`setupItemVelocity`), and `drop_at` gives the item the default toss motion. Recorded as a deviation
+from the brief's function name, not from its requirement — the drop is what the brief asked for.
+
+### How it works here
+
+- **`src/runtime.rs`** — `ModuleKind::Dropper` (+ `ModuleKind::DROPPER`), `of`/`is_known`/`item`
+  extended, `base_range`/`max_range`/`current_range` return `None` (it is not ranged), `is_sender` and
+  `is_targeted` stay false (its amount is the buffer's floor and its block is the one its direction
+  names). `pick_drop(buffer, filter, items, keep)` delegates to `pick_void` — the two compiled modules
+  compute the identical count — and `drop_point(from, face)` is upstream's spawn position.
+- **`src/support.rs`** — `drop_from_buffer` reads the buffer slot, asks `pick_drop`, sets the count on a
+  copy and spawns it at `drop_point(pos, face)` with zero motion and no pickup delay; only a successful
+  spawn writes the remainder back (`buffer_after_send`, the sender's "remove n"). `run_tick`'s
+  directional arm gains `ModuleKind::Dropper`, so a dropper with **no** direction has no target and does
+  nothing. No new SDK surface beyond that handle; the readout needed no change (`dir=front
+  target=north`, and `regulate=3 augments regulator` once augmented).
+- **Content** — the item definition (`horizon/item/dropper_module.json`), the 26.3 item model, the
+  jar's model and `dropper_module.png`, the jar's shapeless recipe, its `modularrouters:modules` tag
+  entry (the registry the port reads), lang and the creative tab.
+- **Not carried**: the Pickup Delay augment's delay (gap 3 — a tagged augment is carried inertly, so
+  the drop always has delay 0), and the energy cost (the router has no energy system here, gap 6).
+
+### TDD, in the order the ruling asks for
+
+**Red, unit** — four tests written before any of the names existed
+(`slice12-test-red.log`, **23 errors**, `cargo` exit 101):
+
+```
+error[E0599]: no variant, associated function, or constant named `Dropper` found for enum `runtime::ModuleKind` in the current scope
+error[E0425]: cannot find function `pick_drop` in this scope
+error[E0425]: cannot find function `drop_point` in this scope
+error: could not compile `modularrouters` (lib test) due to 23 previous errors
+```
+
+**Red, in game** — phase T written first and run on the shipped **0.2.11** package
+(`../_shared/evidence/modularrouters-e2e/e2e-red-dropper.log`, whose launch line names package
+`3431d2f6…` — 0.2.11): the item is not in that package, so the first install is refused and no
+assertion after it can run.
+
+```
+== T: the Dropper Module — the buffer is thrown into the block its direction names ==
+  Unknown module 'modularrouters:dropper_module': modularrouters:puller_module_1, modularrouters:sender_module_1 or an item in #modularrouters:modules
+FAIL: expected the reply to say 'Modular Router: modularrouters:dropper_module in slot 0'
+EXIT:1
+```
+
+Then the minimal implementation, then the same phase green.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.12.log`)
+
+```
+== T: the Dropper Module — the buffer is thrown into the block its direction names ==
+  Modular Router: modularrouters:dropper_module in slot 0
+  Modular Router: slot 0 points front
+  module 0 at 90,100,0: modularrouters:dropper_module dir=front target=north filter blacklist none
+  Modular Router: modularrouters:void_module in slot 0
+  Modular Router: modularrouters:dropper_module in slot 0
+  Modular Router: slot 0 points front
+  Modular Router: slot 0 filter updated
+  Modular Router: modularrouters:dropper_module in slot 0
+  Modular Router: slot 0 points front
+  Modular Router: installed modularrouters:regulator_augment (1 in module 0, 1 of 4 augment slot(s) used)
+  Modular Router: module 0 leaves 3 item(s) in the source
+  module 0 at 96,100,0: modularrouters:dropper_module dir=front target=north regulate=3 augments regulator filter blacklist none
+  90,100,-1 before: 0 stone on the ground
+  92,100,-1 before: 0 stone on the ground
+  94,100,-1 before: 0 stone on the ground
+  96,100,-1 before: 0 stone on the ground
+  90,100,0 buffer before: 7 stone
+  92,100,0 buffer before: 8 stone
+  94,100,0 buffer before: 8 stone
+  96,100,0 buffer before: 8 stone
+  T1 (dropper, dir=front):        buffer 0, 8 stone on the floor north
+  T2 (void module):               buffer 0, 0 on the floor (the differential)
+  T3 (dropper, whitelist dirt):   buffer 8, 0 on the floor (the filter)
+  T4 (dropper + regulator 3):     buffer 3, 5 on the floor (the floor)
+```
+
+and the new recipe in the same run (`craft_check.py`, J1):
+
+```
+  dropper module: a blank module and a dropper, shapeless -> {"count": 1, "item": "modularrouters:dropper_module", "slot": 200}
+  twenty carried recipes craft their declared id and count, the grid empties,
+  each distinctive ingredient is consumed, and thirteen wrong-ingredient controls craft nothing
+```
+
+**Why the assertions can fail, four ways.** (1) The 0.2.11 run above refuses the install (`EXIT:1`).
+(2) **T2 is the differential**: the same router, the same eight buffered stone and the same interval
+with a **Void Module** beside it — the module that is this one without a destination — and it leaves
+**0** item entities on the ground, so the eight on T1's floor are the drop's, not the harness's; the
+baseline check (`0 before` for all four rigs, after an explicit `kill @e[type=minecraft:item]` in the
+End) makes the count a difference and not a total. (3) **T3** is the filter half: a dropper whose
+whitelist names dirt keeps all eight and throws none, so the throw is the module's filter test and not
+"empty the buffer into the world". (4) **T4** reuses the Regulator Augment's amount on the buffer side:
+8 with an amount of 3 leaves exactly 3 and throws 5, so `pick_drop`'s `keep` is the rule and not the
+readout's label. The unit tests drive the same arithmetic (`8 → 1`, `8 → 8`, `8 with keep 3 → 5`, at
+the floor → `None`, a refused filter → `None`, `items = 0 → None`) and `drop_point`'s coordinates
+(north/up/down/east: the target block's middle, 0.2 back toward the router), so an implementation that
+ignored the floor, the filter or the direction cannot pass. `SELFTEST=1` fails phase A
+(`FAIL: SELFTEST: the target chest holds stone, so the check is alive`, `EXIT:1`) and the unmodded
+control game exits 1 at phase G (`FAIL: give modularrouters:modular_router failed (is the package loaded
+in this game?)`, `EXIT:1`) — `e2e-selftest-0.2.12.log`, `e2e-control-0.2.12.log`.
+
+### A harness finding worth recording (T1)
+
+**The item count has to be read from the block, not from a radius.** `ctl entities RADIUS TYPE` is
+centred on the **player**, and the four rigs stand two blocks apart, so one radius around them mixes
+their drops; the helper `thrown X ITEM` sums the stone stacks whose `pos` lies inside the block at
+`X,100,-1` (the drop block itself). It also sums `.item.count`, because two drops that land on each
+other merge into one item entity — an entity count would read 1 where 8 items lie.
+
+The second finding is the phase Q/R lesson again, in the log: `90,100,0 buffer before: 7 stone` where
+8 were written — the first operation fired between the `/data merge` and the read. The final assertion
+is the honest one (buffer 0 and 8 on the floor) and no assertion is written on the informational
+"before" line.
+
+### Ladder (every compile step in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | **23 errors** (`Dropper`, `DROPPER`, `pick_drop`, `drop_point`), `could not compile … (lib test)`, exit 101 | `slice12-test-red.log` |
+| red, in game | `tools/e2e.sh` phase T on the **0.2.11** game | `Unknown module 'modularrouters:dropper_module' …`, `FAIL`, `EXIT:1` | `modularrouters-e2e/e2e-red-dropper.log` |
+| tests | `cargo test --offline` | **73 passed**, 0 failed | `slice12-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice12-clippy.log` |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice12-fmt.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **130,504 B** | `slice12-build.log`, `slice12-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.12 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `130504 bytes, SHA-256 3ad02ddc…b9dc`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, `EXIT:0` | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` | `sdk-fits-0b14f8a.log` |
+| package contents | `unzip -l modularrouters.hmod` | **116 entries** (was 111: the item definition, its model and the jar texture, the recipe and the item model definition), no `Cargo.lock` | `slice12-entries.txt` |
+| data shape | `tools/data_shape.py modularrouters.hmod` | 21 recipe/loot files, every one in the 26.3 dialect (J4) | in the leg's log |
+| manifest bump | `launcher-game.sh build modularrouters` (the stale `native-0a875da-b94495395d7a` carrying 0.2.11 removed first) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.12** (`91cd192e6ddb`), one library `libmodularrouters.so` (`1187426909e8`) | `modularrouters-e2e/game-build-0.2.12.log` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (73 tests) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` | `modularrouters-e2e/e2e-launcher-0.2.12.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.12.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-control-0.2.12.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=53 ok=53`, 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.12: **130,504 B**, SHA-256 `3ad02ddcacdffa72ca41d33792cfd83772187fae40b6b8ebcf90d3482ea4b9dc`,
+116 entries, no `Cargo.lock`.
+
 ## Blocked: the Sender Module Mk3 — `blocked(cross-level-capability)` (probe, 2026-11-23)
 
 The 0.2.10 brief's own next-slice was gap 1's first entry, `sender_module_3`. It was built as a
@@ -2009,18 +2189,19 @@ Every family the jar carries, against what this port does with it. `tested` name
 | Sender Mk1 (buffer → first container along the facing) | tested | E2E A, B (no sender ⇒ no delivery), D (wall stops it) |
 | **Sender Mk2 (buffer → the selected container, 24 blocks, 48 with augments)** | **tested** | E2E R — the target is selected by a sneak right-click with the module in hand (the chest does not open) and installed by right-click, `info` names it (`at=80,100,-10 range=24`), and **8 stone written into the buffer all reach that chest ten blocks away (chest 8, buffer 0)**; an **identical Mk2 with no target keeps all 8** although a chest stands ten blocks along its facing (the differential), a target **25** blocks out moves **nothing** at `range=24` and **exactly one item per operation** after one Range Up augment takes it to `range=25`; `runtime::tests` cover `sender2_range` (24/25/48/1), the kind and its 24/23 augment limits, `current_range`, the `in_range` boundary and the saved target, `support::tests` the readout and the save |
 | **Void Module (buffer → nothing: the filtered stack is destroyed, down to the module's regulation amount)** | **tested** | E2E Q — eight stone written into a router's buffer are **gone** after fifteen operations, the same module with a Regulator Augment and an amount of 3 stops at **3**, a Sender Mk1 with **no direction** (so no target) beside it keeps all **8** (the differential), and a Void whose whitelist names only dirt destroys **nothing** of the stone (the filter); its readout is `modularrouters:void_module dir=none target=none`, with `regulate=3 augments regulator` once augmented; an empty buffer is no operation; `runtime::tests` cover the count rule, the floor, the filter and the kind, `support::tests` the readout |
+| **Dropper Module (buffer → the adjacent block: the filtered stack is thrown as an item entity, down to the module's regulation amount)** | **tested** | E2E T — eight stone written into a router's buffer are **eight stone on the floor of the block north of it** after fifteen operations, the buffer **0**, with the drop block's column empty before the run (an explicit `kill` of the End's item entities, so the count is a difference); a **Void Module** beside it, the same module without a destination, destroys its eight and leaves **0** item entities (the differential); a dropper whose whitelist names dirt keeps all **8** and throws **0** (the filter); a dropper with a Regulator Augment and an amount of 3 keeps **3** and throws **5** (the floor); its readout is `modularrouters:dropper_module dir=front target=north`, with `regulate=3 augments regulator` once augmented; `runtime::tests` cover the count rule, the floor, the filter, the kind and `drop_point`'s spawn position (the target block's middle, 0.2 back toward the router), `support::tests` the readout |
 | module install by right-click and by command | tested | E2E F (click), A/C (commands) |
 | placement facing | tested | E2E G (a real placement, not a setblock) |
 | state + persistence across relaunch | tested | E2E H |
-| the five base module recipes (blank module, router, puller, sender, void) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, wrong-ingredient controls empty; the Void Module's lava bucket leaves the vanilla bucket remainder, and a stick in its place crafts nothing) |
+| the six base module recipes (blank module, router, puller, sender, void, dropper) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, wrong-ingredient controls empty; the Void Module's lava bucket leaves the vanilla bucket remainder, and a stick in its place crafts nothing) |
 | **the two Puller Mk2 and two Sender Mk2 recipes** (Mk1 + ender pearl → 1; four Mk1s + one pearl → 4; the same pair from the Sender Mk1) | **tested** | E2E J1 — each crafts its declared id and count in a real table, the grid empties, the pearl is consumed, and a stick in its place crafts nothing |
-| the seven module items (blank module, router, both pullers, both senders, void) | tested | E2E J2 (give + read back, plus the one give in phase M and the one in phase R) |
+| the eight module items (blank module, router, both pullers, both senders, void, dropper) | tested | E2E J2 (give + read back, plus the one give in phase M, the one in phase R and T's install) |
 | the router's loot table | tested | E2E J3 (iron pickaxe, with a vanilla block as the differential) |
 | the `minecraft:mineable/pickaxe` + `needs_iron_tool` block tags | tested | E2E J3 (the router breaks with an iron pickaxe and drops) |
 | the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers, both senders and the void module (M installs the Puller Mk2 and R the Sender Mk2 through it) |
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
 | **`sender_module_3`** (a targeted sender with `isRangeLimited()` false: no distance limit, the target in the router's world *or* a permitted dimension) | `blocked(cross-level-capability)` — probed in game, not shipped | the probe (§ *Blocked: the Sender Module Mk3*): the Mk3 kind installs, its readout prints **no `range=`** where the Mk2's prints `range=24`, and a same-level target **60 blocks** out receives all eight — but a target in the Overworld is unreachable from an End tick: `{loaded: 1b, in_place: 0b, capability: 0b, merge: "stale"}`, buffer 8 kept; the Mk2 keeps its 8 too (the differential) and a blacklisted dimension is refused |
-| the other 16 modules (`vacuum`, `dropper`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| the other 15 modules (`vacuum`, `flinger`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
 | **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
 | the three upgrade recipes (blank, Speed, Stack) | tested | E2E J1 (real table: id, count, grid emptied, distinctive ingredient consumed, one wrong-ingredient control each) |
 | the three upgrade items | tested | E2E L (give + read back from the inventory) |
@@ -2104,6 +2285,10 @@ binary does not list the port's own tests.
    blocks, 48 with the Range Augments, with no scan along its facing.
    **`void_module` ships** (slice 9, E2E Q): it destroys the router's own buffer
    down to the module's regulation amount, and its recipe crafts in a real table.
+   **`dropper_module` ships** (slice 12, E2E T): it throws the filtered buffer
+   stack into the block its direction names, down to the same amount, and its
+   recipe crafts in a real table; the Pickup Delay augment's delay on that drop is
+   gap 3 (the augment is carried inertly, so the drop's pickup delay is 0).
    1b. **The Mk2s' other half**: the item-beam particles `CompiledPullerModule2`
    and `CompiledSenderModule2` add; a sneak right-click **in air** does not clear
    a target (the click hook is block-only; `/modularrouters target … none` does).

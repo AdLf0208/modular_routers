@@ -1,5 +1,64 @@
 # Modular Routers — validation ladder
 
+## 0.2.12 — the Dropper Module (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 12: `CompiledDropperModule` —
+`min(getItemsPerTick, count − getRegulationAmount())` of the filtered buffer stack, spawned as an item
+entity at the middle of the block in the module's direction 0.2 blocks back toward the router, with no
+velocity, the buffer keeping the amount. `runtime::pick_drop` (the Void's rule, which it delegates to)
+and `runtime::drop_point` are the pure half; `support::drop_from_buffer` spawns through
+`LevelRef::spawn_item_with_motion(host, x, y, z, stack, [0,0,0], 0)` — the pin's public handle for
+`new ItemEntity(...)` + `addFreshEntity`. `Host::drop_at` exists only on the `#[doc(hidden)]
+ItemsBackendMut` with no handle, so it is not reachable from a mod; the handle is also the more faithful
+route, since upstream zeroes the item's velocity.
+
+Every compile step ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the names existed (red) | **23 errors** (`Dropper`, `DROPPER`, `pick_drop`, `drop_point`), `could not compile … (lib test)`, exit 101 | `slice12-test-red.log` |
+| 2 | `tools/e2e.sh` phase T on the **0.2.11** package (red) | `Unknown module 'modularrouters:dropper_module'`, `FAIL: expected the reply to say 'Modular Router: modularrouters:dropper_module in slot 0'`, `EXIT:1` | `modularrouters-e2e/e2e-red-dropper.log` |
+| 3 | `cargo test --offline` | **73 passed**, 0 failed | `slice12-test.log` (= `sdk-test.log`) |
+| 4 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice12-clippy.log` |
+| 5 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice12-fmt.log` |
+| 6 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **130,504 B**, sha256 `3ad02ddc…b9dc` | `slice12-build.log`, `slice12-build-second.log` |
+| 7 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.12 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `130504 bytes, SHA-256 3ad02ddcacdffa72ca41d33792cfd83772187fae40b6b8ebcf90d3482ea4b9dc`, **exit 0** | `sdk-check.log` |
+| 8 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 9 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 10 | `unzip -l modularrouters.hmod` | **116 entries**, no `Cargo.lock` | `slice12-entries.txt` |
+| 11 | `tools/data_shape.py modularrouters.hmod` | 21 recipe/loot files, every one in the 26.3 dialect (also J4 in the leg) | in the leg's log |
+| 12 | `launcher-game.sh build modularrouters` (manifest 0.2.11 → 0.2.12, the stale `native-0a875da-b94495395d7a` carrying 0.2.11 removed first) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.12** (`91cd192e6ddb`), one library `libmodularrouters.so` (`1187426909e8`) | `modularrouters-e2e/game-build-0.2.12.log` |
+| 13 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, K, L–S, **T**, J1–J4 (package `3ad02ddc…`) | `modularrouters-e2e/e2e-launcher-0.2.12.log` |
+| 14 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.12.log` |
+| 15 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.12.log` |
+| 16 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=53 ok=53`, 0 missing/bad exit lines | — |
+| 17 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (73 tests, package = tree, no lock) | `verify-sdk-package.log` |
+
+### What phase T proves (parity rule)
+
+| Family | Assertion in the run | Fail-capable by |
+|---|---|---|
+| the Dropper Module's drop | 8 stone written into the buffer are **8 stone on the floor of the block north** (`ctl entities`, summed by stack, filtered to that block's column), the buffer 0 | T2: the identical rig with a **Void Module** destroys its 8 and leaves 0 on the ground; the per-rig baseline is asserted **0 before** the run, after an explicit `kill @e[type=minecraft:item]` in the End |
+| the filter | a dropper whose whitelist names dirt keeps **8** and throws **0** | a dropper that emptied its buffer whatever the filter says would read 0 / 8 |
+| the regulation amount (buffer floor) | a dropper with a Regulator Augment at **3** keeps **3** and throws **5** | an implementation ignoring `keep` would read 0 / 8 |
+| the direction | `dir=front` on a north-facing router (`info` prints `dir=front target=north`) and the items land in the block **north** | the drop is read from that block's own column; a drop in the router's own block or two blocks away reads 0 |
+| the item and its recipe | `give` + read back (J2); the jar's shapeless recipe crafts 1 in a real table, the dropper and blank module consumed (J1) | the 0.2.11 red run refuses the item; a wrong-ingredient control crafts nothing |
+| the readout | `module 0 …: modularrouters:dropper_module dir=front target=north filter blacklist none`, and `regulate=3 augments regulator` once augmented | `support::tests::a_dropper_module_names_its_direction_and_its_regulation` pins both lines |
+
+Not carried, and why: the **Pickup Delay Augment**'s ticks on the drop (gap 3 — a tagged augment is
+carried inertly, so the delay is always 0) and the module's **energy cost** (gap 6 — the router has no
+energy system here). Both are coverage rows in `notes.md`, not silent gaps.
+
+### Delivered package (0.2.12)
+
+- `modularrouters.hmod` — **130,504 B**, SHA-256
+  `3ad02ddcacdffa72ca41d33792cfd83772187fae40b6b8ebcf90d3482ea4b9dc`, **116 entries** (3 `src/`, 64
+  `assets/`, 43 `data/`, 6 root documents), declared **0.2.12**, no packed `Cargo.lock`,
+  built against `0a875da` and `cmp`-identical on a second build.
+
 ## 0.2.11 — the Regulator Augment's sender half (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

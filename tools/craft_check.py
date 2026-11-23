@@ -3,7 +3,7 @@
 
 Called by `tools/e2e.sh` with the open game's control socket. The harness's
 crafting table exposes the 3x3 grid as slots 100-108 (row-major) and the result
-as 200 (`ctl screen`). For each of the nineteen carried recipes this:
+as 200 (`ctl screen`). For each of the twenty carried recipes this:
 
 1. replaces the table (a fresh block entity, so a stale grid cannot leak in)
    and clears the inventory;
@@ -14,7 +14,7 @@ as 200 (`ctl screen`). For each of the nineteen carried recipes this:
 6. asserts the grid is empty (or holds exactly the recipe's vanilla crafting
    remainder) and the recipe's distinctive ingredient was consumed.
 
-Twelve deliberately wrong patterns must leave the result empty, so the check cannot
+Thirteen deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -47,6 +47,7 @@ RANGE_DOWN = "modularrouters:range_down_augment"
 STACK_AUGMENT = "modularrouters:stack_augment"
 REGULATOR_AUGMENT = "modularrouters:regulator_augment"
 VOID_MODULE = "modularrouters:void_module"
+DROPPER_MODULE = "modularrouters:dropper_module"
 
 
 def main() -> int:
@@ -379,6 +380,14 @@ def main() -> int:
         [(BLANK, every(GRID["tl"])), ("minecraft:lava_bucket", every(GRID["mm"]))],
         VOID_MODULE, 1, "minecraft:lava_bucket", remainder="minecraft:bucket",
     )
+    # The Dropper Module: the jar's shapeless recipe from a blank module and a
+    # vanilla dropper.
+    check(
+        "dropper module: a blank module and a dropper, shapeless",
+        [(BLANK, 1), ("minecraft:dropper", 1)],
+        [(BLANK, every(GRID["tl"])), ("minecraft:dropper", every(GRID["mm"]))],
+        DROPPER_MODULE, 1, "minecraft:dropper",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -503,13 +512,18 @@ def main() -> int:
         [(BLANK, 1), ("minecraft:stick", 1)],
         [(BLANK, every(GRID["tl"])), ("minecraft:stick", every(GRID["mm"]))],
     )
+    empty_control(
+        "dropper module with a stick where the dropper goes",
+        [(BLANK, 1), ("minecraft:stick", 1)],
+        [(BLANK, every(GRID["tl"])), ("minecraft:stick", every(GRID["mm"]))],
+    )
 
     if failures:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  nineteen carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and twelve wrong-ingredient controls craft nothing")
+    print("  twenty carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and thirteen wrong-ingredient controls craft nothing")
     return 0
 
 

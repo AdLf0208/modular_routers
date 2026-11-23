@@ -16,6 +16,7 @@
     "modularrouters:range_down_augment",
     "modularrouters:stack_augment",
     "modularrouters:regulator_augment",
-    "modularrouters:void_module"
+    "modularrouters:void_module",
+    "modularrouters:dropper_module"
   ]
 }

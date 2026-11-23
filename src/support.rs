@@ -26,12 +26,12 @@ use mod_api::{
 };
 
 use crate::runtime::{
-    AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, FACE_NAMES, Facing, Filter,
+    AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, FACE_NAMES, Face, Facing, Filter,
     MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind, Pos, Relative, Slot, Stack, Target,
     UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, buffer_after_pull, buffer_after_send,
-    face_of_normal, facing_for_placement, facing_of_state, in_range, is_operation_tick,
-    items_per_operation, parse_pos, phase_of, pick_pull, pick_send, pick_void, scan_positions,
-    send_quota, side_towards, step, tick_rate,
+    drop_point, face_of_normal, facing_for_placement, facing_of_state, in_range, is_operation_tick,
+    items_per_operation, parse_pos, phase_of, pick_drop, pick_pull, pick_send, pick_void,
+    scan_positions, send_quota, side_towards, step, tick_rate,
 };
 
 /// The router block (and its item).
@@ -806,6 +806,72 @@ fn void_from_buffer(
     true
 }
 
+/// One Dropper operation: throw the filtered buffer stack into the block the
+/// module's direction names (`CompiledDropperModule.execute`).
+///
+/// The count is the Void Module's rule (`pick_drop`), so the module's saved
+/// regulation amount is the buffer's floor. The stack is spawned just inside the
+/// adjacent block with **no velocity** — upstream's `setupItemVelocity` zeroes it,
+/// unlike a vanilla dropper's toss — and with a pickup delay of zero, which is what
+/// it has without the Pickup Delay augment (gap 3: a tagged one is carried
+/// inertly). The items leave the buffer only once the drop exists in the world, as
+/// upstream `peekBuffer`s and then `extractBuffer`s.
+fn drop_from_buffer(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    face: Face,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    items: u32,
+) -> bool {
+    let Some(stack) = entity
+        .items
+        .get(BUFFER_SLOT)
+        .and_then(Option::as_ref)
+        .cloned()
+    else {
+        return false;
+    };
+    let buffer = saved_stack(&*host, &stack);
+    let Some(to_drop) = pick_drop(
+        Some(&buffer),
+        &module.filter,
+        items,
+        module.regulation_amount(),
+    ) else {
+        return false;
+    };
+    let mut dropped = stack.clone();
+    if dropped.set_count(to_drop).is_err() {
+        return false;
+    }
+    let [x, y, z] = drop_point(pos, face);
+    // `LevelRef::spawn_item_with_motion` is the pin's handle for upstream's
+    // `new ItemEntity(level, x, y, z, stack)` + `addFreshEntity`: the one public
+    // route from a tick to a dropped item. A refused spawn (an unknown item, a
+    // level not in place) is no operation and the buffer keeps its stack.
+    if level
+        .spawn_item_with_motion(&mut *host, x, y, z, dropped, [0.0, 0.0, 0.0], 0)
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return false;
+    }
+    match buffer_after_send(&buffer, to_drop) {
+        Some(after) => {
+            let mut left = stack;
+            if left.set_count(after.count).is_err() {
+                return false;
+            }
+            write_buffer(entity, Some(left));
+        }
+        None => write_buffer(entity, None),
+    }
+    true
+}
+
 /// Put a stack in the buffer slot, growing the list when the entity has none.
 fn write_buffer(entity: &mut mod_api::ModBlockEntityView<'_>, stack: Option<ItemStack>) {
     if entity.items.len() == BUFFER_SLOT {
@@ -930,6 +996,11 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
                     ),
                     ModuleKind::SenderMk1 => {
                         send(host, level, pos, face, module, &mut event.entity, items)
+                    }
+                    // A dropper throws its buffer into the block its direction
+                    // names, so unlike a void it has no target without one.
+                    ModuleKind::Dropper => {
+                        drop_from_buffer(host, level, pos, face, module, &mut event.entity, items)
                     }
                     _ => false,
                 }
@@ -2867,6 +2938,44 @@ mod tests {
         assert_eq!(
             lines[1],
             "module 0 at 0,100,0: modularrouters:void_module dir=none target=none \
+             regulate=3 augments regulator filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn a_dropper_module_names_its_direction_and_its_regulation() {
+        // A dropper is directional: `dir=front` on a north-facing router names the
+        // block north of it, which is where the item is thrown — the line the module
+        // screen's direction button would show.
+        let module = Module::new(
+            ModuleKind::of(ModuleKind::DROPPER),
+            Relative::Front,
+            Filter::any(),
+        );
+        let lines = describe(
+            [90, 100, 0],
+            Facing::North,
+            false,
+            std::slice::from_ref(&module),
+            None,
+            0,
+            0,
+        );
+        assert_eq!(
+            lines[1],
+            "module 0 at 90,100,0: modularrouters:dropper_module dir=front target=north \
+             filter blacklist none"
+        );
+        // With a Regulator Augment the saved amount is in effect: the buffer keeps it.
+        let regulated = module
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::Regulator, 1).expect("one regulator augment"),
+            ]))
+            .with_regulation(3);
+        let lines = describe([90, 100, 0], Facing::North, false, &[regulated], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 90,100,0: modularrouters:dropper_module dir=front target=north \
              regulate=3 augments regulator filter blacklist none"
         );
     }
