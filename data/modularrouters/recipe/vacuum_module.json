@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    "modularrouters:blank_module",
+    "minecraft:hopper",
+    "minecraft:ender_eye"
+  ],
+  "result": {
+    "count": 1,
+    "id": "modularrouters:vacuum_module"
+  }
+}

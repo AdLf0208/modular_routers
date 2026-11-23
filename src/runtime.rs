@@ -53,6 +53,11 @@ pub const SENDER2_MAX_RANGE: i32 = 48;
 pub const PULLER_BASE_RANGE: i32 = 12;
 /// `CommonConfig.module.puller2MaxRange`: up to 24 with Range Augments.
 pub const PULLER_MAX_RANGE: i32 = 24;
+/// `CommonConfig.module.vacuumBaseRange`: the Vacuum Module sweeps 6 blocks in
+/// every direction around it (or `range + 1` blocks out when it is given one).
+pub const VACUUM_BASE_RANGE: i32 = 6;
+/// `CommonConfig.module.vacuumMaxRange`: up to 12 with Range Augments.
+pub const VACUUM_MAX_RANGE: i32 = 12;
 /// `AugmentItem.SLOTS`: every module has four augment slots.
 pub const AUGMENT_SLOTS: usize = 4;
 /// One Range Up/Down augment moves a module's reach one block, as
@@ -291,6 +296,9 @@ pub enum ModuleKind {
     /// `modularrouters:dropper_module`: throws the filtered stack in the buffer into
     /// the block its direction names.
     Dropper,
+    /// `modularrouters:vacuum_module`: fills the buffer from the dropped items in
+    /// the box it sweeps.
+    Vacuum,
     /// A module this port does not implement, carried by its id.
     Registered(String),
 }
@@ -302,6 +310,7 @@ impl ModuleKind {
     pub const SENDER2: &'static str = "modularrouters:sender_module_2";
     pub const VOID: &'static str = "modularrouters:void_module";
     pub const DROPPER: &'static str = "modularrouters:dropper_module";
+    pub const VACUUM: &'static str = "modularrouters:vacuum_module";
 
     /// The kind an item id names: one of the modules this port runs, or a
     /// registered kind that keeps the id unchanged.
@@ -314,6 +323,7 @@ impl ModuleKind {
             Self::SENDER2 => ModuleKind::SenderMk2,
             Self::VOID => ModuleKind::Void,
             Self::DROPPER => ModuleKind::Dropper,
+            Self::VACUUM => ModuleKind::Vacuum,
             other => ModuleKind::Registered(other.to_string()),
         }
     }
@@ -329,6 +339,7 @@ impl ModuleKind {
                 | ModuleKind::SenderMk2
                 | ModuleKind::Void
                 | ModuleKind::Dropper
+                | ModuleKind::Vacuum
         )
     }
 
@@ -358,6 +369,7 @@ impl ModuleKind {
             ModuleKind::SenderMk2 => Self::SENDER2,
             ModuleKind::Void => Self::VOID,
             ModuleKind::Dropper => Self::DROPPER,
+            ModuleKind::Vacuum => Self::VACUUM,
             ModuleKind::Registered(item) => item,
         }
     }
@@ -370,6 +382,7 @@ impl ModuleKind {
             ModuleKind::PullerMk2 => Some(PULLER_BASE_RANGE),
             ModuleKind::SenderMk1 => Some(SENDER_BASE_RANGE),
             ModuleKind::SenderMk2 => Some(SENDER2_BASE_RANGE),
+            ModuleKind::Vacuum => Some(VACUUM_BASE_RANGE),
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
@@ -384,6 +397,7 @@ impl ModuleKind {
             ModuleKind::PullerMk2 => Some(PULLER_MAX_RANGE),
             ModuleKind::SenderMk1 => Some(SENDER_MAX_RANGE),
             ModuleKind::SenderMk2 => Some(SENDER2_MAX_RANGE),
+            ModuleKind::Vacuum => Some(VACUUM_MAX_RANGE),
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
@@ -609,6 +623,7 @@ impl Module {
             ModuleKind::PullerMk2 => Some(puller_range(boost)),
             ModuleKind::SenderMk1 => Some(sender_range(boost)),
             ModuleKind::SenderMk2 => Some(sender2_range(boost)),
+            ModuleKind::Vacuum => Some(vacuum_range(boost)),
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
@@ -1212,6 +1227,13 @@ pub fn puller_range(boost: i32) -> i32 {
     (PULLER_BASE_RANGE + boost).clamp(1, PULLER_MAX_RANGE)
 }
 
+/// A Vacuum Module's reach: `max(1, min(12, 6 + range_up − range_down))`
+/// (`IRangedModule.getCurrentRange` with `vacuumBaseRange`/`vacuumMaxRange`), the
+/// half-width of the box it sweeps.
+pub fn vacuum_range(boost: i32) -> i32 {
+    (VACUUM_BASE_RANGE + boost).clamp(1, VACUUM_MAX_RANGE)
+}
+
 /// Whether `target` is within `range` blocks of `from`, as
 /// `CompiledModule.isTargetValid` asks: `distSqr <= range * range`, so the reach
 /// is a sphere and a diagonal target is out sooner than a straight one.
@@ -1413,6 +1435,184 @@ pub fn drop_point(from: Pos, face: Face) -> [f64; 3] {
     ]
 }
 
+/// One dropped item a Vacuum Module can see, as its tick reads it: the stack the
+/// item entity holds, and whether it still carries a pickup delay.
+///
+/// `CompiledVacuumModule.handleItemMode` skips `!item.isAlive()` and
+/// `(!fastPickup && item.hasPickUpDelay())`; the Fast Pickup Augment is a later
+/// gap, so a delayed item is skipped here too — a fresh drop is not collected in
+/// its first half-second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dropped {
+    pub stack: Stack,
+    /// `ItemEntity.hasPickUpDelay`.
+    pub delayed: bool,
+}
+
+impl Dropped {
+    /// A plain dropped stack: an item id and a count, no components.
+    #[must_use]
+    pub fn of(item: &str, count: u32, delayed: bool) -> Self {
+        Self {
+            stack: Stack::of(item, count),
+            delayed,
+        }
+    }
+
+    /// The same dropped stack carrying components, as [`Stack::extra`] spells them.
+    #[must_use]
+    pub fn with_extra(mut self, extra: &str) -> Self {
+        self.stack.extra = extra.to_string();
+        self
+    }
+}
+
+/// What one Vacuum operation does: how many items it takes out of each dropped
+/// stack (by index, in the order the tick read them) and the buffer afterwards.
+///
+/// An empty `takes` is no operation at all — the buffer's load is unchanged and
+/// nothing in the world moved, which is upstream's `toPickUp < getItemsPerTick`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Vacuum {
+    /// `(candidate index, items taken)`, in the order they were taken.
+    pub takes: Vec<(usize, u32)>,
+    /// The buffer after the operation, or `None` when it stays empty.
+    pub buffer: Option<Stack>,
+}
+
+impl Vacuum {
+    /// Whether the operation moved anything (`return toPickUp < getItemsPerTick`).
+    #[must_use]
+    pub fn worked(&self) -> bool {
+        !self.takes.is_empty()
+    }
+
+    /// How many items the operation takes out of the candidate at `index`.
+    #[must_use]
+    pub fn taken(&self, index: usize) -> u32 {
+        self.takes
+            .iter()
+            .find(|(candidate, _)| *candidate == index)
+            .map_or(0, |(_, count)| *count)
+    }
+}
+
+/// The centre of the box a Vacuum Module sweeps
+/// (`CompiledVacuumModule.setupTargets`): the router's own block with no
+/// direction — "operates in all directions by default" — and `range + 1` blocks
+/// along the direction when it has one, so a directed vacuum sweeps in front of
+/// the router only and never its own block.
+#[must_use]
+pub fn vacuum_centre(from: Pos, face: Option<Face>, range: i32) -> Pos {
+    let Some(face) = face else {
+        return from;
+    };
+    let [dx, dy, dz] = face_normal(face);
+    let offset = range + 1;
+    [
+        from[0] + dx * offset,
+        from[1] + dy * offset,
+        from[2] + dz * offset,
+    ]
+}
+
+/// The box a Vacuum Module sweeps: `new AABB(centre).inflate(range)` — the centre
+/// block's own unit cube grown by the reach in every direction, as `entities_in`
+/// wants it (`min`/`max` of a box whose bounds are the block's edges).
+#[must_use]
+pub fn vacuum_box(centre: Pos, range: i32) -> ([f64; 3], [f64; 3]) {
+    let reach = f64::from(range.max(0));
+    (
+        [
+            f64::from(centre[0]) - reach,
+            f64::from(centre[1]) - reach,
+            f64::from(centre[2]) - reach,
+        ],
+        [
+            f64::from(centre[0]) + 1.0 + reach,
+            f64::from(centre[1]) + 1.0 + reach,
+            f64::from(centre[2]) + 1.0 + reach,
+        ],
+    )
+}
+
+/// What one Vacuum operation collects out of the dropped items it can see
+/// (`CompiledVacuumModule.handleItemMode`).
+///
+/// Three tests decide a candidate, in upstream's order: it carries no pickup
+/// delay, it is **the buffer's own resource** while the buffer holds anything
+/// (`ItemStack.isSameItemSameComponents` — so a non-empty buffer collects only its
+/// own item and components, not "the first acceptable entity"), and the module's
+/// filter accepts it. The room is `min(max_stack, keep) − buffered`, where `keep`
+/// is the Regulator Augment's saved amount and zero without it; the budget is
+/// `items` items in the whole operation, one operation's worth of candidates.
+///
+/// `max_stack` is the item's own `getMaxStackSize`, as upstream reads it from the
+/// ground stack — resolved per item id, because every candidate that passes the
+/// buffer's test is that same item.
+pub fn pick_vacuum<F>(
+    buffer: Option<&Stack>,
+    dropped: &[Dropped],
+    filter: &Filter,
+    items: u32,
+    keep: u32,
+    max_stack: F,
+) -> Vacuum
+where
+    F: Fn(&str) -> u32,
+{
+    let mut plan = Vacuum {
+        takes: Vec::new(),
+        buffer: buffer.cloned(),
+    };
+    if items == 0 {
+        return plan;
+    }
+    let mut budget = items;
+    for (index, candidate) in dropped.iter().enumerate() {
+        if budget == 0 {
+            break;
+        }
+        if candidate.delayed || candidate.stack.count == 0 {
+            continue;
+        }
+        // The buffer's item is the operation's subject: `bufferStack.isEmpty() ||
+        // ItemStack.isSameItemSameComponents(stackOnGround, bufferStack)`.
+        if let Some(held) = &plan.buffer
+            && !held.same_resource(&candidate.stack)
+        {
+            continue;
+        }
+        if !filter.accepts(&candidate.stack.item) {
+            continue;
+        }
+        // `isBufferFull()`: a buffer already at the item's max stack has no room.
+        let cap = max_stack(&candidate.stack.item).max(1);
+        // `spaceInRouter`: the amount, where a Regulator Augment gives one, is a
+        // **cap** on the buffer, not a floor.
+        let room = if keep > 0 { cap.min(keep) } else { cap };
+        let buffered = plan.buffer.as_ref().map_or(0, |held| held.count);
+        let take = budget
+            .min(room.saturating_sub(buffered))
+            .min(candidate.stack.count);
+        if take == 0 {
+            continue;
+        }
+        budget -= take;
+        match &mut plan.buffer {
+            Some(held) => held.count += take,
+            None => {
+                plan.buffer = Some(Stack {
+                    count: take,
+                    ..candidate.stack.clone()
+                });
+            }
+        }
+        plan.takes.push((index, take));
+    }
+    plan
+}
+
 /// The buffer after `sent` items left it — a send, or the items a Void Module
 /// destroyed; none when it is emptied.
 pub fn buffer_after_send(buffer: &Stack, sent: u32) -> Option<Stack> {
@@ -1541,7 +1741,7 @@ mod tests {
         // module and a newer save's module both reach the router this way.
         for id in [
             "mekanisticrouters:chemical_puller_module",
-            "modularrouters:vacuum_module",
+            "modularrouters:flinger_module",
             "example:foreign_module",
         ] {
             let kind = ModuleKind::of(id);
@@ -2731,5 +2931,282 @@ mod tests {
             ),
             [90, 100, -1]
         );
+    }
+
+    /// The dropped items one operation can see: a plain stack, or none.
+    fn ground(item: &str, count: u32) -> Dropped {
+        Dropped::of(item, count, false)
+    }
+
+    #[test]
+    fn a_vacuum_module_fills_its_buffer_from_the_items_around_it() {
+        // `CompiledVacuumModule.handleItemMode`: the buffer's own count is the
+        // operation's budget (`getItemsPerTick`), one candidate at a time, and a
+        // stack that runs out leaves the world.
+        assert_eq!(
+            ModuleKind::of("modularrouters:vacuum_module"),
+            ModuleKind::Vacuum
+        );
+        assert!(ModuleKind::Vacuum.is_known());
+        assert_eq!(ModuleKind::Vacuum.item(), ModuleKind::VACUUM);
+        assert!(
+            !ModuleKind::Vacuum.is_targeted(),
+            "the player selects no block: it collects what lies in its reach"
+        );
+        assert!(!ModuleKind::Vacuum.is_sender());
+
+        let eight = ground("minecraft:stone", 8);
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&eight),
+            &Filter::any(),
+            1,
+            0,
+            |_| 64,
+        );
+        assert_eq!(plan.takes, vec![(0, 1)], "one item per operation");
+        assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 1)));
+        assert!(plan.worked());
+
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&eight),
+            &Filter::any(),
+            64,
+            0,
+            |_| 64,
+        );
+        assert_eq!(plan.takes, vec![(0, 8)], "never more than the stack holds");
+        assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 8)));
+
+        // The budget is shared over the candidates, in the order they are seen.
+        let plan = pick_vacuum(
+            None,
+            &[ground("minecraft:stone", 2), ground("minecraft:stone", 8)],
+            &Filter::any(),
+            3,
+            0,
+            |_| 64,
+        );
+        assert_eq!(plan.takes, vec![(0, 2), (1, 1)]);
+        assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 3)));
+
+        // A fresh drop carries a pickup delay and is not collectable yet (`!fastPickup
+        // && item.hasPickUpDelay()` skips it; the Fast Pickup augment is gap 3).
+        let delayed = Dropped::of("minecraft:stone", 8, true);
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&delayed),
+            &Filter::any(),
+            64,
+            0,
+            |_| 64,
+        );
+        assert!(plan.takes.is_empty(), "a delayed item is skipped");
+        assert_eq!(plan.buffer, None);
+        assert!(!plan.worked(), "nothing moved is no operation");
+
+        // `Filter.test` comes after the item test: a whitelist that does not name
+        // the dropped item collects nothing, and an empty whitelist accepts none.
+        let only_dirt = Filter::new(true, vec!["minecraft:dirt".to_string()]);
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&eight),
+            &only_dirt,
+            64,
+            0,
+            |_| 64,
+        );
+        assert!(plan.takes.is_empty());
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&eight),
+            &Filter::new(true, Vec::new()),
+            64,
+            0,
+            |_| 64,
+        );
+        assert!(plan.takes.is_empty(), "an empty whitelist accepts nothing");
+        let not_dirt = Filter::new(false, vec!["minecraft:dirt".to_string()]);
+        let plan = pick_vacuum(None, std::slice::from_ref(&eight), &not_dirt, 64, 0, |_| 64);
+        assert_eq!(plan.takes, vec![(0, 8)], "a blacklist of dirt takes stone");
+    }
+
+    #[test]
+    fn a_vacuum_module_only_collects_its_buffered_item_and_respects_its_amount() {
+        // `bufferStack.isEmpty() || ItemStack.isSameItemSameComponents(stackOnGround,
+        // bufferStack)`: a buffer that already holds something decides what the
+        // operation is **for** — it is not "the first acceptable entity".
+        let stone = Stack::of("minecraft:stone", 4);
+        let plan = pick_vacuum(
+            Some(&stone),
+            &[ground("minecraft:stone", 8), ground("minecraft:dirt", 8)],
+            &Filter::any(),
+            64,
+            0,
+            |_| 64,
+        );
+        assert_eq!(
+            plan.takes,
+            vec![(0, 8)],
+            "only the stack the buffer already holds is collected"
+        );
+        assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 12)));
+
+        let dirt = Stack::of("minecraft:dirt", 1);
+        let plan = pick_vacuum(
+            Some(&dirt),
+            std::slice::from_ref(&ground("minecraft:stone", 8)),
+            &Filter::any(),
+            64,
+            0,
+            |_| 64,
+        );
+        assert!(plan.takes.is_empty(), "a buffer of dirt takes no stone");
+        assert_eq!(plan.buffer, Some(dirt));
+
+        // One item with different components is a different resource, as the pull's
+        // `Slot::is` already treats it (`ItemStack.isSameItemSameComponents`).
+        let named = Stack {
+            item: "minecraft:stone".to_string(),
+            count: 1,
+            extra: "hex:0a".to_string(),
+        };
+        let plain = ground("minecraft:stone", 8);
+        let plan = pick_vacuum(
+            Some(&named),
+            std::slice::from_ref(&plain),
+            &Filter::any(),
+            64,
+            0,
+            |_| 64,
+        );
+        assert!(plan.takes.is_empty(), "components are part of the identity");
+
+        // `spaceInRouter` with a Regulator Augment's amount: `min(maxStack, amount) −
+        // inRouter`. The amount is a **cap** on the buffer, not a floor.
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&ground("minecraft:stone", 8)),
+            &Filter::any(),
+            64,
+            3,
+            |_| 64,
+        );
+        assert_eq!(plan.takes, vec![(0, 3)], "the amount caps the buffer");
+        assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 3)));
+
+        let two = Stack::of("minecraft:stone", 2);
+        let plan = pick_vacuum(
+            Some(&two),
+            std::slice::from_ref(&ground("minecraft:stone", 8)),
+            &Filter::any(),
+            64,
+            3,
+            |_| 64,
+        );
+        assert_eq!(
+            plan.takes,
+            vec![(0, 1)],
+            "a buffer at two has room for one of an amount of three"
+        );
+        let full = Stack::of("minecraft:stone", 3);
+        let plan = pick_vacuum(
+            Some(&full),
+            std::slice::from_ref(&ground("minecraft:stone", 8)),
+            &Filter::any(),
+            64,
+            3,
+            |_| 64,
+        );
+        assert!(plan.takes.is_empty(), "a buffer at the amount has no room");
+
+        // Without the augment the item's own max stack is the cap, and a full buffer
+        // is no operation at all (`isBufferFull`).
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&ground("minecraft:stone", 8)),
+            &Filter::any(),
+            64,
+            0,
+            |_| 16,
+        );
+        assert_eq!(plan.takes, vec![(0, 8)], "an item whose max stack is 16");
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&ground("minecraft:stone", 8)),
+            &Filter::any(),
+            u32::MAX,
+            0,
+            |_| 4,
+        );
+        assert_eq!(plan.takes, vec![(0, 4)], "never past the max stack");
+        let one = Stack::of("minecraft:stone", 1);
+        let plan = pick_vacuum(
+            Some(&one),
+            std::slice::from_ref(&ground("minecraft:stone", 8)),
+            &Filter::any(),
+            64,
+            0,
+            |_| 1,
+        );
+        assert!(
+            plan.takes.is_empty(),
+            "a full one-item buffer is no operation"
+        );
+
+        // A zero budget moves nothing, as `getItemsPerTick` can only be 0 on a
+        // module whose count a save cut to nothing.
+        let plan = pick_vacuum(
+            None,
+            std::slice::from_ref(&ground("minecraft:stone", 8)),
+            &Filter::any(),
+            0,
+            0,
+            |_| 64,
+        );
+        assert!(plan.takes.is_empty());
+    }
+
+    #[test]
+    fn a_vacuum_module_reaches_six_blocks_all_around_and_one_block_further_with_a_direction() {
+        // `CompiledVacuumModule.setupTargets`: `offset = dir == NONE ? 0 :
+        // getRange() + 1`, and the entity box is `new AABB(centre).inflate(range)`.
+        // So NONE centres the box on the router's own block — "operates in all
+        // directions by default" — and a direction centres it one block past the
+        // reach, leaving the router out of the box.
+        let vacuum = Module::new(ModuleKind::Vacuum, Relative::None, Filter::any());
+        assert_eq!(vacuum.current_range(), Some(6), "vacuumBaseRange 6");
+        assert_eq!(ModuleKind::Vacuum.base_range(), Some(VACUUM_BASE_RANGE));
+        assert_eq!(ModuleKind::Vacuum.max_range(), Some(VACUUM_MAX_RANGE));
+        assert_eq!(vacuum_range(0), 6);
+        assert_eq!(vacuum_range(6), 12, "six Range Up augments reach 12");
+        assert_eq!(vacuum_range(20), 12, "the hard maximum holds");
+        assert_eq!(vacuum_range(-9), 1, "never less than one");
+        assert_eq!(
+            ModuleKind::Vacuum.augment_limit(&AugmentKind::RangeUp),
+            6,
+            "hardMax − base"
+        );
+        assert_eq!(
+            ModuleKind::Vacuum.augment_limit(&AugmentKind::RangeDown),
+            5,
+            "base − 1"
+        );
+
+        assert_eq!(vacuum_centre([10, 100, 0], None, 6), [10, 100, 0]);
+        assert_eq!(
+            vacuum_centre([10, 100, 0], Relative::Front.resolve(Facing::North), 6),
+            [10, 100, -7],
+            "a direction centres the box range + 1 blocks out"
+        );
+        let (min, max) = vacuum_box([10, 100, 0], 6);
+        assert_eq!(min, [4.0, 94.0, -6.0]);
+        assert_eq!(max, [17.0, 107.0, 7.0]);
+        // The reach is the box's face: a dropped item's block is inside while its box
+        // meets the box, and one block further out is not (proven in game by phase U).
+        let (min, max) = vacuum_box([10, 100, 0], 1);
+        assert_eq!(min, [9.0, 99.0, -1.0]);
+        assert_eq!(max, [12.0, 102.0, 2.0]);
     }
 }

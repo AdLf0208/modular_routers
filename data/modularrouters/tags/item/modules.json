@@ -4,6 +4,7 @@
     "modularrouters:puller_module_2",
     "modularrouters:sender_module_1",
     "modularrouters:sender_module_2",
+    "modularrouters:vacuum_module",
     "modularrouters:void_module",
     "modularrouters:dropper_module"
   ]

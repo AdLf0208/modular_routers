@@ -1,5 +1,70 @@
 # Modular Routers — validation ladder
 
+## 0.2.13 — the Vacuum Module (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 13: `CompiledVacuumModule` — a
+box of `new AABB(centre).inflate(range)` around the router (`dir=none` centres it on the router's own
+block, a direction centres it `range + 1` blocks out), every dropped item in it that carries no pickup
+delay, is the buffer's own resource (or any item while the buffer is empty) and passes the filter, one
+operation moving `getItemsPerTick` of them, the Regulator Augment's amount as the buffer's **cap**.
+`runtime::{pick_vacuum, vacuum_centre, vacuum_box, vacuum_range}` are the pure half;
+`support::vacuum_from_ground` reads the world through `LevelRef::entities_in` +
+`Host::item_entity` + `ItemEntityRef::{stack, pickup_delay, set_stack}` + `EntityRef::discard`, all
+first verified at the pin (`notes.md` § *Slice 13*, table of the five calls).
+
+Every compile step ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the names existed (red) | **43 errors** (`Dropped`, `VACUUM_BASE_RANGE`, `Vacuum`, `pick_vacuum`), `could not compile … (lib test)`, exit 101 | `slice13-test-red.log` |
+| 2 | `tools/e2e.sh` phase U on the **0.2.12** package (red) | `Unknown module 'modularrouters:vacuum_module'`, `FAIL: expected the reply to say 'Modular Router: modularrouters:vacuum_module in slot 0'`, `EXIT:1` | `modularrouters-e2e/e2e-red-vacuum.log` |
+| 3 | `cargo test --offline` | **77 passed**, 0 failed | `slice13-test.log` (= `sdk-test.log`) |
+| 4 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice13-clippy.log` (= `sdk-clippy.log`) |
+| 5 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice13-fmt.log` (= `sdk-fmt.log`) |
+| 6 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **140,019 B**, sha256 `c7972fcd…4bad` | `slice13-build.log`, `slice13-build-second.log` |
+| 7 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.13 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `140019 bytes, SHA-256 c7972fcd89193953e23351e030f569347d14bcdc0df261292924735115a34bad`, **exit 0** | `sdk-check.log` |
+| 8 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 9 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 10 | `python3 ports/tools/check-recipe-types.py modularrouters` | `modularrouters: ok`, exit 0 | (this session) |
+| 11 | `unzip -l modularrouters.hmod` | **121 entries**, no `Cargo.lock` | `slice13-entries.txt` |
+| 12 | `tools/data_shape.py modularrouters.hmod` | 22 recipe/loot files, every one in the 26.3 dialect (also J4 in the leg) | in the leg's log |
+| 13 | `launcher-game.sh build modularrouters` (manifest 0.2.12 → 0.2.13, the stale `native-0a875da-5962c7ce7761` carrying 0.2.12 removed first) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.13** (`77bac45de829`), one library `libmodularrouters.so` (`9fea6a628325`) | `modularrouters-e2e/game-build-0.2.13.log` |
+| 14 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, K, L–T, **U**, J1–J4 (121-entry package `c7972fcd…`) | `modularrouters-e2e/e2e-launcher-0.2.13.log` |
+| 15 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.13.log` |
+| 16 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.13.log` |
+| 17 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=57 ok=57`, 0 missing/bad exit lines | — |
+| 18 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (77 tests, package = tree, no lock) | `verify-sdk-package.log` |
+
+### What phase U proves (parity rule)
+
+Five rigs in the End arena, at x = 102, 110, 118, 126, 134 (eight blocks apart, because the box a
+vacuum sweeps is thirteen blocks wide), stone **summoned** as eight single items per rig in the block
+`(x, 100, -3)`, every module installed and configured before anything is on the ground, then fifteen
+operations (`wait 300` at the 20-tick interval):
+
+| rig | what it is | buffer | on the ground |
+|---|---|---|---|
+| U1 | vacuum at `z=3`, stone six blocks north (the box's edge) | **8 stone** | **0** |
+| U2 | the same, filter `whitelist minecraft:dirt` | 0 | **8** |
+| U3 | the same, `z=4` — **seven** blocks, one past `vacuumBaseRange` 6 | 0 | **8** |
+| U4 | the same, buffer already holding **8 dirt** (`/data merge`) | 0 stone, **8 dirt** | **8** |
+| U5 | the same, Regulator Augment + `/modularrouters regulate … 3` | **3 stone** | **5** |
+
+U1/U3 are the reach boundary itself (same module, same drop block, one block apart, opposite
+results); U2 is the filter; U4 is the buffer-identity rule (`ItemStack.isSameItemSameComponents`, not
+"the first acceptable entity"); U5 is the amount as the buffer's cap. The `before` lines already read
+5 and 7 for the two live rigs (the vacuum takes during the summon loop), so no assertion is written on
+them — the final buffer-plus-ground totals are.
+
+### Delivered package (0.2.13)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 140,019 B | `c7972fcd89193953e23351e030f569347d14bcdc0df261292924735115a34bad` | 121 |
+
 ## 0.2.12 — the Dropper Module (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

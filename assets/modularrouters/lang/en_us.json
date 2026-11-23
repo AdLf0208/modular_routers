@@ -14,6 +14,7 @@
   "item.modularrouters.speed_upgrade": "Speed Upgrade",
   "item.modularrouters.stack_augment": "Stack Augment",
   "item.modularrouters.stack_upgrade": "Stack Upgrade",
+  "item.modularrouters.vacuum_module": "Vacuum Module",
   "item.modularrouters.void_module": "Void Module",
   "itemGroup.modularrouters.modularrouters": "Modular Routers"
 }

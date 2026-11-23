@@ -1,6 +1,6 @@
 # Modular Routers for Horizon
 
-A router block that runs item-transfer modules every 20 ticks, five modules of
+A router block that runs item-transfer modules every 20 ticks, six modules of
 the original mod — a **Puller Module Mk1** that takes items from the container
 beside the router into its one-slot buffer, a **Puller Module Mk2** that takes
 them from the container you select with it, up to 12 blocks away (24 with Range
@@ -12,7 +12,10 @@ and a **Void Module** that permanently destroys the stack in the buffer, item by
 item (or by the operation's count with a Stack Augment), leaving the module's
 regulation amount behind if one is set, and a **Dropper Module** that throws the
 buffer's items into the block in its direction instead of destroying them, with no
-velocity, keeping its regulation amount in the buffer — the two upgrades the
+velocity, keeping its regulation amount in the buffer — and a **Vacuum Module**
+that fills the buffer from the dropped items on the ground around it, six blocks in
+every direction (or in front of it only, when it is given a direction), the
+buffer's own item deciding what it collects — the two upgrades the
 router's own numbers are about, in its **five upgrade
 slots** (a **Speed Upgrade** shortens the operation interval by two ticks,
 20 → 18 → 16 … down to 2; a **Stack Upgrade** doubles the items one operation
@@ -49,7 +52,8 @@ Craft the router (4 per recipe), a blank module (6), then a puller (blank module
 + + one pearl for four), a sender (blank module + bow + arrows), a Sender Mk2 (a
 +sender + an ender pearl, or four senders + one pearl for four) or a void module
 +(blank module + lava bucket, which leaves its bucket). A dropper module is a
-+blank module and a vanilla dropper. A blank upgrade takes
+blank module and a vanilla dropper; a vacuum module is a blank module, a hopper
++and an ender eye. A blank upgrade takes
 4 paper, 3 gold nuggets and a lapis; a Speed Upgrade (3) is redstone, gold and
 gunpowder around it with a blaze rod; a Stack Upgrade is a blank upgrade, stone
 bricks and bricks.
@@ -80,7 +84,12 @@ operation (its filter decides; its direction is irrelevant). A **Dropper
 Module** is the Void Module's sibling with a destination: it throws what the
 buffer holds into the block its direction names — the drop lands just inside that
 block, with no velocity (unlike a vanilla dropper's toss) — so with no direction
-it has no block to throw into and does nothing. A **Puller
+it has no block to throw into and does nothing. A **Vacuum Module** reads the world instead of a container: it pulls the dropped
+items inside a box six blocks in every direction around the router into its
+buffer, one item per operation (more with a Stack Upgrade or Augment), and only
+items its buffer already holds — or any item while the buffer is empty — that its
+filter accepts; give it a direction and it sweeps in front of the router only, one
+block past its reach to twice that reach. A **Puller
 Mk2** ignores the direction and works on the block you gave it: sneak-right-click
 an inventory with the module in hand to select it (the block is not opened; the
 reply says `target set`), then install the module — it reaches 12 blocks, in the
@@ -96,13 +105,13 @@ module (one augment 2, two 4, six 64), which is the one augment whose number is
 not a range. A **Regulator Augment** turns on the module's own regulation amount
 (`/modularrouters regulate <x> <y> <z> <slot> <amount>`, or the module screen's
 field upstream): a pull then stops while the source still holds that many of the
-item, so a chest of twelve with an amount of three keeps three, and a send tops
-its own target up to the amount — a chest of six with an amount of ten takes four
-and no more. The buffer is the
+item, so a chest of twelve with an amount of three keeps three, a send tops its
+own target up to the amount — a chest of six with an amount of ten takes four and
+no more — and a vacuum stops filling its buffer at it. The buffer is the
 block's item container on every side, so hoppers
 and pipes can fill or empty it.
 
-The screen, the other 16 modules, the other 8 upgrades, the other 7 augments
+The screen, the other 15 modules, the other 8 upgrades, the other 7 augments
 (Mimic, Pickup Delay, …) and smart filters are not ported yet — see
 `notes.md`.
 
@@ -115,7 +124,7 @@ not implement installs like any other, is listed by `/modularrouters info`,
 keeps its slot, direction and filter in the router's saved data across a
 relaunch, and `/modularrouters remove` takes it out; its behaviour is the owning
 mod's to run. A held item that is not a module this build runs (both pullers,
-both senders, the void module and the dropper module) and is not in the tag is
+both senders, the void, the dropper and the vacuum module) and is not in the tag is
 refused (`Unknown module '…'`).
 
 The tag is a data file (`data/modularrouters/tags/item/modules.json`). At SDK

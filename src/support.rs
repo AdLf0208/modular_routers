@@ -26,12 +26,13 @@ use mod_api::{
 };
 
 use crate::runtime::{
-    AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, FACE_NAMES, Face, Facing, Filter,
-    MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind, Pos, Relative, Slot, Stack, Target,
+    AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, Dropped, FACE_NAMES, Face, Facing,
+    Filter, MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind, Pos, Relative, Slot, Stack, Target,
     UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, buffer_after_pull, buffer_after_send,
     drop_point, face_of_normal, facing_for_placement, facing_of_state, in_range, is_operation_tick,
-    items_per_operation, parse_pos, phase_of, pick_drop, pick_pull, pick_send, pick_void,
-    scan_positions, send_quota, side_towards, step, tick_rate,
+    items_per_operation, parse_pos, phase_of, pick_drop, pick_pull, pick_send, pick_vacuum,
+    pick_void, scan_positions, send_quota, side_towards, step, tick_rate, vacuum_box,
+    vacuum_centre,
 };
 
 /// The router block (and its item).
@@ -880,6 +881,128 @@ fn write_buffer(entity: &mut mod_api::ModBlockEntityView<'_>, stack: Option<Item
     entity.items[BUFFER_SLOT] = stack;
 }
 
+/// One Vacuum Module operation: fill the router's buffer from the dropped items
+/// in the box the module sweeps (`CompiledVacuumModule.handleItemMode`).
+///
+/// The module works on the **world**, not on a neighbour: `dir=none` sweeps a box
+/// `range` blocks in every direction around the router's own block ("operates in
+/// all directions by default"), a direction sweeps a box centred `range + 1`
+/// blocks out, so a directed vacuum collects in front of it only. Every dropped
+/// item in that box that carries no pickup delay, is the buffer's own resource
+/// (or any item while the buffer is empty) and passes the filter is fair game, one
+/// operation taking `items` of them in the order the world lists them.
+///
+/// The writes are the tick's: the buffer is the block entity's own data, and the
+/// ground stacks go through `ItemEntityRef::set_stack` / `EntityRef::discard`,
+/// which the SDK stages with the tick's snapshot — so a rejected tick puts an item
+/// back on the ground instead of losing it. Nothing is taken when the operation
+/// moved nothing.
+fn vacuum_from_ground(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    facing: Facing,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    items: u32,
+) -> bool {
+    let Some(range) = module.current_range() else {
+        return false;
+    };
+    let centre = vacuum_centre(pos, module.direction.resolve(facing), range);
+    let (min, max) = vacuum_box(centre, range);
+    // The ticking level is the one in place, so its entity list resolves (a parked
+    // level's does not, which is why this is a tick and not a scheduled task).
+    let Some(seen) = level.entities_in(&*host, min, max) else {
+        return false;
+    };
+    let mut dropped = Vec::new();
+    let mut refs = Vec::new();
+    let mut keys = BTreeMap::new();
+    for entity_ref in seen {
+        let Some(item) = host.item_entity(entity_ref) else {
+            continue;
+        };
+        let Some(stack) = item.stack(&*host) else {
+            continue;
+        };
+        keys.insert(
+            stack.item().id(&*host),
+            host.max_stack_size(stack.item()).unwrap_or(64),
+        );
+        let delayed = item.pickup_delay(&*host).is_some_and(|delay| delay > 0);
+        dropped.push(Dropped {
+            stack: saved_stack(&*host, &stack),
+            delayed,
+        });
+        refs.push((entity_ref, item, stack));
+    }
+    if dropped.is_empty() {
+        return false;
+    }
+    let held = entity
+        .items
+        .get(BUFFER_SLOT)
+        .and_then(Option::as_ref)
+        .cloned();
+    let buffer = held.as_ref().map(|stack| saved_stack(&*host, stack));
+    let max_for = |item: &str| keys.get(item).map_or(64, |max| *max);
+    let plan = pick_vacuum(
+        buffer.as_ref(),
+        &dropped,
+        &module.filter,
+        items,
+        module.regulation_amount(),
+        max_for,
+    );
+    if !plan.worked() {
+        return false;
+    }
+    // The ground first: a stack that ran out leaves the world, one that kept items
+    // is written back short, and a refused write is no operation (the buffer is not
+    // credited for an item the world did not give up).
+    for (index, (_, item, stack)) in refs.iter().enumerate() {
+        let taken = plan.taken(index);
+        if taken == 0 {
+            continue;
+        }
+        let left = dropped[index].stack.count.saturating_sub(taken);
+        if left == 0 {
+            if !refs[index].0.discard(&mut *host) {
+                return false;
+            }
+        } else {
+            let mut shorter = stack.clone();
+            if shorter.set_count(left).is_err() {
+                return false;
+            }
+            if !item
+                .set_stack(&mut *host, shorter)
+                .is_ok_and(|written| written)
+            {
+                return false;
+            }
+        }
+    }
+    let Some(after) = plan.buffer else {
+        return false;
+    };
+    // The buffer keeps the stack object it already held (its components travel with
+    // it); when it was empty, the item it now holds is the one that was taken.
+    let Some(mut kept) = held.or_else(|| {
+        plan.takes
+            .first()
+            .and_then(|(index, _)| refs.get(*index).map(|(_, _, stack)| stack.clone()))
+    }) else {
+        return false;
+    };
+    if kept.set_count(after.count).is_err() {
+        return false;
+    }
+    write_buffer(entity, Some(kept));
+    true
+}
+
 /// Mirror the router's `active` state: true while a module did work in the
 /// latest operation, as upstream's `setActive(newActive)` does.
 fn show_active(host: &mut dyn ServerHost, level: LevelRef, pos: Pos, active: bool) {
@@ -977,6 +1100,13 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
             // point (`isDirectional` is false upstream), so the direction is not
             // resolved and no neighbour is read.
             ModuleKind::Void => void_from_buffer(&*host, module, &mut event.entity, items),
+            // A vacuum sweeps the dropped items in a box around the router; with no
+            // direction that box is centred on the router itself, so it runs before
+            // the direction is resolved (`isOmniDirectional`, and its own
+            // `setupTargets` never returns an empty list).
+            ModuleKind::Vacuum => {
+                vacuum_from_ground(host, level, pos, facing, module, &mut event.entity, items)
+            }
             // A module this port does not implement: its operation belongs to the
             // mod that owns it. This port keeps it installed and leaves it alone.
             ModuleKind::Registered(_) => false,
@@ -2185,6 +2315,36 @@ fn remove_augment(
     }
 }
 
+/// What a module's saved regulation amount means, for the reply `/modularrouters
+/// regulate` gives: the same number is a **floor** in a source, a **floor** in a
+/// target and a **cap** on a buffer (`CompiledVacuumModule.handleItemMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Regulates {
+    Source,
+    Target,
+    Buffer,
+}
+
+impl Regulates {
+    /// The reply's verb and its "already set" form, both naming the amount.
+    fn sentences(self, amount: u32) -> (String, String) {
+        match self {
+            Regulates::Source => (
+                format!("leaves {amount} item(s) in the source"),
+                format!("already leaves {amount} item(s) in the source"),
+            ),
+            Regulates::Target => (
+                format!("leaves {amount} item(s) in the target"),
+                format!("already leaves {amount} item(s) in the target"),
+            ),
+            Regulates::Buffer => (
+                format!("caps the buffer at {amount} item(s)"),
+                format!("already caps the buffer at {amount} item(s)"),
+            ),
+        }
+    }
+}
+
 /// `/modularrouters regulate <pos> <slot> <amount>`: the module screen's regulator
 /// text field. Upstream shows and honours the amount only while a Regulator
 /// Augment is installed (`CompiledModule.getRegulationAmount`), so the command
@@ -2203,11 +2363,20 @@ fn set_regulation(
         return "Modular Router: the regulation amount cannot be negative".to_string();
     };
     let mut found = false;
-    let mut sender = false;
+    let mut what = Regulates::Source;
     let mut had_augment = false;
     let applied = edit_module(host, level, pos, slot, |module| {
         found = true;
-        sender = module.kind.is_sender();
+        what = if module.kind.is_sender() {
+            // A sender's amount is the floor it tops its target up to…
+            Regulates::Target
+        } else if matches!(&module.kind, ModuleKind::Vacuum) {
+            // …a vacuum's is the **cap** on the buffer it fills…
+            Regulates::Buffer
+        } else {
+            // …and a puller's or a void's is what they leave in the source.
+            Regulates::Source
+        };
         if module.augments().count(&AugmentKind::Regulator) == 0 {
             return false;
         }
@@ -2215,18 +2384,16 @@ fn set_regulation(
         module.set_regulation(amount);
         true
     });
-    // A sender's amount is the floor it tops its target up to; a puller's and a
-    // void's is what they leave in the source.
-    let place = if sender { "target" } else { "source" };
     // Setting the amount a module already has changes no data, so the write answers
     // false: that is "already set", not "no augment" (found in game 2026-11-23 —
     // re-entering the same amount answered *has no regulator augment*).
+    let (verb, already) = what.sentences(amount);
     if applied {
-        format!("Modular Router: module {slot} leaves {amount} item(s) in the {place}")
+        format!("Modular Router: module {slot} {verb}")
     } else if !found {
         format!("Modular Router: no module in slot {slot}")
     } else if had_augment {
-        format!("Modular Router: module {slot} already leaves {amount} item(s) in the {place}")
+        format!("Modular Router: module {slot} {already}")
     } else {
         format!("Modular Router: module {slot} has no regulator augment")
     }
@@ -2977,6 +3144,54 @@ mod tests {
             lines[1],
             "module 0 at 90,100,0: modularrouters:dropper_module dir=front target=north \
              regulate=3 augments regulator filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn a_vacuum_modules_line_names_its_reach() {
+        // A vacuum is ranged and works with **no** direction (`isOmniDirectional`), so
+        // its line names the reach it sweeps — the block the screen's direction button
+        // would show is `none`, which is "all directions" for this module.
+        let module = Module::new(ModuleKind::Vacuum, Relative::None, Filter::any());
+        let lines = describe(
+            [102, 100, 2],
+            Facing::North,
+            false,
+            std::slice::from_ref(&module),
+            None,
+            0,
+            0,
+        );
+        assert_eq!(
+            lines[1],
+            "module 0 at 102,100,2: modularrouters:vacuum_module dir=none target=none \
+             range=6 filter blacklist none"
+        );
+        // A Range Up augment moves the reach the tick sweeps, as it does for the Mk2.
+        let wider = module.with_augments(Augments::new(vec![
+            Augment::new(AugmentKind::RangeUp, 1).expect("one range up augment"),
+        ]));
+        let lines = describe([102, 100, 2], Facing::North, false, &[wider], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 102,100,2: modularrouters:vacuum_module dir=none target=none \
+             range=7 augments range_up filter blacklist none"
+        );
+        // With a direction it sweeps in front of the router only, and says which way.
+        let front = Module::new(ModuleKind::Vacuum, Relative::Front, Filter::any());
+        let lines = describe(
+            [102, 100, 2],
+            Facing::North,
+            false,
+            std::slice::from_ref(&front),
+            None,
+            0,
+            0,
+        );
+        assert_eq!(
+            lines[1],
+            "module 0 at 102,100,2: modularrouters:vacuum_module dir=front target=north \
+             range=6 filter blacklist none"
         );
     }
 }
