@@ -30,8 +30,8 @@ use crate::runtime::{
     MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind, Pos, Relative, Slot, Stack, Target,
     UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, buffer_after_pull, buffer_after_send,
     face_of_normal, facing_for_placement, facing_of_state, in_range, is_operation_tick,
-    items_per_operation, parse_pos, phase_of, pick_pull, pick_send, scan_positions, side_towards,
-    step, tick_rate,
+    items_per_operation, parse_pos, phase_of, pick_pull, pick_send, pick_void, scan_positions,
+    side_towards, step, tick_rate,
 };
 
 /// The router block (and its item).
@@ -693,6 +693,48 @@ fn send(
     true
 }
 
+/// One void operation: destroy the buffered items the filter accepts, leaving the
+/// module's saved regulation amount behind (`CompiledVoidModule.execute`).
+///
+/// The module works on the router's own buffer, so it never reads its direction or
+/// a selected target — upstream's `VoidModule.isDirectional()` is false. `items` is
+/// `CompiledModule.getItemsPerTick`, which a Stack Augment can raise.
+fn void_from_buffer(
+    host: &dyn Host,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    items: u32,
+) -> bool {
+    let Some(stack) = entity
+        .items
+        .get(BUFFER_SLOT)
+        .and_then(Option::as_ref)
+        .cloned()
+    else {
+        return false;
+    };
+    let buffer = saved_stack(host, &stack);
+    let Some(to_void) = pick_void(
+        Some(&buffer),
+        &module.filter,
+        items,
+        module.regulation_amount(),
+    ) else {
+        return false;
+    };
+    match buffer_after_send(&buffer, to_void) {
+        Some(after) => {
+            let mut left = stack;
+            if left.set_count(after.count).is_err() {
+                return false;
+            }
+            write_buffer(entity, Some(left));
+        }
+        None => write_buffer(entity, None),
+    }
+    true
+}
+
 /// Put a stack in the buffer slot, growing the list when the entity has none.
 fn write_buffer(entity: &mut mod_api::ModBlockEntityView<'_>, stack: Option<ItemStack>) {
     if entity.items.len() == BUFFER_SLOT {
@@ -783,6 +825,10 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
                 items,
                 &dimension,
             ),
+            // A void module acts on the router's own buffer wherever it is told to
+            // point (`isDirectional` is false upstream), so the direction is not
+            // resolved and no neighbour is read.
+            ModuleKind::Void => void_from_buffer(&*host, module, &mut event.entity, items),
             // A module this port does not implement: its operation belongs to the
             // mod that owns it. This port keeps it installed and leaves it alone.
             ModuleKind::Registered(_) => false,
@@ -2604,6 +2650,45 @@ mod tests {
             "module 0 at 0,100,0: modularrouters:puller_module_1 dir=front target=north \
              filter blacklist none",
             "without the augment the line is the one it always had"
+        );
+    }
+
+    #[test]
+    fn a_void_module_names_itself_and_its_regulation_in_the_readout() {
+        // The void module is not directional: a module installed with no direction
+        // (the install command's default) reads `dir=none target=none`, and it is
+        // still this port's own kind, not a carried foreign id.
+        let module = Module::new(
+            ModuleKind::of(ModuleKind::VOID),
+            Relative::None,
+            Filter::any(),
+        );
+        let lines = describe(
+            [0, 100, 0],
+            Facing::North,
+            false,
+            std::slice::from_ref(&module),
+            None,
+            0,
+            0,
+        );
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:void_module dir=none target=none \
+             filter blacklist none"
+        );
+        // With a Regulator Augment the amount is in effect, so the line says so —
+        // the same `regulate=` the puller's line carries.
+        let regulated = module
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::Regulator, 1).expect("one regulator augment"),
+            ]))
+            .with_regulation(3);
+        let lines = describe([0, 100, 0], Facing::North, false, &[regulated], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:void_module dir=none target=none \
+             regulate=3 augments regulator filter blacklist none"
         );
     }
 }

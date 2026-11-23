@@ -1,12 +1,15 @@
 # Modular Routers for Horizon
 
-A router block that runs item-transfer modules every 20 ticks, three modules of
+A router block that runs item-transfer modules every 20 ticks, four modules of
 the original mod — a **Puller Module Mk1** that takes items from the container
 beside the router into its one-slot buffer, a **Puller Module Mk2** that takes
 them from the container you select with it, up to 12 blocks away (24 with Range
-Augments in its four augment slots), and a **Sender Module Mk1** that pushes them
-into the first container along its facing (up to 8 blocks, 16 with range upgrades)
-— the two upgrades the router's own numbers are about, in its **five upgrade
+Augments in its four augment slots), a **Sender Module Mk1** that pushes them
+into the first container along its facing (up to 8 blocks, 16 with range upgrades),
+and a **Void Module** that permanently destroys the stack in the buffer, item by
+item (or by the operation's count with a Stack Augment), leaving the module's
+regulation amount behind if one is set — the two upgrades the router's own
+numbers are about, in its **five upgrade
 slots** (a **Speed Upgrade** shortens the operation interval by two ticks,
 20 → 18 → 16 … down to 2; a **Stack Upgrade** doubles the items one operation
 moves, 1 → 2 → 4 … up to 64), and the **augments** that fit a module's four
@@ -38,7 +41,8 @@ its code).
 
 Craft the router (4 per recipe), a blank module (6), then a puller (blank module
 + sticky piston), a ranged Puller Mk2 (a puller + an ender pearl, or four pullers
-+ one pearl for four) or a sender (blank module + bow + arrows). A blank upgrade takes
++ + one pearl for four), a sender (blank module + bow + arrows) or a void module
++(blank module + lava bucket, which leaves its bucket). A blank upgrade takes
 4 paper, 3 gold nuggets and a lapis; a Speed Upgrade (3) is redstone, gold and
 gunpowder around it with a blaze rod; a Stack Upgrade is a blank upgrade, stone
 bricks and bricks.
@@ -63,7 +67,9 @@ bricks and bricks.
    `active=false`; working ones light their front face.
 
 A puller takes one item per second from the container it points at; a sender
-delivers one per second to the first container in its line of sight. A **Puller
+delivers one per second to the first container in its line of sight. A **Void
+Module** is the opposite: it deletes what the buffer holds, one item per
+operation (its filter decides; its direction is irrelevant). A **Puller
 Mk2** ignores the direction and works on the block you gave it: sneak-right-click
 an inventory with the module in hand to select it (the block is not opened; the
 reply says `target set`), then install the module — it reaches 12 blocks, in the
@@ -79,7 +85,7 @@ item, so a chest of twelve with an amount of three keeps three. The buffer is th
 block's item container on every side, so hoppers
 and pipes can fill or empty it.
 
-The screen, the other 18 modules, the other 8 upgrades, the other 7 augments
+The screen, the other 17 modules, the other 8 upgrades, the other 7 augments
 (Mimic, Pickup Delay, …) and smart filters are not ported yet — see
 `notes.md`.
 
@@ -91,8 +97,8 @@ check, so this port reads the item tag the jar already ships: an item in
 not implement installs like any other, is listed by `/modularrouters info`,
 keeps its slot, direction and filter in the router's saved data across a
 relaunch, and `/modularrouters remove` takes it out; its behaviour is the owning
-mod's to run. A held item that is not a module this build runs (the two Mk1
-pullers and the Mk2, the sender) and is not in the tag is refused
+mod's to run. A held item that is not a module this build runs (both pullers,
+the sender and the void module) and is not in the tag is refused
 (`Unknown module '…'`).
 
 The tag is a data file (`data/modularrouters/tags/item/modules.json`). At SDK

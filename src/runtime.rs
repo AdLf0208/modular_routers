@@ -280,6 +280,8 @@ pub enum ModuleKind {
     PullerMk2,
     /// `modularrouters:sender_module_1`: buffer → container.
     SenderMk1,
+    /// `modularrouters:void_module`: destroys the filtered stack in the buffer.
+    Void,
     /// A module this port does not implement, carried by its id.
     Registered(String),
 }
@@ -288,8 +290,9 @@ impl ModuleKind {
     pub const PULLER: &'static str = "modularrouters:puller_module_1";
     pub const PULLER2: &'static str = "modularrouters:puller_module_2";
     pub const SENDER: &'static str = "modularrouters:sender_module_1";
+    pub const VOID: &'static str = "modularrouters:void_module";
 
-    /// The kind an item id names: one of the transfer modules this port runs, or a
+    /// The kind an item id names: one of the modules this port runs, or a
     /// registered kind that keeps the id unchanged.
     #[must_use]
     pub fn of(item: &str) -> Self {
@@ -297,6 +300,7 @@ impl ModuleKind {
             Self::PULLER => ModuleKind::PullerMk1,
             Self::PULLER2 => ModuleKind::PullerMk2,
             Self::SENDER => ModuleKind::SenderMk1,
+            Self::VOID => ModuleKind::Void,
             other => ModuleKind::Registered(other.to_string()),
         }
     }
@@ -306,7 +310,10 @@ impl ModuleKind {
     pub fn is_known(&self) -> bool {
         matches!(
             self,
-            ModuleKind::PullerMk1 | ModuleKind::PullerMk2 | ModuleKind::SenderMk1
+            ModuleKind::PullerMk1
+                | ModuleKind::PullerMk2
+                | ModuleKind::SenderMk1
+                | ModuleKind::Void
         )
     }
 
@@ -325,6 +332,7 @@ impl ModuleKind {
             ModuleKind::PullerMk1 => Self::PULLER,
             ModuleKind::PullerMk2 => Self::PULLER2,
             ModuleKind::SenderMk1 => Self::SENDER,
+            ModuleKind::Void => Self::VOID,
             ModuleKind::Registered(item) => item,
         }
     }
@@ -336,7 +344,7 @@ impl ModuleKind {
         match self {
             ModuleKind::PullerMk2 => Some(PULLER_BASE_RANGE),
             ModuleKind::SenderMk1 => Some(SENDER_BASE_RANGE),
-            ModuleKind::PullerMk1 | ModuleKind::Registered(_) => None,
+            ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
         }
     }
 
@@ -346,7 +354,7 @@ impl ModuleKind {
         match self {
             ModuleKind::PullerMk2 => Some(PULLER_MAX_RANGE),
             ModuleKind::SenderMk1 => Some(SENDER_MAX_RANGE),
-            ModuleKind::PullerMk1 | ModuleKind::Registered(_) => None,
+            ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
         }
     }
 
@@ -567,7 +575,7 @@ impl Module {
         match self.kind {
             ModuleKind::PullerMk2 => Some(puller_range(boost)),
             ModuleKind::SenderMk1 => Some(sender_range(boost)),
-            ModuleKind::PullerMk1 | ModuleKind::Registered(_) => None,
+            ModuleKind::PullerMk1 | ModuleKind::Void | ModuleKind::Registered(_) => None,
         }
     }
 
@@ -1299,7 +1307,26 @@ pub fn pick_send(buffer: Option<&Stack>, filter: &Filter, items: u32) -> Option<
     Some((stack.item.clone(), items.min(stack.count)))
 }
 
-/// The buffer after `sent` items left it; none when it is emptied.
+/// What one void operation destroys: this many of the buffered stack, never more
+/// than the buffer holds or `items`, and never the `keep` the module's saved
+/// regulation amount reserves.
+///
+/// `CompiledVoidModule.execute` is `min(getItemsPerTick, count −
+/// getRegulationAmount())` and nothing at all when that is not positive; the
+/// filter's test comes first, so a stack the filter refuses stays whole. `keep`
+/// is `Module::regulation_amount()`, which is zero unless a Regulator Augment is
+/// installed.
+pub fn pick_void(buffer: Option<&Stack>, filter: &Filter, items: u32, keep: u32) -> Option<u32> {
+    let stack = buffer?;
+    if items == 0 || stack.count == 0 || !filter.accepts(&stack.item) {
+        return None;
+    }
+    let to_void = items.min(stack.count.saturating_sub(keep));
+    (to_void > 0).then_some(to_void)
+}
+
+/// The buffer after `sent` items left it — a send, or the items a Void Module
+/// destroyed; none when it is emptied.
 pub fn buffer_after_send(buffer: &Stack, sent: u32) -> Option<Stack> {
     let left = buffer.count.saturating_sub(sent);
     (left > 0).then(|| Stack {
@@ -2371,5 +2398,67 @@ mod tests {
         assert_eq!(module.augments().count(&AugmentKind::Stack), 5);
         assert_eq!(module.items_per_operation(1), 32);
         assert_eq!(module.augment_limit(&AugmentKind::Stack), 6);
+    }
+
+    #[test]
+    fn a_void_module_eats_the_buffer_down_to_its_saved_amount() {
+        // `CompiledVoidModule.execute`: `min(getItemsPerTick, count − getRegulationAmount())`,
+        // and nothing at all when that is not positive.
+        assert_eq!(
+            ModuleKind::of("modularrouters:void_module"),
+            ModuleKind::Void
+        );
+        assert!(ModuleKind::Void.is_known());
+        assert_eq!(ModuleKind::Void.item(), "modularrouters:void_module");
+        assert!(
+            !ModuleKind::Void.is_targeted(),
+            "it acts on the router's own buffer, not a block"
+        );
+
+        let eight = Stack::of("minecraft:stone", 8);
+        assert_eq!(pick_void(Some(&eight), &Filter::any(), 1, 0), Some(1));
+        assert_eq!(
+            pick_void(Some(&eight), &Filter::any(), 64, 0),
+            Some(8),
+            "never more than the buffer holds"
+        );
+        assert_eq!(
+            pick_void(Some(&eight), &Filter::any(), 64, 3),
+            Some(5),
+            "a floor of three leaves three"
+        );
+        assert_eq!(
+            pick_void(Some(&eight), &Filter::any(), 1, 3),
+            Some(1),
+            "the operation's own count still applies above the floor"
+        );
+        // A buffer at or below the floor is left whole: `toVoid <= 0` is no operation.
+        let three = Stack::of("minecraft:stone", 3);
+        assert_eq!(pick_void(Some(&three), &Filter::any(), 64, 3), None);
+        assert_eq!(pick_void(Some(&three), &Filter::any(), 64, 5), None);
+        assert_eq!(pick_void(None, &Filter::any(), 64, 0), None);
+        assert_eq!(
+            pick_void(Some(&eight), &Filter::any(), 0, 0),
+            None,
+            "a zero-count operation"
+        );
+    }
+
+    #[test]
+    fn a_void_module_only_eats_what_its_filter_accepts() {
+        let stone = Stack::of("minecraft:stone", 8);
+        let only_dirt = Filter::new(true, vec!["minecraft:dirt".to_string()]);
+        assert_eq!(
+            pick_void(Some(&stone), &only_dirt, 64, 0),
+            None,
+            "a whitelist that does not list stone refuses the whole buffer"
+        );
+        let not_dirt = Filter::new(false, vec!["minecraft:dirt".to_string()]);
+        assert_eq!(pick_void(Some(&stone), &not_dirt, 64, 0), Some(8));
+        assert_eq!(
+            pick_void(Some(&stone), &Filter::new(true, Vec::new()), 64, 0),
+            None,
+            "an empty whitelist accepts nothing"
+        );
     }
 }

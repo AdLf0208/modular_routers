@@ -3,7 +3,7 @@
 
 Called by `tools/e2e.sh` with the open game's control socket. The harness's
 crafting table exposes the 3x3 grid as slots 100-108 (row-major) and the result
-as 200 (`ctl screen`). For each of the sixteen carried recipes this:
+as 200 (`ctl screen`). For each of the seventeen carried recipes this:
 
 1. replaces the table (a fresh block entity, so a stale grid cannot leak in)
    and clears the inventory;
@@ -11,10 +11,10 @@ as 200 (`ctl screen`). For each of the sixteen carried recipes this:
 3. places them in the pattern the recipe declares (one right-click per slot);
 4. asserts the result's **id and count**;
 5. shift-clicks the result into the inventory and asserts it arrived;
-6. asserts the grid is empty and the recipe's distinctive ingredient was
-   consumed.
+6. asserts the grid is empty (or holds exactly the recipe's vanilla crafting
+   remainder) and the recipe's distinctive ingredient was consumed.
 
-Ten deliberately wrong patterns must leave the result empty, so the check cannot
+Eleven deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -45,6 +45,7 @@ RANGE_UP = "modularrouters:range_up_augment"
 RANGE_DOWN = "modularrouters:range_down_augment"
 STACK_AUGMENT = "modularrouters:stack_augment"
 REGULATOR_AUGMENT = "modularrouters:regulator_augment"
+VOID_MODULE = "modularrouters:void_module"
 
 
 def main() -> int:
@@ -119,7 +120,8 @@ def main() -> int:
 
     failures = []
 
-    def check(label, ingredients, placements, want_item, want_count, consumed_item):
+    def check(label, ingredients, placements, want_item, want_count, consumed_item,
+              remainder=None):
         setup(ingredients)
         for item, targets in placements:
             place(item, targets)
@@ -134,8 +136,17 @@ def main() -> int:
         made = count(want_item)
         if made < want_count:
             failures.append(f"{label}: the crafted stack reached the inventory as {made}")
-        if not grid_is_empty():
-            failures.append(f"{label}: the grid still holds ingredients after the craft")
+        if remainder is None:
+            if not grid_is_empty():
+                failures.append(f"{label}: the grid still holds ingredients after the craft")
+        else:
+            # A vanilla crafting remainder (the lava bucket's bucket) stays in the
+            # grid slot the ingredient came from; nothing else may.
+            held = [s for s in grid() if s.get("item")]
+            if len(held) != 1 or held[0].get("item") != remainder:
+                failures.append(
+                    f"{label}: the grid holds {json.dumps(held)}, not only one {remainder} "
+                    "(the crafting remainder)")
         left = count(consumed_item)
         if left != 0:
             failures.append(f"{label}: {consumed_item} was not consumed ({left} left)")
@@ -337,6 +348,15 @@ def main() -> int:
         ],
         REGULATOR_AUGMENT, 1, "minecraft:comparator",
     )
+    # The Void Module is the jar's one shapeless recipe whose ingredient leaves a
+    # bucket behind: a blank module and a lava bucket. The bucket is the vanilla
+    # crafting remainder, so the grid holds it after the craft and nothing else.
+    check(
+        "void module: a blank module and a lava bucket, shapeless",
+        [(BLANK, 1), ("minecraft:lava_bucket", 1)],
+        [(BLANK, every(GRID["tl"])), ("minecraft:lava_bucket", every(GRID["mm"]))],
+        VOID_MODULE, 1, "minecraft:lava_bucket", remainder="minecraft:bucket",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -448,13 +468,18 @@ def main() -> int:
             (AUGMENT_CORE, every(GRID["mm"])),
         ],
     )
+    empty_control(
+        "void module with a stick where the lava bucket goes",
+        [(BLANK, 1), ("minecraft:stick", 1)],
+        [(BLANK, every(GRID["tl"])), ("minecraft:stick", every(GRID["mm"]))],
+    )
 
     if failures:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  sixteen carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and ten wrong-ingredient controls craft nothing")
+    print("  seventeen carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and eleven wrong-ingredient controls craft nothing")
     return 0
 
 

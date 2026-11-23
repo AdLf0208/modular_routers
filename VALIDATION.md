@@ -1,5 +1,76 @@
 # Modular Routers — validation ladder
 
+## 0.2.9 — the Void Module (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 9: `ModuleKind::Void` in
+`runtime` with `pick_void(buffer, filter, items, keep)` — `min(getItemsPerTick, count −
+getRegulationAmount())`, nothing when that is not positive, and the filter first, as
+`CompiledVoidModule.execute` writes it. Glue: `void_from_buffer` in the tick, run before any
+direction is resolved because the module is not directional, and the carried `void_module` item with
+the jar's model, texture, shapeless recipe (`blank_module` + `lava_bucket`), `modules` tag entry,
+lang and creative-tab entry. Unit work: 3 new tests (two `runtime`, one `support`), 65 in all.
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the names existed (red) | **15 errors** (no `Void` variant on `ModuleKind`, no `pick_void` function), `could not compile … (lib test)`, exit 101 | `slice9-test-red.log` |
+| 2 | `tools/e2e.sh` phase Q on the **0.2.8** game (red) | `Unknown module 'modularrouters:void_module' …`, `FAIL: expected the reply to say 'Modular Router: modularrouters:void_module in slot 0'`, `EXIT:1` | `modularrouters-e2e/e2e-red-void.log` |
+| 3 | `launcher-game.sh build modularrouters` (manifest 0.2.8 → 0.2.9) | `Compiling modularrouters (1 of 1)` — no cached-package reuse | `modularrouters-e2e/game-build-0.2.9.log` |
+| 4 | `cargo test --offline` | **65 passed**, 0 failed | `slice9-test.log` (= `sdk-test.log`) |
+| 5 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice9-clippy.log` (= `sdk-clippy.log`) |
+| 6 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice9-fmt.log` (= `sdk-fmt.log`) |
+| 7 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **119,968 B** | `slice9-build.log`, `slice9-build-second.log` |
+| 8 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.9 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `119968 bytes, SHA-256 24a902dd…a685`, **exit 0** | `sdk-check.log` |
+| 9 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 10 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 11 | `unzip -l modularrouters.hmod` | **105 entries**, no `Cargo.lock` | `slice9-entries.txt` |
+| 12 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, K, L, M, N, O, P, **Q**, J1–J4 | `modularrouters-e2e/e2e-launcher-0.2.9.log` |
+| 13 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.9.log` |
+| 14 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.9.log` |
+| 15 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=41 ok=41`, 0 missing/bad exit lines | — |
+| 16 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (65 tests, package = tree, no lock) | `verify-sdk-package.log` |
+
+### What phase Q proves (parity rule)
+
+Four routers in the End, each written **eight stone** straight into its buffer with
+`/data merge block` **after** its module is installed and its settings saved (a void module left
+running while it is configured consumes its own evidence — the P3 lesson), then fifteen operations
+at the 20-tick interval:
+
+| rig | module | setting | buffer after 300 ticks |
+|---|---|---|---:|
+| Q1 (72,100,0) | Void | none | **0** of 8 |
+| Q2 (74,100,0) | Void | Regulator Augment + `regulate 3` | **3** of 8 |
+| Q3 (76,100,0) | Sender Mk1 | no direction (so no target) | **8** of 8 |
+| Q4 (78,100,0) | Void | whitelist `minecraft:dirt` | **8** of 8 |
+
+- **Q1 is the feature**: the router's own buffer is the source *and* the sink, so the stone is gone
+  with no container and no neighbour involved.
+- **Q2 is the Regulator's buffer-side half**: the same `regulation_amount` the puller uses stops the
+  destruction at three, and the readout says `regulate=3 augments regulator` — a `pick_void` that
+  ignored `keep` would read the same labels and leave 0.
+- **Q3 is the differential**: the same router, buffer and interval with a Sender Mk1 that has no
+  direction (upstream's `setupTargets` returns an empty list for a directional module with
+  `NONE`) keeps all eight, so "0 left" in Q1 is the void module's operation and not a buffer that
+  drains on its own.
+- **Q4 is the filter**: a Void whose whitelist names only dirt destroys none of the stone, so the
+  destruction is the module's `getFilter().test` and not "truncate the slot".
+- **The recipe** (J1) crafts its declared id and count in a real table, consumes the lava bucket and
+  leaves exactly the vanilla **bucket** remainder in the grid; a stick where the bucket goes crafts
+  nothing.
+- **Unit tests** drive the count rule (`8 → 1`, `8 → 8`, `8 with keep 3 → 5`, `3 with keep 3 →
+  None`, below the floor → `None`), the empty buffer, the refused filter and the module kind.
+
+### Delivered package (0.2.9)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 119,968 B | `24a902dd7bdaa9872e453cb82f74104d266d61b3fa42980d99b7758fa93ea685` | 105 |
+
 ## 0.2.8 — the Regulator Augment (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

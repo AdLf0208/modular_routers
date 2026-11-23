@@ -6,12 +6,13 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.8** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.9** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
 (the three of those on 2026-11-22), 0.2.6 the Range Augments in a module's four augment slots,
-0.2.7 the Stack Augment (both on 2026-11-23) and 0.2.8 the Regulator Augment (2026-11-23). Pin: SDK
+0.2.7 the Stack Augment (both on 2026-11-23), 0.2.8 the Regulator Augment and 0.2.9 the Void
+Module (both on 2026-11-23). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -1478,6 +1479,155 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.8: **115,961 B**, SHA-256 `f03fcc7bff45d7620dab1435bf41bd8ec396f5f12fa85da7a92953b05167dad1`,
 100 entries, no `Cargo.lock`.
 
+## Slice 9 (2026-11-23) — the Void Module (0.2.9)
+
+Slice chosen from this file's own gap list, item 1 — *"**Modules**: `sender_module_2`/`_3`,
+`vacuum`, `dropper`, `flinger`, `placer`, `breaker`, `extruder_1`/`_2`, `detector`, `distributor`,
+`energy_distributor`, `energy_output`, `fluid`/`fluid_2`, `player`, `activator`, `void`, `creative`"*
+— and the port's own 0.2.8 next-slice. It is the highest-value remaining module because it is the
+only one whose whole operation is the router's **own buffer**: no container, no neighbour, no
+target. Tier fit: **machines**, the ledger row — a module's saved settings, the router's buffer and
+a carried item; no renderer and no new machine.
+
+### The artefact's numbers, re-read
+
+At the same commit as slices 5–8 (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`):
+
+| upstream | what it says | used for |
+|---|---|---|
+| `logic/compiled/CompiledVoidModule.java:14` | `if (getFilter().test(stack))` then `int toVoid = Math.min(getItemsPerTick(router), stack.getCount() - getRegulationAmount()); if (toVoid <= 0) return false;` | `pick_void`'s count rule and its floor |
+| `item/module/VoidModule.java:16` | `isDirectional()` = **false** | the tick runs it before any direction is resolved; `dir=none` is not "no target" for it |
+| `logic/filter/Filter.java:test` | an **empty** stack never passes | an empty buffer is no operation |
+| `logic/compiled/CompiledModule.java:154` | `getRegulationAmount` is the saved amount only with a Regulator Augment | `pick_void`'s `keep` |
+| `data/modularrouters/recipe/void_module.json` | shapeless `blank_module` + `lava_bucket` → **1** | the carried recipe, in 26.3's bare-string form |
+| `assets/.../models/item/void_module.json` | `layer0/1` = the module base, `layer2` = `void_module.png` | the carried model and texture |
+
+### How it works here
+
+- **`src/runtime.rs`** — `ModuleKind::Void` (beside the three transfer kinds) and
+  `pick_void(buffer, filter, items, keep) -> Option<u32>` beside `pick_send`: an empty buffer, a
+  refused filter or `items == 0` is `None`; otherwise `items.min(count.saturating_sub(keep))`, and
+  `None` when that is zero (`toVoid <= 0`). `keep = 0` is exactly the unaugmented behaviour.
+- **`src/support.rs`** — `void_from_buffer` reads the buffer slot, calls `pick_void` with
+  `module.regulation_amount()`, and writes the remainder back with `buffer_after_send` (the same
+  "remove n" rule the sender uses) or `None`. The tick's `ModuleKind::Void` arm stands **before**
+  the direction resolution, because the module is not directional. No new SDK surface.
+- **Content** — the `void_module` item (definition, jar model, jar texture, `horizon/item`
+  template), the jar's shapeless recipe in 26.3 form, its `modularrouters:modules` tag entry (the
+  registry the port reads), lang and the creative tab.
+
+### TDD, in the order the ruling asks for
+
+**Red, unit** — two `runtime` tests and one `support` test written before any of the names existed
+(`slice9-test-red.log`, **15 errors**, `cargo` exit 101):
+
+```
+error[E0599]: no variant, associated function, or constant named `Void` found for enum `runtime::ModuleKind` in the current scope
+error[E0425]: cannot find function `pick_void` in this scope
+error: could not compile `modularrouters` (lib test) due to 15 previous errors
+```
+
+**Red, in game** — phase Q written first and run on the shipped **0.2.8** game
+(`../_shared/evidence/modularrouters-e2e/e2e-red-void.log`): the game that was exported at 06:47
+carries no void module, so the first install is refused and no assertion after it can run.
+
+```
+== Q: the Void Module — the buffer is destroyed, down to its saved amount ==
+  Unknown module 'modularrouters:void_module': modularrouters:puller_module_1, modularrouters:sender_module_1 or an item in #modularrouters:modules
+FAIL: expected the reply to say 'Modular Router: modularrouters:void_module in slot 0'
+EXIT:1
+```
+
+Then the minimal implementation, then the same phase green.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.9.log`)
+
+```
+== Q: the Void Module — the buffer is destroyed, down to its saved amount ==
+  Modular Router: modularrouters:void_module in slot 0
+  module 0 at 72,100,0: modularrouters:void_module dir=none target=none filter blacklist none
+  Modular Router: modularrouters:void_module in slot 0
+  Modular Router: installed modularrouters:regulator_augment (1 in module 0, 1 of 4 augment slot(s) used)
+  Modular Router: module 0 leaves 3 item(s) in the source
+  module 0 at 74,100,0: modularrouters:void_module dir=none target=none regulate=3 augments regulator filter blacklist none
+  Modular Router: modularrouters:sender_module_1 in slot 0
+  module 0 at 76,100,0: modularrouters:sender_module_1 dir=none target=none range=8 filter blacklist none
+  Modular Router: modularrouters:void_module in slot 0
+  Modular Router: slot 0 filter updated
+  module 0 at 78,100,0: modularrouters:void_module dir=none target=none filter whitelist minecraft:dirt
+  72,100,0 buffer before: 8 stone
+  74,100,0 buffer before: 8 stone
+  76,100,0 buffer before: 8 stone
+  78,100,0 buffer before: 8 stone
+  Q1 (void, no augment): 0 left of 8
+  Q2 (void + regulator 3): 3 left of 8
+  Q3 (sender, no target): 8 left of 8
+  Q4 (void, whitelist dirt): 8 left of 8
+```
+
+and the new recipe in the same run (`craft_check.py`, J1):
+
+```
+  void module: a blank module and a lava bucket, shapeless -> {"count": 1, "item": "modularrouters:void_module", "slot": 200}
+  seventeen carried recipes craft their declared id and count, the grid empties,
+  each distinctive ingredient is consumed, and eleven wrong-ingredient controls craft nothing
+```
+
+**Why the assertions can fail, four ways.** (1) The 0.2.8 run above refuses the install (`EXIT:1`).
+(2) **Q3 is the differential**: the same router, the same eight buffered stone and the same interval,
+with a Sender Mk1 that has no direction (so no target) instead of the void module, keeps all eight —
+the reading a "void" that never ran, or a module that does nothing, would also give. (3) **Q4** is the
+filter half: a void module whose whitelist names dirt destroys nothing of the stone, so the destruction
+is the module's filter test and not "empty the buffer whatever is in it". (4) **Q2** reuses the
+Regulator Augment's `regulation_amount` on the buffer side: without `pick_void`'s `keep` the readout
+would still say `regulate=3` and the buffer would reach 0, so the 3 left is the rule, not the label.
+The unit tests drive the same arithmetic (`8 → 1`, `8 → 8`, `8 with keep 3 → 5`, `3 with keep 3 →
+None`, below the floor → `None`, a refused filter → `None`), so a `pick_void` that ignored `keep` or
+the filter cannot pass. `SELFTEST=1` fails phase A
+(`FAIL: SELFTEST: the target chest holds stone, so the check is alive`, `EXIT:1`) and the unmodded
+control game exits 1 at its first `give` (`FAIL: give modularrouters:modular_router failed`,
+`EXIT:1`) — `e2e-selftest-0.2.9.log`, `e2e-control-0.2.9.log`.
+
+**Two deviations, measured.** (1) The brief's `ctl wait 100` is five operations at this pin's 20-tick
+interval and one item per operation, so eight stone cannot be gone in it; the leg waits **300 ticks**
+(fifteen operations), as phase P did for the same reason. (2) The recipe's lava bucket leaves a
+**bucket** in the grid — vanilla's crafting remainder — so "the grid empties" is asserted as "the grid
+holds exactly that one bucket" (powah's craft check measured the same at this pin).
+
+### A harness finding worth recording (Q5)
+
+**A void module consumes its own evidence while it is being configured.** The first design installed
+the module and then wrote the eight stone, and the naive order (fill, then install) would have had the
+buffer empty before the regulator amount existed — the same class as P3. The rigs are therefore
+installed and configured **first**, with the buffer left empty; only then is the stone written with
+`/data merge block`, and the first operation after that is the one under test.
+
+### Ladder (every command in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | **15 errors**, `could not compile … (lib test)`, exit 101 | `slice9-test-red.log` |
+| red, in game | `tools/e2e.sh` phase Q on the **0.2.8** game | `Unknown module 'modularrouters:void_module' …`, `FAIL`, `EXIT:1` | `modularrouters-e2e/e2e-red-void.log` |
+| tests | `cargo test --offline` | **65 passed**, 0 failed | `slice9-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice9-clippy.log` (= `sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice9-fmt.log` (= `sdk-fmt.log`) |
+| manifest bump | `launcher-game.sh build modularrouters` | `Compiling modularrouters (1 of 1)` — the 0.2.9 sources were compiled, not a cached package | `modularrouters-e2e/game-build-0.2.9.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second `cmp`-identical, **119,968 B** | `slice9-build.log`, `slice9-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.9 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `119968 bytes, SHA-256 24a902dd…a685`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, `EXIT:0` | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` | `sdk-fits-0b14f8a.log` |
+| package contents | `unzip -l modularrouters.hmod` | **105 entries** (58 assets, 36 data, 3 src), no `Cargo.lock` | `slice9-entries.txt` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (65 tests) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` | `modularrouters-e2e/e2e-launcher-0.2.9.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.9.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-control-0.2.9.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=41 ok=41`, 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.9: **119,968 B**, SHA-256 `24a902dd7bdaa9872e453cb82f74104d266d61b3fa42980d99b7758fa93ea685`,
+105 entries, no `Cargo.lock`.
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -1491,17 +1641,18 @@ Every family the jar carries, against what this port does with it. `tested` name
 | Puller Mk1 (container → buffer, 1 item / 20 ticks, range/filter) | tested | E2E A (6 items, one per operation), B, C, D; M5 (ten blocks out: nothing — it reaches the block beside it) |
 | **Puller Mk2 (selected container → buffer, 12 blocks, 24 with augments)** | **tested** | E2E M — the target is selected by a sneak right-click with the module in hand (the chest does not open), the install copies it into the router's save and `info` names it (`at=`, `range=12`), it pulls exactly one item per operation from ten blocks away, an **unselected** Mk2 and a target **13** blocks out both leave the buffer empty while a target at **12** pulls, `dir=left` does not change the block it pulls from, and the target survives a relaunch; `runtime::tests` cover `puller_range` (12/24/1), the Euclidean `in_range`, `Target`, `parse_pos` and `side_towards`; `support::tests` cover the saved target and the readout line |
 | Sender Mk1 (buffer → first container along the facing) | tested | E2E A, B (no sender ⇒ no delivery), D (wall stops it) |
+| **Void Module (buffer → nothing: the filtered stack is destroyed, down to the module's regulation amount)** | **tested** | E2E Q — eight stone written into a router's buffer are **gone** after fifteen operations, the same module with a Regulator Augment and an amount of 3 stops at **3**, a Sender Mk1 with **no direction** (so no target) beside it keeps all **8** (the differential), and a Void whose whitelist names only dirt destroys **nothing** of the stone (the filter); its readout is `modularrouters:void_module dir=none target=none`, with `regulate=3 augments regulator` once augmented; an empty buffer is no operation; `runtime::tests` cover the count rule, the floor, the filter and the kind, `support::tests` the readout |
 | module install by right-click and by command | tested | E2E F (click), A/C (commands) |
 | placement facing | tested | E2E G (a real placement, not a setblock) |
 | state + persistence across relaunch | tested | E2E H |
-| the four module recipes (blank module, router, puller, sender) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, two wrong-ingredient controls empty) |
+| the four module recipes (blank module, router, puller, sender) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, two wrong-ingredient controls empty) — **now five** with the Void Module (J1: its lava bucket leaves the vanilla bucket remainder, and a stick in its place crafts nothing) |
 | **the two Puller Mk2 recipes** (Mk1 + ender pearl → 1; four Mk1s + one pearl → 4) | **tested** | E2E J1 — each crafts its declared id and count in a real table, the grid empties, the pearl is consumed, and a stick in its place crafts nothing |
-| the five module items (blank module, router, both pullers, sender) | tested | E2E J2 (give + read back, plus the one give in phase M) |
+| the five module items (blank module, router, both pullers, sender) | tested | E2E J2 (give + read back, plus the one give in phase M) — **now six** with the Void Module |
 | the router's loot table | tested | E2E J3 (iron pickaxe, with a vanilla block as the differential) |
 | the `minecraft:mineable/pickaxe` + `needs_iron_tool` block tags | tested | E2E J3 (the router breaks with an iron pickaxe and drops) |
 | the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers and the sender (M installs the Mk2 through it) |
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
-| the other 18 modules (`sender_module_2`/`_3`, `vacuum`, `dropper`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| the other 17 modules (`sender_module_2`/`_3`, `vacuum`, `dropper`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
 | **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
 | the three upgrade recipes (blank, Speed, Stack) | tested | E2E J1 (real table: id, count, grid emptied, distinctive ingredient consumed, one wrong-ingredient control each) |
 | the three upgrade items | tested | E2E L (give + read back from the inventory) |
@@ -1572,9 +1723,11 @@ binary does not list the port's own tests.
 1. **Modules**: `sender_module_2`/`_3`, `vacuum`,
    `dropper`, `flinger`, `placer`, `breaker`, `extruder_1`/`_2`, `detector`,
    `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`,
-   `player`, `activator`, `void`, `creative` — and their settings screens.
+   `player`, `activator`, `creative` — and their settings screens.
    **`puller_module_2` ships** (slice 5, E2E M): a selected container within 12
    blocks, 24 with the Range Augments that ship (slice 6, E2E N).
+   **`void_module` ships** (slice 9, E2E Q): it destroys the router's own buffer
+   down to the module's regulation amount, and its recipe crafts in a real table.
    1b. **The Mk2's other half**: the item-beam particles `CompiledPullerModule2` adds; a sneak right-click **in air**
    does not clear a target (the click hook is block-only; `/modularrouters target …
    none` does).
