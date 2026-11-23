@@ -25,7 +25,7 @@
 #  G  a placed router faces the opposite of its placer (real placement, not a
 #     setblock), and one package carries the code and the content.
 #  H  the modules and the buffer survive a relaunch.
-#  J  the seven carried recipes craft in a real crafting table (id, count, grid
+#  J  the fourteen carried recipes craft in a real crafting table (id, count, grid
 #     emptied, the distinctive ingredient consumed; five wrong-ingredient
 #     controls craft nothing), every carried item is give-able and an unknown
 #     id is refused, the router's loot table drops it when broken (with a
@@ -52,6 +52,17 @@
 #     operation from ten blocks away — while an unselected Mk2, a Mk2 whose target
 #     is thirteen blocks out (past puller2BaseRange 12) and a Mk1 at the same
 #     distance all stay empty. The target survives a relaunch.
+#  N  the Range Augments, which are *module* augments: four slots on a module,
+#     one block of reach each, up to hardMax − base (twelve for the Mk2, eight for
+#     the Sender Mk1) and down to base − 1. A Mk2 whose chest is fourteen blocks
+#     out moves nothing at range=12 and exactly one item per operation once four
+#     Range Up augments (installed by sneak right-click) take it to 16; a Mk2
+#     reaching a chest twelve blocks out stops the moment one Range Down augment
+#     takes it to 11; a Sender Mk1's twelve-block scan begins working at 16 with
+#     eight Range Up augments; a Range augment is refused on a module that is not
+#     ranged; and a saved list is cut to the four slots and the module's limit
+#     (fifteen in one slot read as twelve, 24 blocks). The augments survive a
+#     relaunch.
 #
 # The harness pack is the only data this script adds to the game: a world data
 # pack, not part of the package (see `harness_pack`).
@@ -111,6 +122,9 @@ SENDER=modularrouters:sender_module_1
 BLANK_UPGRADE=modularrouters:blank_upgrade
 SPEED_UPGRADE=modularrouters:speed_upgrade
 STACK_UPGRADE=modularrouters:stack_upgrade
+AUGMENT_CORE=modularrouters:augment_core
+RANGE_UP=modularrouters:range_up_augment
+RANGE_DOWN=modularrouters:range_down_augment
 
 [ -x "$CTL" ] || { echo "missing horizon-ctl: $CTL" >&2; exit 1; }
 [ -n "$GAME" ] || {
@@ -191,6 +205,10 @@ arena() {
     [ "$loaded" = true ] || fail "the End arena chunk never loaded"
     ctl command "execute in minecraft:the_end run fill -12 99 -20 48 99 16 minecraft:stone"
     ctl command "execute in minecraft:the_end run fill -12 100 -20 48 108 16 minecraft:air"
+    # The Range Augment rigs stand east of the main arena: same floor, air above,
+    # so a sender's scan runs twelve blocks north over nothing but air.
+    ctl command "execute in minecraft:the_end run fill 49 99 -20 62 99 16 minecraft:stone"
+    ctl command "execute in minecraft:the_end run fill 49 100 -20 62 108 16 minecraft:air"
     ctl command "execute in minecraft:the_end run kill @e[type=!player]"
     ctl wait 20
 }
@@ -619,6 +637,164 @@ sample_steps 26 0 minecraft:stone 1 12
 [ "$STEPS" -ge 3 ] || fail "the Mk2 stopped pulling after a relaunch"
 echo "  after the relaunch: buffer $(count 26 100 0 minecraft:stone), chest $(count 26 100 -10 minecraft:stone)"
 
+echo "== N: the Range Augments — one block of reach per augment, and its limits =="
+# The jar's Range Up / Range Down augments are *module* augments (four slots on a
+# module, `AugmentItem.getMaxAugments`: up = hardMax − base, down = base − 1).
+# A Mk2 reaches 12 blocks and at most 24, so four Range Up augments take it to
+# the reach a chest fourteen blocks out needs, and one Range Down takes it back
+# below a chest at twelve. Rig A and rig B are the same module, same shape, one
+# augment apart:
+#   A (50,100,0) Mk2, target 14 blocks out: nothing at range=12, +1/operation at 16
+#   B (52,100,0) Mk2, target 12 blocks out: +1/operation at range=12, nothing at 11
+#   C (54,100,0) Sender Mk1 with a filled buffer, chest 12 north: nothing at 8, delivers at 16
+#   D (56,100,0) the saved-list limits: 15 augments in one slot read as 12 (24 blocks)
+for x in 50 52 54; do block_at "$x" 0 "$ROUTER[facing=north]"; done
+block_at 50 -14 minecraft:chest
+block_at 52 -12 minecraft:chest
+block_at 54 -12 minecraft:chest
+block_at 56 0 "$ROUTER[facing=north]"
+ctl wait 6
+ctl container 50 100 -14 minecraft:stone 8 >/dev/null
+ctl container 52 100 -12 minecraft:stone 8 >/dev/null
+ctl wait 4
+
+# N1: the three augment items are in this package, and the tag that names an
+# augment to another mod lists the two this build runs.
+ctl command "gamemode creative @s" >/dev/null
+for id in "$AUGMENT_CORE" "$RANGE_UP" "$RANGE_DOWN"; do
+    ctl command "clear @s" >/dev/null
+    ctl give "$id" 1 >/dev/null || fail "give $id failed (is the augment in this package?)"
+    ctl wait 3
+    held=$(ctl inventory | jq -r --arg i "$id" '.counts[$i] // 0')
+    [ "$held" -ge 1 ] || fail "$id is not in the inventory after give ($held)"
+done
+ctl command "clear @s" >/dev/null
+for id in "$RANGE_UP" "$RANGE_DOWN"; do
+    unzip -p "$HMOD" data/modularrouters/tags/item/augments.json | grep -q "\"$id\"" \
+        || fail "the package's modularrouters:augments tag does not list $id"
+done
+echo "  augment core, range up and range down read back; the modularrouters:augments tag lists both"
+
+# N2: a module that is not ranged takes no Range augment at all (`getMaxAugments`
+# is 0 for a module that is not an `IRangedModule`): rig D of phase M holds a
+# Puller Mk1, and the install is refused with that reason.
+say "modularrouters augment 18 100 0 0 add range_up"
+expect_chat "Modular Router: module 0 does not take a range_up augment"
+expect_info 18 100 0 "module 0 at 18,100,0: $PULLER dir=front target=north filter"
+echo "  a Range Up augment is refused on a module that is not ranged"
+
+# N3: the reach rule itself. Rig A's Mk2 has its chest fourteen blocks out, two
+# past puller2BaseRange 12: at range=12 it moves nothing. Four Range Up augments
+# (the jar's recipe yield) installed by sneak right-click take it to 16, and the
+# same module then moves exactly one item per operation from that chest.
+say "modularrouters install 50 100 0 0 $PULLER2"
+say "modularrouters target 50 100 0 0 50,100,-14"
+ctl wait 4
+expect_info 50 100 0 "module 0 at 50,100,0: $PULLER2 dir=none target=none at=50,100,-14 range=12"
+before=$(count 50 100 0 minecraft:stone)
+ctl wait 100 >/dev/null
+after=$(count 50 100 0 minecraft:stone)
+echo "  target 14 blocks out at range=12: buffer $before -> $after in 100 ticks, chest $(count 50 100 -14 minecraft:stone)"
+[ "$after" = "$before" ] || fail "a target 14 blocks out pulled $(( after - before )) item(s) at range=12"
+[ "$(count 50 100 -14 minecraft:stone)" = 8 ] || fail "a target 14 blocks out took from the chest at range=12"
+
+ctl command "clear @s" >/dev/null
+ctl give "$RANGE_UP" 4 >/dev/null || fail "give $RANGE_UP 4 failed"
+ctl wait 4
+ctl tp 50.5 100 2.5 >/dev/null
+ctl select "$RANGE_UP" >/dev/null || fail "no range up augment in the hotbar"
+ctl look-at-block 50 100 0 south >/dev/null
+ctl wait 3
+for _ in 1 2 3 4; do
+    ctl key shift down >/dev/null
+    ctl wait 2 >/dev/null
+    ctl interact 50 100 0 south >/dev/null || fail "the sneak right-click that installs an augment failed"
+    ctl key shift up >/dev/null
+    ctl wait 3 >/dev/null
+done
+expect_info 50 100 0 "module 0 at 50,100,0: $PULLER2 dir=none target=none at=50,100,-14 range=16 augments range_up x4"
+expect_info 50 100 0 "1 of 9 module(s)"
+sample_steps 50 0 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "the augmented Mk2 pulled $STEPS operation(s) from fourteen blocks out at range=16"
+pulled=$(count 50 100 0 minecraft:stone)
+echo "  after four Range Up augments: range=16, the buffer holds $pulled, the chest $(count 50 100 -14 minecraft:stone)"
+[ "$pulled" -ge 3 ] || fail "the buffer holds $pulled after the sampling"
+
+# N4: the same rule downwards, on the boundary itself. Rig B's Mk2 reaches the
+# chest twelve blocks out at range=12 and moves one item per operation; one
+# Range Down augment takes the reach to 11, and the same chest is suddenly out.
+say "modularrouters install 52 100 0 0 $PULLER2"
+say "modularrouters target 52 100 0 0 52,100,-12"
+ctl wait 4
+expect_info 52 100 0 "module 0 at 52,100,0: $PULLER2 dir=none target=none at=52,100,-12 range=12"
+sample_steps 52 0 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "a target 12 blocks out pulled $STEPS operation(s) at range=12"
+say "modularrouters augment 52 100 0 0 add range_down"
+expect_chat "Modular Router: installed modularrouters:range_down_augment"
+expect_info 52 100 0 "range=11 augments range_down"
+before=$(count 52 100 0 minecraft:stone)
+chest_before=$(count 52 100 -12 minecraft:stone)
+ctl wait 100 >/dev/null
+after=$(count 52 100 0 minecraft:stone)
+echo "  after one Range Down augment: range=11, buffer $before -> $after in 100 ticks, chest $chest_before -> $(count 52 100 -12 minecraft:stone)"
+[ "$after" = "$before" ] || fail "a target 12 blocks out still pulled $(( after - before )) item(s) at range=11"
+[ "$(count 52 100 -12 minecraft:stone)" = "$chest_before" ] || fail "a target 12 blocks out still took from the chest at range=11"
+say "modularrouters augment 52 100 0 0 remove range_down"
+expect_chat "Modular Router: removed modularrouters:range_down_augment"
+expect_info 52 100 0 "range=12"
+back=$(ctl inventory | jq -r --arg i "$RANGE_DOWN" '.counts[$i] // 0')
+echo "  the removed Range Down augment came back to the inventory: $back"
+[ "$back" -ge 1 ] || fail "the removed Range Down augment did not reach the inventory ($back)"
+
+# N5: the augment is the *module's*, not the Mk2's: a Sender Mk1 reaches eight
+# blocks, so a chest twelve blocks north is out of its scan until eight Range Up
+# augments take it to sixteen. The buffer is the router's one-slot container, and
+# `ctl container` adds into the first *empty* slot, so it cannot top up a slot
+# that already holds anything; the merge writes the slot instead.
+ctl command "clear @s" >/dev/null
+ctl command 'data merge block 54 100 0 {Items:[{Slot:0b,id:"minecraft:stone",count:4}]}' >/dev/null
+say "modularrouters install 54 100 0 0 $SENDER"
+say "modularrouters direction 54 100 0 0 front"
+ctl wait 4
+expect_info 54 100 0 "module 0 at 54,100,0: $SENDER dir=front target=north range=8"
+ctl wait 100 >/dev/null
+echo "  sender at range=8 with a chest 12 north: buffer $(count 54 100 0 minecraft:stone), chest $(count 54 100 -12 minecraft:stone)"
+[ "$(count 54 100 -12 minecraft:stone)" = 0 ] || fail "a Sender Mk1 delivered 12 blocks out at range=8"
+[ "$(count 54 100 0 minecraft:stone)" = 4 ] || fail "a Sender Mk1 at range=8 moved items out of the buffer"
+for _ in $(seq 1 8); do say "modularrouters augment 54 100 0 0 add range_up"; done
+ctl wait 4
+expect_info 54 100 0 "module 0 at 54,100,0: $SENDER dir=front target=north range=16 augments range_up x8"
+ctl command 'data merge block 54 100 0 {Items:[{Slot:0b,id:"minecraft:stone",count:8}]}' >/dev/null
+sample_steps 54 -12 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "the augmented Sender Mk1 delivered $STEPS operation(s) to a chest 12 blocks out at range=16"
+echo "  with eight Range Up augments: range=16, the chest 12 blocks out holds $(count 54 100 -12 minecraft:stone)"
+
+# N6: the saved list obeys the module's limits: `RangeAugments.getMaxAugments` is
+# twelve for a Mk2, and a module has four slots. Fifteen in one slot read as
+# twelve (12 + 12 = the hard maximum 24); five slots read as four, and the range
+# augments in them cancel out.
+ctl command 'data merge block 56 100 0 {Modules:[{item:"modularrouters:puller_module_2",dir:"none",whitelist:0b,filter:[],Augments:[{item:"modularrouters:range_up_augment",count:15}]}]}' >/dev/null
+ctl wait 3
+expect_info 56 100 0 "module 0 at 56,100,0: $PULLER2 dir=none target=none range=24 augments range_up x12"
+ctl command 'data merge block 56 100 0 {Modules:[{item:"modularrouters:puller_module_2",dir:"none",whitelist:0b,filter:[],Augments:[{item:"modularrouters:range_up_augment",count:1},{item:"modularrouters:range_down_augment",count:1},{item:"example:a_augment",count:1},{item:"example:b_augment",count:1},{item:"example:c_augment",count:1}]}]}' >/dev/null
+ctl wait 3
+expect_info 56 100 0 "module 0 at 56,100,0: $PULLER2 dir=none target=none range=12 augments range_up,range_down,example:a_augment,example:b_augment"
+echo "  a 15-strong slot reads as 12 (range=24, the hard maximum); a fifth augment slot is cut"
+
+# N7: the augments are part of the module's saved entry: a relaunch keeps the
+# reach, and both boundary rigs still behave as the augment says.
+ctl command "clear @s" >/dev/null
+ctl quit >/dev/null
+sleep 2
+launch
+expect_info 50 100 0 "module 0 at 50,100,0: $PULLER2 dir=none target=none at=50,100,-14 range=16 augments range_up x4"
+expect_info 52 100 0 "range=12"
+ctl container 50 100 -14 minecraft:stone 8 >/dev/null
+ctl wait 4
+sample_steps 50 0 minecraft:stone 1 12
+[ "$STEPS" -ge 3 ] || fail "the augmented Mk2 stopped pulling after a relaunch"
+echo "  after the relaunch: range=16, buffer $(count 50 100 0 minecraft:stone), chest $(count 50 100 -14 minecraft:stone)"
+
 echo "== I: one package — the .hmod carries the code and the content =="
 python3 - "$HMOD" "$PORT/src/runtime.rs" <<'PY'
 import hashlib
@@ -817,7 +993,7 @@ ctl wait 4
 sample_steps 2 5 minecraft:stone 2 12
 [ "$STEPS" -ge 3 ] || fail "the upgraded router stopped moving two items after a relaunch"
 
-echo "== J1: the nine carried recipes craft in a real crafting table =="
+echo "== J1: the fourteen carried recipes craft in a real crafting table =="
 # A carried recipe whose ingredient is in the 1.21.1 object form
 # (`{"item": "..."}`) is rejected by the 26.3 parser at load, so the recipe is
 # dead data. The server names it once, at startup: print those lines as the
@@ -955,4 +1131,4 @@ say "modularrouters remove 8 100 4 0"
 expect_chat "Modular Router: removed example:foreign_module"
 expect_info 8 100 4 "1 of 9 module(s)"
 
-echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the four module recipes and the three upgrade recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all seven items read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch"
+echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the four module recipes, the three upgrade recipes and the five augment recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all eleven item ids read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch; the Range Augments are *module* augments in four slots, one block of reach each: a Mk2 whose target is fourteen blocks out moves nothing at range=12 and exactly one item per operation once four Range Up augments (installed by sneak right-click) take it to 16, one Range Down augment on a twelve-block target stops the pull at range=11 and comes back to the inventory when removed, a Sender Mk1's twelve-block scan starts delivering at range=16 with eight Range Up augments, a Range augment is refused on a module that is not ranged, a saved slot of fifteen reads as twelve (range=24, the hard maximum) and a fifth slot is cut, and the augments survive a relaunch"

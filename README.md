@@ -3,13 +3,14 @@
 A router block that runs item-transfer modules every 20 ticks, three modules of
 the original mod — a **Puller Module Mk1** that takes items from the container
 beside the router into its one-slot buffer, a **Puller Module Mk2** that takes
-them from the container you select with it, up to 12 blocks away (24 with range
-augments, which are not carried yet), and a **Sender Module Mk1** that pushes them
+them from the container you select with it, up to 12 blocks away (24 with Range
+Augments in its four augment slots), and a **Sender Module Mk1** that pushes them
 into the first container along its facing (up to 8 blocks, 16 with range upgrades)
-— and the two upgrades the router's own numbers are about, in its **five upgrade
-slots**: a **Speed Upgrade** shortens the operation interval by two ticks
-(20 → 18 → 16 … down to 2), a **Stack Upgrade** doubles the items one operation
-moves (1 → 2 → 4 … up to 64).
+— the two upgrades the router's own numbers are about, in its **five upgrade
+slots** (a **Speed Upgrade** shortens the operation interval by two ticks,
+20 → 18 → 16 … down to 2; a **Stack Upgrade** doubles the items one operation
+moves, 1 → 2 → 4 … up to 64), and the **Range Up/Down Augments** that fit a
+module's four augment slots and move that module's reach one block each.
 
 Ported from Modular Routers 13.2.7 (`desht/ModularRouters`, MIT) as a
 clean-room rewrite for Horizon 26.3, built against SDK nightly `0a875da`
@@ -68,9 +69,9 @@ Upgrade takes two ticks off that second, each Stack Upgrade doubles what one
 operation moves. The buffer is the block's item container on every side, so
 hoppers and pipes can fill or empty it.
 
-The screen, the other 18 modules, the other 8 upgrades, augments (the Range
-Augments the Mk2's 24-block reach needs among them) and smart filters are not
-ported yet — see `notes.md`.
+The screen, the other 18 modules, the other 8 upgrades, the other 9 augments
+(Stack, Mimic, Regulator, Pickup Delay, …) and smart filters are not ported yet
+— see `notes.md`.
 
 ### Modules from another mod
 

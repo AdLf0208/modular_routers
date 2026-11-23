@@ -26,11 +26,12 @@ use mod_api::{
 };
 
 use crate::runtime::{
-    BUFFER_SLOTS, FACE_NAMES, Facing, Filter, MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind,
-    Pos, Relative, Slot, Stack, Target, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades,
-    buffer_after_pull, buffer_after_send, face_of_normal, facing_for_placement, facing_of_state,
-    in_range, is_operation_tick, items_per_operation, parse_pos, phase_of, pick_pull, pick_send,
-    puller_range, scan_positions, sender_range, side_towards, step, tick_rate,
+    AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, FACE_NAMES, Facing, Filter,
+    MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind, Pos, Relative, Slot, Stack, Target,
+    UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, buffer_after_pull, buffer_after_send,
+    face_of_normal, facing_for_placement, facing_of_state, in_range, is_operation_tick,
+    items_per_operation, parse_pos, phase_of, pick_pull, pick_send, scan_positions, side_towards,
+    step, tick_rate,
 };
 
 /// The router block (and its item).
@@ -71,6 +72,13 @@ pub(crate) fn target_component() -> &'static str {
 /// One upgrade slot's fields inside `Upgrades`.
 const UPGRADE_ITEM: &str = "item";
 const UPGRADE_COUNT: &str = "count";
+/// A module's four augment slots inside its `Modules` entry: upstream keeps them
+/// on the module item (`ModDataComponents.AUGMENTS`, an `ItemContainerContents`);
+/// this port keeps the module's settings in the router's save, so they travel with
+/// them — the same list shape the upgrades use (`{item, count}`).
+const MODULE_AUGMENTS: &str = "Augments";
+const AUGMENT_ITEM: &str = "item";
+const AUGMENT_COUNT: &str = "count";
 /// The buffer slot in the block entity's item list.
 const BUFFER_SLOT: usize = 0;
 /// The item registry a module id is looked up in (`BuiltInRegistries.ITEM`).
@@ -82,6 +90,9 @@ const MODULE_TAG: &str = "modularrouters:modules";
 /// Speed and Stack have a behaviour here; a tagged upgrade this build does not
 /// run is refused rather than counted as one it can.
 const UPGRADE_TAG: &str = "modularrouters:upgrades";
+/// The item tag that declares a module augment. Only the two Range augments have
+/// a behaviour here; a tagged augment is carried one per slot and stays inert.
+const AUGMENT_TAG: &str = "modularrouters:augments";
 /// A block a sender's scan counts as passable: the three airs. Upstream also
 /// sends through any non-solid-render block (glass, torches, water) — a gap.
 const AIRS: [&str; 3] = ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"];
@@ -294,10 +305,11 @@ fn read_modules(nbt: &Compound) -> Vec<Module> {
                 _ => Vec::new(),
             };
             let module = Module::new(kind, direction, Filter::new(whitelist, items));
-            match read_target(entry) {
-                Some(target) => Some(module.with_target(target)),
-                None => Some(module),
-            }
+            let module = match read_target(entry) {
+                Some(target) => module.with_target(target),
+                None => module,
+            };
+            Some(module.with_augments(read_augments(entry)))
         })
         .collect()
 }
@@ -328,10 +340,60 @@ fn write_modules(nbt: &mut Compound, modules: &[Module]) {
             if let Some(target) = &module.target {
                 write_target(&mut entry, target);
             }
+            if !module.augments().is_empty() {
+                write_augments(&mut entry, module.augments());
+            }
             Tag::Compound(entry)
         })
         .collect();
     nbt.insert(KEY_MODULES.into(), Tag::List(entries));
+}
+
+/// A module's four augment slots (`Augments`), in slot order.
+///
+/// An augment this port does not run is kept as [`AugmentKind::Registered`], as a
+/// foreign module or upgrade is: a save from a newer build, or an add-on's
+/// augment, must survive being read and rewritten. A slot with no id, or with a
+/// count of zero or less, is not a slot at all.
+fn read_augments(entry: &Compound) -> Augments {
+    let Some(Tag::List(entries)) = entry.get(&MODULE_AUGMENTS.into()) else {
+        return Augments::default();
+    };
+    let slots = entries
+        .iter()
+        .filter_map(|entry| {
+            let Tag::Compound(slot) = entry else {
+                return None;
+            };
+            let kind = AugmentKind::of(&string(slot, AUGMENT_ITEM)?);
+            // A slot that names an augment but no count holds one of it.
+            let held = if slot.contains_key(&AUGMENT_COUNT.into()) {
+                count(slot, AUGMENT_COUNT)
+            } else {
+                1
+            };
+            Augment::new(kind, held)
+        })
+        .collect();
+    Augments::new(slots)
+}
+
+/// Write a module's augment slots back (`Augments`), in the upgrades' list shape.
+fn write_augments(entry: &mut Compound, augments: &Augments) {
+    let slots: Vec<Tag> = augments
+        .slots()
+        .iter()
+        .map(|slot| {
+            let mut written = Compound::new();
+            written.insert(AUGMENT_ITEM.into(), Tag::String(slot.kind.item().into()));
+            written.insert(
+                AUGMENT_COUNT.into(),
+                Tag::Int(i32::try_from(slot.count).unwrap_or(i32::MAX)),
+            );
+            Tag::Compound(written)
+        })
+        .collect();
+    entry.insert(MODULE_AUGMENTS.into(), Tag::List(slots));
 }
 
 /// The five upgrade slots (`Upgrades`), in slot order.
@@ -586,7 +648,12 @@ fn send(
     let Some((_, wanted)) = pick_send(Some(&buffer), &module.filter, items) else {
         return false;
     };
-    let Some(target) = sender_target(host, level, pos, face, sender_range(0)) else {
+    // The module's own reach (`IRangedModule.getCurrentRange`): the Sender Mk1
+    // scans 8 blocks, 16 with Range Up augments, 1 at the least.
+    let Some(range) = module.current_range() else {
+        return false;
+    };
+    let Some(target) = sender_target(host, level, pos, face, range) else {
         return false;
     };
     let Some(container) = handler(host, level, target, face) else {
@@ -650,7 +717,12 @@ fn pull_target(
     let Some(target) = &module.target else {
         return false;
     };
-    if !target.same_world(dimension) || !in_range(pos, target.pos, puller_range(0)) {
+    // The reach is the module's own (`getCurrentRange`), so its Range Augments
+    // decide whether the selected block is in range at all.
+    let Some(range) = module.current_range() else {
+        return false;
+    };
+    if !target.same_world(dimension) || !in_range(pos, target.pos, range) {
         return false;
     }
     let side = Direction::ALL[target.face];
@@ -807,6 +879,20 @@ pub(crate) fn right_click(host: HostSide<'_>, event: &mut RightClickBlockEvent<'
             Flow::Continue
         };
     }
+    // An augment is inserted into a *module* (upstream's module screen has the
+    // four slots, and it only accepts augments while one module is held): the
+    // click stand-in is sneak + right-click on the router, which takes the first
+    // module in slot order that accepts it. A plain click is not claimed.
+    if registered_augment(&*host, &item) {
+        if !sneaking {
+            return Flow::Continue;
+        }
+        return if install_augment_from_hand(host, level, click.pos, &item, click.player) {
+            Flow::Cancel
+        } else {
+            Flow::Continue
+        };
+    }
     if !registered_upgrade(&*host, &item) {
         return Flow::Continue;
     }
@@ -878,6 +964,83 @@ fn registered_upgrade(host: &dyn Host, item: &str) -> bool {
     };
     host.registry_entry_in_tag(&entry, UPGRADE_TAG)
         .unwrap_or(false)
+}
+
+/// Whether `item` is a module augment: one this port runs, or one the
+/// [`AUGMENT_TAG`] item tag lists. As for modules and upgrades, the tag is the
+/// registry: an add-on's augment is carried and stays inert.
+fn registered_augment(host: &dyn Host, item: &str) -> bool {
+    if AugmentKind::of(item).is_known() {
+        return true;
+    }
+    if Identifier::parse(item).is_err() {
+        return false;
+    }
+    let Some(entry) = host.registry_entry(ITEM_REGISTRY, item) else {
+        return false;
+    };
+    host.registry_entry_in_tag(&entry, AUGMENT_TAG)
+        .unwrap_or(false)
+}
+
+/// Install the held augment into the first module that accepts it, as dropping it
+/// onto one of a module's four augment slots in the module screen does upstream.
+/// False (and the item stays in the hand) when no module takes it.
+fn install_augment_from_hand(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    item: &str,
+    player: u128,
+) -> bool {
+    let kind = AugmentKind::of(item);
+    let mut installed: Option<(usize, u32, usize)> = None;
+    let applied = edit_router(host, level, pos, |nbt| {
+        let mut modules = read_modules(nbt);
+        for (slot, module) in modules.iter_mut().enumerate() {
+            if module.augment_limit(&kind) == 0 || !module.add_augment(kind.clone()) {
+                continue;
+            }
+            installed = Some((
+                slot,
+                module.augments().count(&kind),
+                module.augments().used(),
+            ));
+            break;
+        }
+        if installed.is_none() {
+            return false;
+        }
+        write_modules(nbt, &modules);
+        true
+    });
+    let Some(player) = host.player(player) else {
+        return applied;
+    };
+    if !applied {
+        tell(
+            host,
+            player,
+            &format!(
+                "Modular Router: no module here takes a {} augment",
+                kind.name()
+            ),
+        );
+        return false;
+    }
+    // Creative players keep their item, as upstream's module screen does not take it.
+    consume_one(host, player);
+    if let Some((slot, count, used)) = installed {
+        tell(
+            host,
+            player,
+            &format!(
+                "Modular Router: installed {} into module {slot} ({count} augment(s), {used} of {AUGMENT_SLOTS} slots used)",
+                kind.item()
+            ),
+        );
+    }
+    true
 }
 
 /// Install the held module into the router's first free slot, as dragging it
@@ -1061,7 +1224,7 @@ fn remove_upgrade(
     if !removed {
         return format!("Modular Router: no {} installed", kind.item());
     }
-    if hand_back(host, kind) {
+    if hand_back(host, kind.item()) {
         format!("Modular Router: removed {}", kind.item())
     } else {
         format!(
@@ -1071,9 +1234,9 @@ fn remove_upgrade(
     }
 }
 
-/// Give one `kind` to the player running the command, as `/give` does.
-fn hand_back(host: &mut dyn ServerHost, kind: &UpgradeKind) -> bool {
-    let Ok(id) = Identifier::parse(kind.item()) else {
+/// Give one `item` to the player running the command, as `/give` does.
+fn hand_back(host: &mut dyn ServerHost, item: &str) -> bool {
+    let Ok(id) = Identifier::parse(item) else {
         return false;
     };
     let Some(item) = host.item_key(&id) else {
@@ -1198,19 +1361,32 @@ fn module_line(pos: Pos, index: usize, module: &Module, facing: Facing) -> Strin
         None => "none",
     };
     // A targeted module's block is the one the player selected, not the one its
-    // direction names, so say where it is; a ranged one also says how far it
-    // reaches (`IRangedModule.getCurrentRange`).
+    // direction names, so say where it is; a ranged module also says how far it
+    // reaches now (`IRangedModule.getCurrentRange`) and what moved it there.
     let at = match &module.target {
         Some(target) => format!(" at={}", target.at_text()),
         None => String::new(),
     };
-    let range = if module.kind.is_targeted() {
-        format!(" range={}", puller_range(0))
-    } else {
+    let range = match module.current_range() {
+        Some(range) => format!(" range={range}"),
+        None => String::new(),
+    };
+    let augments = if module.augments().is_empty() {
         String::new()
+    } else {
+        let list: Vec<String> = module
+            .augments()
+            .slots()
+            .iter()
+            .map(|slot| match slot.count {
+                1 => slot.kind.name().to_string(),
+                count => format!("{} x{count}", slot.kind.name()),
+            })
+            .collect();
+        format!(" augments {}", list.join(","))
     };
     format!(
-        "module {index} at {},{},{}: {} dir={} target={target}{at}{range} filter {mode} {list}",
+        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{augments} filter {mode} {list}",
         pos[0],
         pos[1],
         pos[2],
@@ -1270,10 +1446,11 @@ pub(crate) fn declare_commands(commands: &mut Vec<Command>) {
 }
 
 /// The usages and the level each is registered at. `install`, `remove`,
-/// `direction`, `filter`, `upgrade` and `target` rewrite a router at player-chosen
-/// coordinates — and `install`/`upgrade` add to it with no item cost — so they are
-/// gamemaster tools (level 2), as `/data` is; `info` is a readout.
-pub(crate) fn usages() -> [(&'static str, u8); 7] {
+/// `direction`, `filter`, `upgrade`, `augment` and `target` rewrite a router at
+/// player-chosen coordinates — and `install`/`upgrade`/`augment` add to it with no
+/// item cost — so they are gamemaster tools (level 2), as `/data` is; `info` is a
+/// readout.
+pub(crate) fn usages() -> [(&'static str, u8); 9] {
     [
         ("modularrouters info <pos:block_pos>", 0),
         (
@@ -1291,6 +1468,14 @@ pub(crate) fn usages() -> [(&'static str, u8); 7] {
         ),
         (
             "modularrouters upgrade <pos:block_pos> <mode:word> <kind:word>",
+            2,
+        ),
+        (
+            "modularrouters augment <pos:block_pos> <slot:integer> add <augment:word>",
+            2,
+        ),
+        (
+            "modularrouters augment <pos:block_pos> <slot:integer> remove <augment:word>",
             2,
         ),
         (
@@ -1330,7 +1515,7 @@ fn say(host: &mut dyn ServerHost, line: &str) {
 }
 
 const USAGE: &str =
-    "Usage: /modularrouters info|install|remove|direction|filter|upgrade <x> <y> <z> …";
+    "Usage: /modularrouters info|install|remove|direction|filter|upgrade|augment <x> <y> <z> …";
 
 /// Run `/modularrouters info|install|remove|direction|filter`: the GUI's
 /// controls, as the harness and a player without the screen use them.
@@ -1401,6 +1586,16 @@ pub(crate) fn run_command(host: &mut dyn ServerHost, event: &mut RunModCommandEv
                 return Flow::Cancel;
             };
             let line = set_upgrade(host, level, pos, mode, kind);
+            say(host, &line);
+        }
+        ["augment", mode @ ("add" | "remove")] => {
+            let (Some(slot), Some(augment)) =
+                (integer(invocation, "slot"), word(invocation, "augment"))
+            else {
+                say(host, USAGE);
+                return Flow::Cancel;
+            };
+            let line = set_augment(host, level, pos, slot, mode, augment);
             say(host, &line);
         }
         ["target"] => {
@@ -1636,6 +1831,110 @@ fn set_upgrade(
     }
 }
 
+/// `/modularrouters augment <pos> <slot> <add|remove> <range_up|range_down>`: the
+/// module screen's four augment slots, for a player without the screen (the
+/// sneak-right-click path is the other half, in [`right_click`]).
+fn set_augment(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    slot: i32,
+    mode: &str,
+    augment: &str,
+) -> String {
+    let Ok(slot) = usize::try_from(slot) else {
+        return "Usage: /modularrouters augment <x> <y> <z> <slot> <add|remove> <range_up|range_down>"
+            .to_string();
+    };
+    let Some(kind) = AugmentKind::from_name(augment) else {
+        return "Unknown augment: range_up or range_down".to_string();
+    };
+    match mode {
+        "add" => add_augment(host, level, pos, slot, &kind),
+        "remove" => remove_augment(host, level, pos, slot, &kind),
+        _ => "Unknown mode: add or remove".to_string(),
+    }
+}
+
+/// Add one augment to a module through `/modularrouters augment` (a gamemaster
+/// tool, so it costs no item), and say what its slots hold now.
+fn add_augment(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    slot: usize,
+    kind: &AugmentKind,
+) -> String {
+    let mut refusal = None;
+    let mut held = 0;
+    let mut used = 0;
+    let applied = edit_module(host, level, pos, slot, |module| {
+        let limit = module.augment_limit(kind);
+        if limit == 0 {
+            refusal = Some(format!(
+                "Modular Router: module {slot} does not take a {} augment",
+                kind.name()
+            ));
+            return false;
+        }
+        if !module.add_augment(kind.clone()) {
+            refusal = Some(format!(
+                "Modular Router: module {slot} already holds {limit} {} augment(s), its limit",
+                kind.name()
+            ));
+            return false;
+        }
+        held = module.augments().count(kind);
+        used = module.augments().used();
+        true
+    });
+    if !applied {
+        return refusal.unwrap_or_else(|| "Modular Router: no module in that slot".to_string());
+    }
+    format!(
+        "Modular Router: installed {} ({held} in module {slot}, {used} of {AUGMENT_SLOTS} augment slot(s) used)",
+        kind.item()
+    )
+}
+
+/// Take one augment out of a module through `/modularrouters augment` and hand it
+/// back, as pulling it out of the module screen's slot does.
+fn remove_augment(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    slot: usize,
+    kind: &AugmentKind,
+) -> String {
+    let mut removed = false;
+    let mut held = 0;
+    edit_module(host, level, pos, slot, |module| {
+        if !module.remove_augment(kind) {
+            return false;
+        }
+        removed = true;
+        held = module.augments().count(kind);
+        true
+    });
+    if !removed {
+        return format!(
+            "Modular Router: no {} augment in module {slot}",
+            kind.name()
+        );
+    }
+    if hand_back(host, kind.item()) {
+        format!(
+            "Modular Router: removed {} ({held} left in module {slot})",
+            kind.item()
+        )
+    } else {
+        format!(
+            "Modular Router: removed {} (the inventory refused it)",
+            kind.item()
+        )
+    }
+}
+
 /// An item argument without a namespace is a vanilla item, as the GUI's list is.
 fn namespaced(item: &str) -> String {
     if item.contains(':') {
@@ -1660,10 +1959,66 @@ mod tests {
     #[test]
     fn the_readout_is_open_and_every_mutation_is_operator_gated() {
         let usages = usages();
-        assert_eq!(usages.len(), 7);
+        assert_eq!(usages.len(), 9);
         for (usage, level) in usages {
             let expected = if usage.contains(" info ") { 0 } else { 2 };
             assert_eq!(level, expected, "{usage}");
+        }
+    }
+
+    /// The pin's own grammar, mirrored from `usage_nodes` in
+    /// `horizon-client/src/game/native_server.rs`: a usage word is either a
+    /// literal (`[a-z0-9_-]+`) or `<name:kind>` (`[name:kind]` when optional),
+    /// and a usage holding anything else is **dropped whole** — the command then
+    /// does not exist in the game at all, which no `check`/`fits`/unit test sees.
+    /// `<add|remove>` is not a token that parser knows; two usages with the
+    /// literals spelled out are (`eco give …` / `eco take …` in the SDK's own
+    /// doc). This test is why `/modularrouters augment` failed in game with
+    /// `Incorrect argument for command`.
+    #[test]
+    fn every_command_usage_is_a_string_the_pins_parser_accepts() {
+        const KINDS: [&str; 14] = [
+            "word",
+            "text",
+            "integer",
+            "number",
+            "boolean",
+            "player",
+            "players",
+            "entity",
+            "entities",
+            "item",
+            "block_pos",
+            "vec3",
+            "id",
+            "mod_id",
+        ];
+        for (usage, _) in usages() {
+            for word in usage.split_whitespace() {
+                let inner = if let Some(w) = word.strip_prefix('<') {
+                    w.strip_suffix('>')
+                } else if let Some(w) = word.strip_prefix('[') {
+                    w.strip_suffix(']')
+                } else {
+                    let literal = !word.is_empty()
+                        && word.chars().all(|c| {
+                            c.is_ascii_lowercase() || c.is_ascii_digit() || "_-".contains(c)
+                        });
+                    assert!(
+                        literal,
+                        "{usage}: `{word}` is neither a command word nor an argument"
+                    );
+                    continue;
+                };
+                let parsed = inner
+                    .and_then(|w| w.split_once(':'))
+                    .is_some_and(|(name, kind)| {
+                        !name.is_empty()
+                            && !name.contains(['|', '<', '>', ' '])
+                            && (KINDS.contains(&kind) || kind.starts_with("resource:"))
+                    });
+                assert!(parsed, "{usage}: `{word}` is not `<name:kind>`");
+            }
         }
     }
 
@@ -1841,7 +2196,8 @@ mod tests {
         assert_eq!(
             lines[2],
             "module 1 at 0,100,0: modularrouters:sender_module_1 dir=none target=none \
-             filter whitelist minecraft:dirt"
+             range=8 filter whitelist minecraft:dirt",
+            "a ranged module reports its reach, as upstream's tooltip does"
         );
     }
 
@@ -1938,6 +2294,139 @@ mod tests {
             lines[0],
             "Modular Router at 2,100,0: facing north, active false, 0 of 9 module(s), \
              buffer empty, 2 item(s) every 18 ticks, 1 speed / 1 stack upgrade(s) of 5"
+        );
+    }
+
+    #[test]
+    fn the_augment_slots_round_trip_through_the_saved_compound() {
+        let mk2 = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any())
+            .with_target(Target::new(
+                [0, 100, -14],
+                crate::runtime::NORTH,
+                "minecraft:the_end",
+            ))
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::RangeUp, 4).expect("four range up"),
+                Augment::new(AugmentKind::of("example:range_augment"), 1)
+                    .expect("one foreign augment"),
+            ]));
+        let mut nbt = Compound::new();
+        write_modules(&mut nbt, std::slice::from_ref(&mk2));
+        let read = read_modules(&nbt);
+        assert_eq!(
+            read,
+            vec![mk2],
+            "the augments are part of the module's save"
+        );
+        assert_eq!(read[0].augments().count(&AugmentKind::RangeUp), 4);
+        assert_eq!(read[0].current_range(), Some(16));
+        // A module with no augment writes no `Augments` key at all, so an old
+        // save's text stays what it was.
+        let mut plain = Compound::new();
+        write_modules(&mut plain, &[puller(Relative::Front, Filter::any())]);
+        let Some(Tag::List(entries)) = plain.get(&KEY_MODULES.into()) else {
+            panic!("the module list");
+        };
+        let Tag::Compound(entry) = &entries[0] else {
+            panic!("the module entry");
+        };
+        assert!(!entry.contains_key(&MODULE_AUGMENTS.into()));
+    }
+
+    #[test]
+    fn an_augment_entry_is_one_when_it_saves_no_count_and_none_at_zero() {
+        let mut one = Compound::new();
+        one.insert(
+            AUGMENT_ITEM.into(),
+            Tag::String(AugmentKind::RANGE_UP.into()),
+        );
+        let mut zero = Compound::new();
+        zero.insert(
+            AUGMENT_ITEM.into(),
+            Tag::String(AugmentKind::RANGE_DOWN.into()),
+        );
+        zero.insert(AUGMENT_COUNT.into(), Tag::Int(0));
+        let mut entry = Compound::new();
+        entry.insert(MODULE_ITEM.into(), Tag::String(ModuleKind::PULLER2.into()));
+        entry.insert(
+            MODULE_AUGMENTS.into(),
+            Tag::List(vec![Tag::Compound(one), Tag::Compound(zero)]),
+        );
+        let mut nbt = Compound::new();
+        nbt.insert(KEY_MODULES.into(), Tag::List(vec![Tag::Compound(entry)]));
+        let modules = read_modules(&nbt);
+        assert_eq!(modules[0].augments().count(&AugmentKind::RangeUp), 1);
+        assert_eq!(modules[0].augments().count(&AugmentKind::RangeDown), 0);
+        assert_eq!(modules[0].augments().used(), 1);
+    }
+
+    #[test]
+    fn a_foreign_augment_survives_the_rewrite_an_install_performs() {
+        // `AugmentHandler` keeps an augment item it does not know, and so must a
+        // save this port reads and rewrites: an add-on's augment keeps its slot.
+        let mut entry = Compound::new();
+        entry.insert(MODULE_ITEM.into(), Tag::String(ModuleKind::PULLER2.into()));
+        entry.insert(
+            MODULE_AUGMENTS.into(),
+            Tag::List(vec![Tag::Compound({
+                let mut foreign = Compound::new();
+                foreign.insert(
+                    AUGMENT_ITEM.into(),
+                    Tag::String("example:range_augment".into()),
+                );
+                foreign
+            })]),
+        );
+        let mut nbt = Compound::new();
+        nbt.insert(KEY_MODULES.into(), Tag::List(vec![Tag::Compound(entry)]));
+        let mut modules = read_modules(&nbt);
+        assert_eq!(
+            modules[0]
+                .augments()
+                .count(&AugmentKind::of("example:range_augment")),
+            1
+        );
+        assert!(modules[0].add_augment(AugmentKind::RangeUp));
+        write_modules(&mut nbt, &modules);
+        let rewritten = read_modules(&nbt);
+        assert_eq!(
+            rewritten[0]
+                .augments()
+                .count(&AugmentKind::of("example:range_augment")),
+            1,
+            "the install must not erase the foreign augment"
+        );
+        assert_eq!(rewritten[0].augments().used(), 2);
+        modules.clear();
+    }
+
+    #[test]
+    fn a_modules_readout_names_its_augments_and_the_reach_they_give_it() {
+        let boosted = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any())
+            .with_target(Target::new(
+                [0, 100, -14],
+                crate::runtime::NORTH,
+                "minecraft:the_end",
+            ))
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::RangeUp, 4).expect("four range up"),
+            ]));
+        let lines = describe([0, 100, 0], Facing::North, false, &[boosted], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:puller_module_2 dir=none target=none \
+             at=0,100,-14 range=16 augments range_up x4 filter blacklist none",
+            "the line says how far it reaches and what moved it there"
+        );
+        let reduced = Module::new(ModuleKind::SenderMk1, Relative::Back, Filter::any())
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::RangeDown, 1).expect("one range down"),
+            ]));
+        let lines = describe([0, 100, 0], Facing::North, false, &[reduced], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:sender_module_1 dir=back target=south \
+             range=7 augments range_down filter blacklist none"
         );
     }
 }

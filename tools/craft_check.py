@@ -3,7 +3,7 @@
 
 Called by `tools/e2e.sh` with the open game's control socket. The harness's
 crafting table exposes the 3x3 grid as slots 100-108 (row-major) and the result
-as 200 (`ctl screen`). For each of the nine carried recipes this:
+as 200 (`ctl screen`). For each of the fourteen carried recipes this:
 
 1. replaces the table (a fresh block entity, so a stale grid cannot leak in)
    and clears the inventory;
@@ -14,7 +14,7 @@ as 200 (`ctl screen`). For each of the nine carried recipes this:
 6. asserts the grid is empty and the recipe's distinctive ingredient was
    consumed.
 
-Six deliberately wrong patterns must leave the result empty, so the check cannot
+Eight deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -40,6 +40,9 @@ SENDER = "modularrouters:sender_module_1"
 BLANK_UPGRADE = "modularrouters:blank_upgrade"
 SPEED_UPGRADE = "modularrouters:speed_upgrade"
 STACK_UPGRADE = "modularrouters:stack_upgrade"
+AUGMENT_CORE = "modularrouters:augment_core"
+RANGE_UP = "modularrouters:range_up_augment"
+RANGE_DOWN = "modularrouters:range_down_augment"
 
 
 def main() -> int:
@@ -254,6 +257,56 @@ def main() -> int:
         ],
         PULLER2, 4, "minecraft:ender_pearl",
     )
+    # The Range Augments and the core they are made from: the jar's two shaped
+    # recipes (a quartz crown over the core, a stick below it — the two differ
+    # only in which way up they are), its shapeless core, and its two shapeless
+    # conversions between the up and down augments.
+    check(
+        "augment core: a blank module and a blank upgrade, shapeless, four at a time",
+        [(BLANK, 1), (BLANK_UPGRADE, 1)],
+        [(BLANK, every(GRID["tl"])), (BLANK_UPGRADE, every(GRID["mm"]))],
+        AUGMENT_CORE, 4, BLANK_UPGRADE,
+    )
+    check(
+        "range up augment: quartz around an augment core, a stick below it, four at a time",
+        [
+            ("minecraft:quartz", 3),
+            (AUGMENT_CORE, 1),
+            ("minecraft:stick", 1),
+        ],
+        [
+            ("minecraft:quartz", every(GRID["tm"], GRID["ml"], GRID["mr"])),
+            (AUGMENT_CORE, every(GRID["mm"])),
+            ("minecraft:stick", every(GRID["bm"])),
+        ],
+        RANGE_UP, 4, AUGMENT_CORE,
+    )
+    check(
+        "range down augment: quartz around an augment core, a stick above it, four at a time",
+        [
+            ("minecraft:quartz", 3),
+            (AUGMENT_CORE, 1),
+            ("minecraft:stick", 1),
+        ],
+        [
+            ("minecraft:quartz", every(GRID["ml"], GRID["mr"], GRID["bm"])),
+            (AUGMENT_CORE, every(GRID["mm"])),
+            ("minecraft:stick", every(GRID["tm"])),
+        ],
+        RANGE_DOWN, 4, AUGMENT_CORE,
+    )
+    check(
+        "range down from a range up: shapeless, one back",
+        [(RANGE_UP, 1)],
+        [(RANGE_UP, every(GRID["tl"]))],
+        RANGE_DOWN, 1, RANGE_UP,
+    )
+    check(
+        "range up from a range down: shapeless, one back",
+        [(RANGE_DOWN, 1)],
+        [(RANGE_DOWN, every(GRID["tl"]))],
+        RANGE_UP, 1, RANGE_DOWN,
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -326,13 +379,29 @@ def main() -> int:
             ("minecraft:stick", every(GRID["mm"])),
         ],
     )
+    empty_control(
+        "range up augment with a stick where the augment core goes",
+        [
+            ("minecraft:quartz", 3),
+            ("minecraft:stick", 2),
+        ],
+        [
+            ("minecraft:quartz", every(GRID["tm"], GRID["ml"], GRID["mr"])),
+            ("minecraft:stick", every(GRID["mm"], GRID["bm"])),
+        ],
+    )
+    empty_control(
+        "range up from a stick, not from a range down augment",
+        [("minecraft:stick", 1)],
+        [("minecraft:stick", every(GRID["tl"]))],
+    )
 
     if failures:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  nine carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and six wrong-ingredient controls craft nothing")
+    print("  fourteen carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and eight wrong-ingredient controls craft nothing")
     return 0
 
 

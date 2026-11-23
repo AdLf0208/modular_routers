@@ -9,6 +9,9 @@
     "modularrouters:sender_module_1",
     "modularrouters:blank_upgrade",
     "modularrouters:speed_upgrade",
-    "modularrouters:stack_upgrade"
+    "modularrouters:stack_upgrade",
+    "modularrouters:augment_core",
+    "modularrouters:range_up_augment",
+    "modularrouters:range_down_augment"
   ]
 }

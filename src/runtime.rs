@@ -49,6 +49,11 @@ pub const SENDER_MAX_RANGE: i32 = 16;
 pub const PULLER_BASE_RANGE: i32 = 12;
 /// `CommonConfig.module.puller2MaxRange`: up to 24 with Range Augments.
 pub const PULLER_MAX_RANGE: i32 = 24;
+/// `AugmentItem.SLOTS`: every module has four augment slots.
+pub const AUGMENT_SLOTS: usize = 4;
+/// One Range Up/Down augment moves a module's reach one block, as
+/// `ModuleItem.getRangeModifier` counts them (up − down, one each).
+pub const RANGE_PER_AUGMENT: i32 = 1;
 
 /// The face's unit vector, as `Direction.normal()` gives it.
 pub const fn face_normal(face: Face) -> [i32; 3] {
@@ -296,6 +301,46 @@ impl ModuleKind {
             ModuleKind::Registered(item) => item,
         }
     }
+
+    /// The reach this module starts with (`IRangedModule.getBaseRange`), or
+    /// `None` for a module that is not ranged and therefore has none.
+    #[must_use]
+    pub fn base_range(&self) -> Option<i32> {
+        match self {
+            ModuleKind::PullerMk2 => Some(PULLER_BASE_RANGE),
+            ModuleKind::SenderMk1 => Some(SENDER_BASE_RANGE),
+            ModuleKind::PullerMk1 | ModuleKind::Registered(_) => None,
+        }
+    }
+
+    /// The longest reach Range Up augments can give it (`getHardMaxRange`).
+    #[must_use]
+    pub fn max_range(&self) -> Option<i32> {
+        match self {
+            ModuleKind::PullerMk2 => Some(PULLER_MAX_RANGE),
+            ModuleKind::SenderMk1 => Some(SENDER_MAX_RANGE),
+            ModuleKind::PullerMk1 | ModuleKind::Registered(_) => None,
+        }
+    }
+
+    /// How many of `augment` this module accepts in one slot
+    /// (`AugmentItem.getMaxAugments`): a Range Up augment is worth
+    /// `hardMax − base` of them, a Range Down one `base − 1`, and a module that
+    /// is not ranged takes neither. An augment this port does not run is carried
+    /// one per slot when it is installed — what it does, and how many of it fit,
+    /// are its own mod's, so a saved count of it is kept as written.
+    #[must_use]
+    pub fn augment_limit(&self, augment: &AugmentKind) -> u32 {
+        let limit = match augment {
+            AugmentKind::RangeUp => self
+                .max_range()
+                .zip(self.base_range())
+                .map(|(max, base)| max - base),
+            AugmentKind::RangeDown => self.base_range().map(|base| base - 1),
+            AugmentKind::Registered(_) => Some(OTHER_PER_SLOT as i32),
+        };
+        limit.map_or(0, |count| u32::try_from(count.max(0)).unwrap_or(u32::MAX))
+    }
 }
 
 /// A module's item filter: the ids it accepts, and whether that list is a
@@ -350,7 +395,7 @@ impl Filter {
 }
 
 /// A module installed in one slot: what it is, where it points, what it takes,
-/// and — for a targeted module — the block the player selected.
+/// the block a targeted one selected, and the augments in its four slots.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub kind: ModuleKind,
@@ -359,6 +404,7 @@ pub struct Module {
     /// The selected block of a targeted module (`ModuleTarget`), `None` until the
     /// player sets one — an unselected targeted module does nothing.
     pub target: Option<Target>,
+    augments: Augments,
 }
 
 impl Module {
@@ -368,6 +414,7 @@ impl Module {
             direction,
             filter,
             target: None,
+            augments: Augments::default(),
         }
     }
 
@@ -376,6 +423,63 @@ impl Module {
     pub fn with_target(mut self, target: Target) -> Self {
         self.target = Some(target);
         self
+    }
+
+    /// The same module with `augments` in its slots, each count cut to the limit
+    /// this module gives that augment (a saved list can name more of one than it
+    /// takes). An augment this port does not run is left as the save wrote it: its
+    /// per-slot limit belongs to its own mod, and the read must not invent one.
+    #[must_use]
+    pub fn with_augments(mut self, augments: Augments) -> Self {
+        let kind = self.kind.clone();
+        self.augments = augments.capped(|augment| {
+            if augment.is_known() {
+                kind.augment_limit(augment)
+            } else {
+                0
+            }
+        });
+        self
+    }
+
+    /// The augments in the module's four slots.
+    #[must_use]
+    pub fn augments(&self) -> &Augments {
+        &self.augments
+    }
+
+    /// How many of `augment` this module takes in one slot
+    /// (`AugmentItem.getMaxAugments`); zero when it takes none.
+    #[must_use]
+    pub fn augment_limit(&self, augment: &AugmentKind) -> u32 {
+        self.kind.augment_limit(augment)
+    }
+
+    /// Add one `augment` if the module has room: false when it takes none of that
+    /// augment or its four slots are full.
+    #[must_use]
+    pub fn add_augment(&mut self, augment: AugmentKind) -> bool {
+        let limit = self.augment_limit(&augment);
+        self.augments.add(augment, limit)
+    }
+
+    /// Take one `augment` out; true when the module had one.
+    #[must_use]
+    pub fn remove_augment(&mut self, augment: &AugmentKind) -> bool {
+        self.augments.remove_one(augment)
+    }
+
+    /// The reach this module works at now —
+    /// `max(1, min(hardMax, base + range_up − range_down))` for a ranged module
+    /// (`IRangedModule.getCurrentRange`), `None` for one that is not ranged.
+    #[must_use]
+    pub fn current_range(&self) -> Option<i32> {
+        let boost = self.augments.range_boost();
+        match self.kind {
+            ModuleKind::PullerMk2 => Some(puller_range(boost)),
+            ModuleKind::SenderMk1 => Some(sender_range(boost)),
+            ModuleKind::PullerMk1 | ModuleKind::Registered(_) => None,
+        }
     }
 
     /// Whether this module works on its selected block rather than the one its
@@ -666,6 +770,212 @@ impl Upgrades {
     /// had one. The slot goes when that empties it.
     #[must_use]
     pub fn remove_one(&mut self, kind: &UpgradeKind) -> bool {
+        let Some(index) = self
+            .slots
+            .iter()
+            .rposition(|slot| slot.kind.item() == kind.item())
+        else {
+            return false;
+        };
+        self.slots[index].count -= 1;
+        if self.slots[index].count == 0 {
+            self.slots.remove(index);
+        }
+        true
+    }
+}
+
+/// An augment installed in one of a module's four slots: a Range Up or Range
+/// Down augment, or any other id a save or another mod carries.
+///
+/// The last case is the **registered** path, as [`ModuleKind::Registered`] is for
+/// modules and [`UpgradeKind::Registered`] for upgrades: an add-on's augment keeps
+/// its id and its slot, and what it does stays its own mod's business.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AugmentKind {
+    /// `modularrouters:range_up_augment`: one block more of reach.
+    RangeUp,
+    /// `modularrouters:range_down_augment`: one block less.
+    RangeDown,
+    /// An augment this port does not run, carried by its id.
+    Registered(String),
+}
+
+impl AugmentKind {
+    pub const RANGE_UP: &'static str = "modularrouters:range_up_augment";
+    pub const RANGE_DOWN: &'static str = "modularrouters:range_down_augment";
+
+    /// The kind an item id names: one of the two augments this port runs, or a
+    /// registered kind that keeps the id unchanged.
+    #[must_use]
+    pub fn of(item: &str) -> Self {
+        match item {
+            Self::RANGE_UP => AugmentKind::RangeUp,
+            Self::RANGE_DOWN => AugmentKind::RangeDown,
+            other => AugmentKind::Registered(other.to_string()),
+        }
+    }
+
+    /// The augment a `/modularrouters augment … <kind>` word names.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "range_up" => Some(AugmentKind::RangeUp),
+            "range_down" => Some(AugmentKind::RangeDown),
+            _ => None,
+        }
+    }
+
+    /// Whether this port runs the augment itself rather than only carrying it.
+    #[must_use]
+    pub fn is_known(&self) -> bool {
+        matches!(self, AugmentKind::RangeUp | AugmentKind::RangeDown)
+    }
+
+    /// The item id this augment is.
+    #[must_use]
+    pub fn item(&self) -> &str {
+        match self {
+            AugmentKind::RangeUp => Self::RANGE_UP,
+            AugmentKind::RangeDown => Self::RANGE_DOWN,
+            AugmentKind::Registered(item) => item,
+        }
+    }
+
+    /// The name the readout and the command use (`range_up`).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            AugmentKind::RangeUp => "range_up",
+            AugmentKind::RangeDown => "range_down",
+            AugmentKind::Registered(item) => item,
+        }
+    }
+}
+
+/// One of a module's four augment slots: which augment, and how many of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Augment {
+    pub kind: AugmentKind,
+    pub count: u32,
+}
+
+impl Augment {
+    /// A slot holding `count` of `kind`. `None` for a count of zero: an empty slot
+    /// is no slot at all.
+    #[must_use]
+    pub fn new(kind: AugmentKind, count: u32) -> Option<Self> {
+        (count > 0).then_some(Augment { kind, count })
+    }
+}
+
+/// A module's four augment slots (`AugmentItem.SLOTS`), as the augments in them.
+///
+/// One kind per slot, as upstream's `AugmentHandler` holds them (`isItemValid`
+/// refuses the same augment in a second slot), and each slot's count cut to the
+/// limit the module gives that augment. A save naming more slots than a module
+/// has is cut rather than trusted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Augments {
+    slots: Vec<Augment>,
+}
+
+impl Augments {
+    /// The slots a saved list names, at most [`AUGMENT_SLOTS`] of them.
+    #[must_use]
+    pub fn new(slots: Vec<Augment>) -> Self {
+        Augments {
+            slots: slots.into_iter().take(AUGMENT_SLOTS).collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn slots(&self) -> &[Augment] {
+        &self.slots
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// How many slots are in use.
+    #[must_use]
+    pub fn used(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// How many of `kind` the module holds, summed over the slots holding it.
+    #[must_use]
+    pub fn count(&self, kind: &AugmentKind) -> u32 {
+        self.slots
+            .iter()
+            .filter(|slot| slot.kind.item() == kind.item())
+            .map(|slot| slot.count)
+            .sum()
+    }
+
+    /// The reach the Range Augments add (or take away): one block each, Range Up
+    /// minus Range Down (`ModuleItem.getRangeModifier`).
+    #[must_use]
+    pub fn range_boost(&self) -> i32 {
+        let up = i32::try_from(self.count(&AugmentKind::RangeUp)).unwrap_or(i32::MAX);
+        let down = i32::try_from(self.count(&AugmentKind::RangeDown)).unwrap_or(i32::MAX);
+        up.saturating_sub(down).saturating_mul(RANGE_PER_AUGMENT)
+    }
+
+    /// The same slots with every count cut to `limit_of` (the module's limit for
+    /// that augment). A limit of zero — the module takes none of it, or it is an
+    /// augment this port does not run — keeps the saved count: reading a save must
+    /// not lose an entry, and `add` refuses any more of it.
+    #[must_use]
+    pub fn capped(self, limit_of: impl Fn(&AugmentKind) -> u32) -> Self {
+        let slots = self
+            .slots
+            .into_iter()
+            .map(|mut slot| {
+                let limit = limit_of(&slot.kind);
+                if limit > 0 && slot.count > limit {
+                    slot.count = limit;
+                }
+                slot
+            })
+            .collect();
+        Augments { slots }
+    }
+
+    /// Add one `kind` up to `limit` per slot: the slot already holding it with
+    /// room, else a free slot. False when the module takes none of it, its slot
+    /// holds `limit`, or the four slots are full.
+    #[must_use]
+    pub fn add(&mut self, kind: AugmentKind, limit: u32) -> bool {
+        if limit == 0 {
+            return false;
+        }
+        if let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.kind.item() == kind.item() && slot.count < limit)
+        {
+            slot.count += 1;
+            return true;
+        }
+        if self.slots.len() >= AUGMENT_SLOTS
+            || self
+                .slots
+                .iter()
+                .any(|slot| slot.kind.item() == kind.item())
+        {
+            return false;
+        }
+        self.slots.push(Augment { kind, count: 1 });
+        true
+    }
+
+    /// Take one `kind` out, from the last slot holding it; true when the module
+    /// had one. The slot goes when that empties it.
+    #[must_use]
+    pub fn remove_one(&mut self, kind: &AugmentKind) -> bool {
         let Some(index) = self
             .slots
             .iter()
@@ -1448,5 +1758,186 @@ mod tests {
         assert_eq!(upgrades.slots().len(), 2);
         assert_eq!(upgrades.slots()[0].kind.item(), "example:fast_upgrade");
         assert_eq!(upgrades.speed(), 1);
+    }
+
+    #[test]
+    fn a_range_augment_moves_the_reach_one_block_each_up_to_the_modules_limit() {
+        // `AugmentItem`/`RangeAugments` and `ModuleItem.getRangeModifier`: the
+        // reach is `getCurrentRange` = `max(1, min(hardMax, base + up − down))`,
+        // and one augment is one block.
+        assert_eq!(
+            AugmentKind::of("modularrouters:range_up_augment"),
+            AugmentKind::RangeUp
+        );
+        assert_eq!(
+            AugmentKind::of("modularrouters:range_down_augment"),
+            AugmentKind::RangeDown
+        );
+        assert!(AugmentKind::RangeUp.is_known());
+        assert_eq!(
+            AugmentKind::RangeUp.item(),
+            "modularrouters:range_up_augment"
+        );
+        assert_eq!(AugmentKind::RangeUp.name(), "range_up");
+        assert_eq!(
+            AugmentKind::from_name("range_down"),
+            Some(AugmentKind::RangeDown)
+        );
+        assert_eq!(AugmentKind::from_name("mimic"), None);
+        // An augment this port does not run keeps its id, and fills its slot once.
+        let carried = AugmentKind::of("example:range_augment");
+        assert_eq!(
+            carried,
+            AugmentKind::Registered("example:range_augment".to_string())
+        );
+        assert!(!carried.is_known());
+        assert_eq!(carried.name(), "example:range_augment");
+
+        // `RangeAugments.getMaxAugments`: up = hardMax − base, down = base − 1.
+        // The Mk2 is 12/24, the Sender Mk1 8/16, and a module that is not ranged
+        // (`IRangedModule`) takes none of either.
+        assert_eq!(
+            ModuleKind::PullerMk2.augment_limit(&AugmentKind::RangeUp),
+            12
+        );
+        assert_eq!(
+            ModuleKind::PullerMk2.augment_limit(&AugmentKind::RangeDown),
+            11
+        );
+        assert_eq!(
+            ModuleKind::SenderMk1.augment_limit(&AugmentKind::RangeUp),
+            8
+        );
+        assert_eq!(
+            ModuleKind::SenderMk1.augment_limit(&AugmentKind::RangeDown),
+            7
+        );
+        assert_eq!(
+            ModuleKind::PullerMk1.augment_limit(&AugmentKind::RangeUp),
+            0
+        );
+        assert_eq!(
+            ModuleKind::Registered("example:ranged_module".to_string())
+                .augment_limit(&AugmentKind::RangeUp),
+            0,
+            "a module this port does not run does not declare a reach here"
+        );
+        assert_eq!(
+            ModuleKind::PullerMk2.augment_limit(&AugmentKind::of("example:range_augment")),
+            1,
+            "a foreign augment is carried one per slot"
+        );
+
+        // The module's own reach, as the tick and the readout ask for it.
+        let mk2 = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any());
+        assert_eq!(mk2.current_range(), Some(12));
+        let boosted = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any())
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::RangeUp, 4).expect("four range up"),
+            ]));
+        assert_eq!(
+            boosted.current_range(),
+            Some(16),
+            "four augments, four blocks"
+        );
+        let reduced = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any())
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::RangeDown, 1).expect("one range down"),
+            ]));
+        assert_eq!(reduced.current_range(), Some(11));
+        // The hard maximum and the one-block floor are the range rule's, not the
+        // augment's: twelve up is 24, and eleven down is 1.
+        let capped = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any())
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::RangeUp, 12).expect("twelve range up"),
+            ]));
+        assert_eq!(capped.current_range(), Some(PULLER_MAX_RANGE));
+        let floored = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any())
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::RangeDown, 11).expect("eleven range down"),
+            ]));
+        assert_eq!(floored.current_range(), Some(1));
+        // The sender is ranged too, and its own augments move its scan.
+        let sender = Module::new(ModuleKind::SenderMk1, Relative::Back, Filter::any());
+        assert_eq!(sender.current_range(), Some(SENDER_BASE_RANGE));
+        let sender_up = sender.clone().with_augments(Augments::new(vec![
+            Augment::new(AugmentKind::RangeUp, 8).expect("eight range up"),
+        ]));
+        assert_eq!(sender_up.current_range(), Some(SENDER_MAX_RANGE));
+        // A module that is not ranged has no reach to report or move.
+        assert_eq!(
+            Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any()).current_range(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_four_augment_slots_hold_one_kind_each_up_to_the_modules_limit() {
+        let mut mk2 = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any());
+        // `AugmentItem.SLOTS` is four, and `AugmentHandler.isItemValid` refuses the
+        // same augment in a second slot: twelve Range Up augments share slot 0 and
+        // the thirteenth is refused, not put in a slot of its own.
+        for _ in 0..12 {
+            assert!(mk2.add_augment(AugmentKind::RangeUp));
+        }
+        assert_eq!(mk2.augments().count(&AugmentKind::RangeUp), 12);
+        assert_eq!(mk2.augments().used(), 1, "one slot holds all twelve");
+        assert!(
+            !mk2.add_augment(AugmentKind::RangeUp),
+            "its limit is twelve"
+        );
+        assert_eq!(mk2.current_range(), Some(24));
+        // A second kind opens a second slot; eleven down is its own limit.
+        for _ in 0..11 {
+            assert!(mk2.add_augment(AugmentKind::RangeDown));
+        }
+        assert_eq!(mk2.augments().used(), 2);
+        assert!(!mk2.add_augment(AugmentKind::RangeDown));
+        // Two foreign augments fill the last two slots; a fifth kind has nowhere.
+        assert!(mk2.add_augment(AugmentKind::of("example:a_augment")));
+        assert!(mk2.add_augment(AugmentKind::of("example:b_augment")));
+        assert_eq!(mk2.augments().used(), AUGMENT_SLOTS);
+        assert!(!mk2.add_augment(AugmentKind::of("example:c_augment")));
+        // A module that is not ranged takes no Range augment at all.
+        let mut mk1 = Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any());
+        assert!(!mk1.add_augment(AugmentKind::RangeUp));
+        assert_eq!(mk1.augments().used(), 0);
+        // Removing takes one out and an emptied slot is no slot.
+        assert!(mk2.remove_augment(&AugmentKind::RangeDown));
+        assert_eq!(mk2.augments().count(&AugmentKind::RangeDown), 10);
+        for _ in 0..10 {
+            assert!(mk2.remove_augment(&AugmentKind::RangeDown));
+        }
+        assert!(!mk2.remove_augment(&AugmentKind::RangeDown), "nothing left");
+        assert_eq!(mk2.augments().used(), 3);
+    }
+
+    #[test]
+    fn a_saved_augment_list_is_cut_to_four_slots_and_to_the_modules_limit() {
+        // A save can name more than the module has: fifteen Range Up augments in
+        // one slot are cut to the Mk2's twelve (24 blocks, the hard maximum), a
+        // fifth slot is cut, and a count of zero is not a slot.
+        let saved = Augments::new(vec![
+            Augment::new(AugmentKind::RangeUp, 15).expect("fifteen saved"),
+            Augment::new(AugmentKind::of("example:a_augment"), 4).expect("four saved"),
+            Augment::new(AugmentKind::of("example:b_augment"), 1).expect("one"),
+            Augment::new(AugmentKind::of("example:c_augment"), 1).expect("one"),
+            Augment::new(AugmentKind::of("example:d_augment"), 1).expect("the fifth slot is cut"),
+        ]);
+        let module =
+            Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any()).with_augments(saved);
+        assert_eq!(module.augments().used(), AUGMENT_SLOTS);
+        assert_eq!(module.augments().count(&AugmentKind::RangeUp), 12);
+        assert_eq!(
+            module
+                .augments()
+                .count(&AugmentKind::of("example:a_augment")),
+            4,
+            "an augment this port does not run keeps the count the save gave it: its \
+             per-slot limit is its own mod's, so the read must not invent one"
+        );
+        assert_eq!(module.current_range(), Some(PULLER_MAX_RANGE));
+        assert_eq!(Augment::new(AugmentKind::RangeUp, 0), None);
+        assert!(Augments::default().is_empty());
     }
 }

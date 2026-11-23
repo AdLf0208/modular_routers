@@ -1,5 +1,66 @@
 # Modular Routers — validation ladder
 
+## 0.2.6 — the Range Augments and a module's four augment slots (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 6: `AugmentKind`/`Augment`/
+`Augments` in `runtime` (four slots, one kind per slot, `getMaxAugments` per module: 12 Range Up /
+11 Range Down for the Mk2, 8 / 7 for the Sender Mk1, 0 for a module that is not ranged), the
+`Augments` key in a module's saved entry, `current_range()` used by both ranged kinds, the sneak
+right-click install, `/modularrouters augment <pos> <slot> add|remove <range_up|range_down>`, the
+readout's `augments …`, and the three carried items with their five recipes, tag, models, textures,
+lang and creative tab. Unit work: 8 new tests, 55 in all.
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `tools/e2e.sh` phase N on the **0.2.5** package (red) | `FAIL: give modularrouters:augment_core failed (is the augment in this package?)`, `EXIT:1` | `modularrouters-e2e/e2e-red-augment.log` |
+| 2 | `cargo test --offline` before the types existed (red) | **138 errors** (`no method named with_augments`, `cannot find type Augments`), `could not compile … (lib test)`, exit 101 | `slice6-test-red.log` |
+| 3 | `cargo test --offline` before the foreign-count fix (red) | `assertion left: 1 right: 4` — a saved foreign augment's count was cut to 1 | `slice6-test-red-foreign-count.log` |
+| 4 | `cargo test --offline` before the command fix (red) | `` `<add|remove>` is not `<name:kind>` `` — the pin's parser drops that usage whole, so the command did not exist in game | `slice6-test-red-command-usage.log` |
+| 5 | `launcher-game.sh build modularrouters` (manifest 0.2.5 → 0.2.6) | `Compiling modularrouters (1 of 1)` — no cached-package reuse | `modularrouters-e2e/game-build-0.2.6.log` |
+| 6 | `cargo test --offline` | **55 passed**, 0 failed | `slice6-test.log` (= `sdk-test.log`) |
+| 7 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice6-clippy.log` (= `sdk-clippy.log`) |
+| 8 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice6-fmt.log` (= `sdk-fmt.log`) |
+| 9 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **104,859 B** | `slice6-build.log`, `slice6-build-second.log` |
+| 10 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.6 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `104859 bytes, SHA-256 491723d4…a0ad`, **exit 0** | `sdk-check.log` |
+| 11 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 12 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 13 | `unzip -l modularrouters.hmod` | **90 entries**, no `Cargo.lock` | `slice6-entries.txt` |
+| 14 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (55 tests) | `verify-sdk-package.log` |
+| 15 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, **M**, **N**, L, J1–J4, K | `modularrouters-e2e/e2e-launcher-0.2.6.log` |
+| 16 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.6.log` |
+| 17 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)`, with `Unknown block type …` / `Unknown item …` in the chat | `modularrouters-e2e/e2e-control-0.2.6.log` |
+| 18 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=26 ok=26`, 0 missing/bad exit lines | — |
+| 19 | `python3 ports/tools/check-skills.py --notes ports/modularrouters --strict` | PASS | — |
+
+One harness run failed before the green one and is kept as evidence: `e2e-0.2.6-n5-buffer-red.log`
+— `ctl container` adds into the first *empty* slot, so re-filling the router's one-slot buffer that
+already held four items answered `container is full` and aborted the leg (`EXIT:1`, no message).
+N5 now writes the slot with `/data merge`.
+
+### What phase N proves (parity rule)
+
+| Step | Assertion |
+|---|---|
+| N1, items | `augment_core`, `range_up_augment` and `range_down_augment` are given and read back; the package's `modularrouters:augments` tag lists both Range augments |
+| N2, refusal | a Range Up augment on a **Puller Mk1** (not ranged) answers `module 0 does not take a range_up augment` and the module's line is unchanged |
+| N3, Up | a Mk2 whose target is **14** blocks out moves **nothing** at `range=12` (`buffer 0 -> 0`, chest still 8); four Range Up augments installed by **sneak right-click** make it read `range=16 augments range_up x4`, and it then moves **4 operations, +1 item each** (chest 8 → 0) |
+| N4, Down | the same module with a target at **12**: `7 operations, +1 each` at `range=12`; one Range Down augment reads `range=11` and freezes it (`buffer 7 -> 7`, chest 1 → 1); `augment … remove` reads `range=12` again and the item is back in the inventory |
+| N5, another module | a **Sender Mk1** (`range=8`) with a chest 12 blocks north delivers nothing (buffer 4, chest 0); eight Range Up augments read `range=16` and it delivers `7 operations, +1 each` |
+| N6, saved data | a `/data merge`d 15-strong slot reads `range=24 augments range_up x12` (the Mk2's limit and the hard maximum); a five-slot list is cut to four and reads `range=12` with `range_up,range_down,example:a_augment,example:b_augment` |
+| N7, save | quit + relaunch: `range=16 augments range_up x4` and `range=12` both read back, and the augmented Mk2 pulls again (7 operations, +1 each) |
+| J1, recipes | the five augment recipes craft their declared id and count (4/4/4/1/1) in a real table, the grid empties, the distinctive ingredient is consumed, and two wrong-ingredient controls craft nothing |
+
+### Delivered package (0.2.6)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 104,859 B | `491723d43017a9b5dd620c48a56b6542b268b442012f91ea14a3d328975da0ad` | 90 |
+
 ## 0.2.5 — the ranged Puller Mk2 and its selected target (2026-11-22)
 
 Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

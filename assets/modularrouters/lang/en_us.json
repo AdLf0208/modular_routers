@@ -1,10 +1,13 @@
 {
   "block.modularrouters.modular_router": "Modular Router",
+  "item.modularrouters.augment_core": "Augment Core",
   "item.modularrouters.blank_module": "Blank Module",
+  "item.modularrouters.blank_upgrade": "Blank Upgrade",
   "item.modularrouters.puller_module_1": "Puller Module Mk1",
   "item.modularrouters.puller_module_2": "Puller Module Mk2",
+  "item.modularrouters.range_down_augment": "Range Down Augment",
+  "item.modularrouters.range_up_augment": "Range Up Augment",
   "item.modularrouters.sender_module_1": "Sender Module Mk1",
-  "item.modularrouters.blank_upgrade": "Blank Upgrade",
   "item.modularrouters.speed_upgrade": "Speed Upgrade",
   "item.modularrouters.stack_upgrade": "Stack Upgrade",
   "itemGroup.modularrouters.modularrouters": "Modular Routers"

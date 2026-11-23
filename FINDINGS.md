@@ -146,9 +146,10 @@ Files read:
    - with **no** selected block it does nothing at all (empty targets ⇒ the router
      skips it). It never scans its facing, and the patchouli entry says so: *"clear
      line of sight is not required"* is about the selected block, not a scan;
-   - *"up to 12 blocks away (up to 24 with Range Augments)"* — the Range Augments are
-     a gap here (gap 3), so this slice always asks for `puller_range(0)` = 12 while
-     the rule and its cap are implemented and tested.
+   - *"up to 12 blocks away (up to 24 with Range Augments)"* — the Range Augments
+     ship in slice 6 (E2E N, `FINDINGS.md` §5): `range_up_augment`/`range_down_augment`
+     in a module's four augment slots move this reach one block each, and the
+     saved-list limits are the artefact's (12 Up / 11 Down for the Mk2).
 
 ## 4. What this slice takes, and what it does not
 
@@ -160,9 +161,38 @@ Taken (see `notes.md` for the boundary and the gaps):
   relative direction, an item filter (whitelist/blacklist over item ids) and the
   20-tick/1-item operation; the install/remove/direction/info command fallback for
   the missing GUI;
+- **slice 4:** `speed_upgrade`, `stack_upgrade` and `blank_upgrade`, the router's
+  five upgrade slots with their per-slot limits (9 Speed, 6 Stack, 1 other), and
+  upstream's `Upgrades` save key;
 - **slice 5:** `puller_module_2` with its selected target (sneak-right-click, a
   component on the item, the router's saved entry), the 12-block reach with the
   24 cap, and `/modularrouters target` for a player without the module screen;
+- **slice 6:** `range_up_augment`, `range_down_augment` and `augment_core`, a
+  module's four augment slots (one kind per slot, the module's own limit), and the
+  reach those augments move — see §5;
 - carried content: the router block + item, `blank_module`, `puller_module_1`,
-  `puller_module_2`, `sender_module_1`, their craft chain, models, textures, lang,
-  loot and tags.
+  `puller_module_2`, `sender_module_1`, the three upgrades, the three augments,
+  their craft chain, models, textures, lang, loot and tags.
+
+## 5. Augments (re-read 2026-11-23 for slice 6) — where each number comes from
+
+The brief named `RangeAugment`/`SpeedAugment`; the artefact has **no `SpeedAugment`** (speed is an
+**upgrade**, `SpeedUpgrade`, taken in slice 4). The augments live in `item/augment/`, all extending
+`AugmentItem`, and the two Range ones are nested in `RangeAugments`. Read at the same commit
+`a26024345ee5d565bb79bf48e5a7fe37a27bba90`:
+
+| file | fact | used for |
+|---|---|---|
+| `item/augment/AugmentItem.java` | `SLOTS = 4`; `getMaxAugments(ModuleItem)` is abstract | four slots (`runtime::AUGMENT_SLOTS`), the per-augment limit |
+| `item/augment/RangeAugments.java` | `RangeUpAugment`: `IRangedModule ? getHardMaxRange() − getBaseRange() : 0`; `RangeDownAugment`: `base − 1` | the Mk2's 12 Up / 11 Down, the Sender Mk1's 8 / 7, 0 for a module that is not ranged |
+| `item/augment/StackAugment.java` | `getMaxAugments` is **6**, and **0** for the Detector, both Extruders, Breaker, Placer and both Fluid modules — the one augment whose limit is not range and differs per module | recorded for the next augment slice; not carried |
+| `container/handler/AugmentHandler.java` | `super(SLOTS)`; `isItemValid` refuses an augment whose limit is 0 and refuses the same augment in a second slot; `getStackLimit` is that augment's limit; the saved component keeps the first `SLOTS` entries | one kind per slot; a saved list is cut to four; a count is cut to the limit |
+| `item/module/ModuleItem.java` | `getRangeModifier = count(RANGE_UP) − count(RANGE_DOWN)` | `Augments::range_boost` |
+| `item/module/IRangedModule.java` | `getCurrentRange = max(1, min(hardMax, base + modifier))` | `puller_range` / `sender_range` |
+| `logic/compiled/CompiledModule.java` | `range = module instanceof IRangedModule r ? r.getCurrentRange(getRangeModifier()) : 0`, then `isTargetValid` uses `range²` | the tick's reach; the augment moves what the operation sees |
+
+A module that is not an `IRangedModule` takes no Range augment (`getMaxAugments` is 0);
+`AugmentHandler.isItemValid` is where the GUI refuses it, and the port's install path and
+`/modularrouters augment … add` refuse it with the same reason. The jar's `augment_core` is a plain
+item (not an `AugmentItem`), and the `modularrouters:augments` tag lists all eleven augments — the
+port's carried tag lists the two it runs, as its `modules` and `upgrades` tags list what they run.

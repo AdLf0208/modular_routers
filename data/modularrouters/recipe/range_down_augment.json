@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "M": "modularrouters:augment_core",
+    "Q": "minecraft:quartz",
+    "S": "minecraft:stick"
+  },
+  "pattern": [
+    " S ",
+    "QMQ",
+    " Q "
+  ],
+  "result": {
+    "count": 4,
+    "id": "modularrouters:range_down_augment"
+  }
+}
