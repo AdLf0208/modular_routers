@@ -1,11 +1,11 @@
-# Package receipt — modularrouters 0.2.13
+# Package receipt — modularrouters 0.2.14
 
 | field | value |
 |---|---|
-| version | `0.2.13` |
+| version | `0.2.14` |
 | file | `modularrouters.hmod` |
-| bytes | 140,019 |
-| sha256 | `c7972fcd89193953e23351e030f569347d14bcdc0df261292924735115a34bad` |
+| bytes | 151,564 |
+| sha256 | `5f5bc461a58c94e3829a17f68dfc80c9c7789f7f54b576c9643566cf21e57e5d` |
 | source | this tag — the tree here is the source that produced the archive |
 | game | 26.3 |
 | horizon | `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` |

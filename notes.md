@@ -3,17 +3,18 @@
 Class **content**, tier **machines**, core, priority P0.
 Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 (<https://github.com/desht/ModularRouters>, **MIT**, rank 0), Minecraft Java
-1.21.1 NeoForge. Status: `ported-partial` — thirteen slices, gaps recorded below.
+1.21.1 NeoForge. Status: `ported-partial` — fourteen slices, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.13** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.14** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
 (the three of those on 2026-11-22), 0.2.6 the Range Augments in a module's four augment slots,
 0.2.7 the Stack Augment (both on 2026-11-23), 0.2.8 the Regulator Augment, 0.2.9 the Void
 Module, 0.2.10 the targeted Sender Mk2, 0.2.11 the Regulator Augment's **sender** half,
-0.2.12 the Dropper Module and 0.2.13 the Vacuum Module (all on 2026-11-23). Pin: SDK
+0.2.12 the Dropper Module, 0.2.13 the Vacuum Module and 0.2.14 the Flinger Module with the
+vacuum's review fix (all on 2026-11-23). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -2389,6 +2390,212 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.13: **140,019 B**, SHA-256 `c7972fcd89193953e23351e030f569347d14bcdc0df261292924735115a34bad`,
 121 entries, no `Cargo.lock`.
 
+## Slice 14 (2026-11-23) — the Flinger Module (0.2.14) and the vacuum's review fix
+
+Slice chosen from this file's own gap list, **gap 1** — *"**Modules**: `sender_module_3`
+(**blocked**, see below), `flinger`, …"* — the entry the 0.2.13 next-slice named. Tier fit:
+**machines**, the ledger row — the module's saved settings, the router's buffer, its tick and one
+velocity on a spawned item entity; no renderer and no new machine. `sender_module_3` stays
+`blocked(cross-level-capability)` and is not re-attempted. The same version carries the review
+finding on the Vacuum Module (`NikitaMGrimm`, 2026-11-23), which is answered below as its own point.
+
+### The artefact's rule, re-read
+
+At the same commit as slices 5–13 (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`):
+
+| upstream | what it says | used for |
+|---|---|---|
+| `item/module/FlingerModule.java` | `MIN_SPEED` **0**, `MAX_SPEED` **20**, `MIN_PITCH` **−90**, `MAX_PITCH` **90**, `MIN_YAW` **−60**, `MAX_YAW` **60**; `extends DropperModule` | `FLINGER_*`, `Flinger::validated` |
+| `logic/compiled/CompiledFlingerModule.java` | `extends CompiledDropperModule` and overrides **only** `setupItemVelocity` (plus the particle/sound puff, gap 5) | the operation, filter, count and regulation amount stay `pick_drop` — the dropper's rule |
+| same, `FlingerSettings.validate` | any field out of range **or infinite** ⇒ `DEFAULT` (0, 0, 0) for **all three** | `Flinger::validated` |
+| same, `setupItemVelocity` | `getDirection()` UP/DOWN ⇒ base pitch **±90** and base yaw `yawFromFacing(routerFacing)`; otherwise base yaw `yawFromFacing(getAbsoluteFacing())`; `yaw = baseYaw + getYaw()`, `pitch = basePitch + getPitch()` | `fling_velocity(face, router_facing, yaw, pitch, speed)` |
+| same | `x = cos(yaw)·cos(pitch)`, `y = sin(pitch)`, `z = −sin(yaw)·cos(pitch)`; `new Vec3(…).scale(getSpeed())` | the formula, in `f64` |
+| same, `yawFromFacing` | east **0**, north **90**, west **180**, south **270** | `yaw_of_face` |
+| `CompiledDropperModule.execute` | spawn at the target block's middle + `0.2 ×` its face toward the router, `setDeltaMovement` from `setupItemVelocity`, `extractBuffer` | `drop_point` (shipped in 0.2.12) + `spawn_item_with_motion` with the flinger's vector |
+| `data/modularrouters/recipe/flinger_module.json` | shapeless `dropper_module` + `minecraft:gunpowder` → **1** | the carried recipe in 26.3's bare-string form |
+| jar model + `textures/item/module/flinger_module.png` | the three-layer module model and the jar's own texture | carried (MIT, rank 0) |
+
+**The flight settings' save.** Upstream keeps `FlingerSettings` in the module **item's**
+`FLINGER_SETTINGS` data component. This port has no item components for its modules — a module's
+settings live in its entry in the router's `Modules` list (`dir`, `filter`, `Regulate`, `Target`,
+`Augments`) — so a flinger's entry gains `Flinger: {speed, pitch, yaw}` as `f32` tags, read back
+through `Flinger::validated` so a save written outside the ranges behaves exactly as the component
+read does (all three reset, never the fields that fit). The command is `/modularrouters fling
+<pos> <slot> <speed> <pitch> <yaw>`, and the module's line carries `fling=speed=… pitch=… yaw=…`.
+
+### The vacuum review fix (answered point)
+
+`NikitaMGrimm` found that the 0.2.13 vacuum *resolves and serializes every nearby drop before
+checking buffer space or the pickup budget*, and that the pin's SDK searches the level's
+dropped-item list for each resolution — so a full buffer beside a crowded pile burned a server tick.
+Fixed in `runtime::VacuumOp`, in the three steps the review asked for:
+
+1. **Room first.** `VacuumOp::start` answers `None` when the buffer can take nothing — full
+   (`isBufferFull`), at the Regulator Augment's amount (`spaceInRouter`), holding an item the filter
+   refuses, or an operation that moves no items — and `vacuum_from_ground` calls `entities_in`
+   only after that. A full buffer now resolves **zero** entities.
+2. **Bounded inspection.** `VACUUM_CANDIDATE_LIMIT` (**64**) caps how many entity handles one
+   operation inspects; a pile of a thousand drops costs 64 resolutions, not a thousand.
+3. **Stop at the budget.** `next_candidate` hands out an index only while the pickup budget
+   (`min(itemsPerTick, room)`) has items left, so the loop ends when the budget is filled instead of
+   scanning the rest of the list.
+
+**Red first, and the red is the defect.** The two new unit tests were run against a counterfactual
+that removes the room check and the budget stop (`slice14-test-red-vacuum.log`):
+
+```
+test runtime::tests::a_vacuum_with_no_room_in_its_buffer_resolves_no_dropped_item ... FAILED
+  left: 1
+ right: 0
+test runtime::tests::a_vacuum_operation_stops_reading_drops_once_its_budget_is_filled ... FAILED
+  left: 3
+ right: 1
+test result: FAILED. 80 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+and both pass on the shipped code. The first counts **resolutions**, not outcomes: the `sweep`
+helper resolves a candidate only when `next_candidate` hands out its index, exactly as the tick
+does, so `resolved == 0` is "the level was never asked". The second counts the same way: a budget of
+one stops after the first successful take, and 200 delayed drops cost exactly the cap.
+
+**In game** the new rig U6 (a vacuum whose buffer already holds 64 stone, with 64 stone in its
+reach) takes nothing and keeps its buffer: `U6 (vacuum with a full buffer): buffer 64, 64 left` —
+the early-exit branch on a real tick. The **cost** claim is the unit test's count, not a wall-clock
+number: `ctl` cannot isolate one operation's entity resolution from the 20-tick cadence and the item
+entities' own physics, so a `wait 600` timing between 8 and 64 drops measures the physics, not the
+scan. Said plainly rather than dressed up as evidence it is not.
+
+**Does the same pattern affect the flinger?** No. `CompiledFlingerModule` extends the dropper, which
+reads only its own buffer slot and spawns one item entity: there is no entity scan in it (the
+vacuum was the port's only module that looks at the world's entities), and `drop_from_buffer` always
+resolved nothing. The flinger's only world call is the one `spawn_item_with_motion`, as the dropper's
+was before it.
+
+### TDD, in the order the ruling asks for
+
+**Red, unit** — four tests written before any of the names existed (`slice14-test-red.log`, **63
+errors**, `cargo` exit 101): `a_flinger_module_is_a_dropper_with_its_own_flight_settings`,
+`a_flingers_item_leaves_along_its_aim_not_the_routers`,
+`a_flinger_modules_line_names_its_flight_settings` and the save round trip.
+
+```
+error[E0433]: cannot find type `Flinger` in this scope
+error[E0599]: no variant or associated item named `Flinger` found for enum `runtime::ModuleKind`
+error[E0599]: no method named `flinger` found for struct `runtime::Module`
+error: could not compile `modularrouters` (lib test) due to 63 previous errors
+```
+
+**Red, in game** — phase V written first and run on the shipped **0.2.13** game
+(`../_shared/evidence/modularrouters-e2e/e2e-red-flinger.log`): the item is not in that package, so
+the first install is refused and no assertion after it can run.
+
+```
+== V: the Flinger Module — the buffer thrown along the module's own aim ==
+  Unknown module 'modularrouters:flinger_module': modularrouters:puller_module_1, modularrouters:sender_module_1 or an item in #modularrouters:modules
+FAIL: expected the reply to say 'Modular Router: modularrouters:flinger_module in slot 0'
+EXIT:1
+```
+
+Then the minimal implementation, then the same phase green.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.14.log`)
+
+```
+== U: the Vacuum Module — it fills the buffer from the dropped items in its reach ==
+  U1 (vacuum, stone inside the reach): buffer 8, 0 left on the ground
+  U2 (vacuum, whitelist dirt):         buffer 0, 8 left (the filter)
+  U3 (one block past the reach):       buffer 0, 8 left (the reach)
+  U4 (buffer holds dirt):              buffer 0 stone / 8 dirt, 8 left
+  U5 (vacuum + regulator 3):           buffer 3, 5 left (the cap)
+  U6 (vacuum with a full buffer):      buffer 64, 64 left (nothing to collect)
+```
+
+```
+== V: the Flinger Module — the buffer thrown along the module's own aim ==
+  Modular Router: modularrouters:flinger_module in slot 0
+  Modular Router: slot 0 points front
+  Modular Router: module 0 flings at speed=1 pitch=0 yaw=0
+  module 0 at 145,100,0: modularrouters:flinger_module dir=front target=east fling=speed=1 pitch=0 yaw=0 filter blacklist none
+  module 0 at 153,100,0: modularrouters:flinger_module dir=front target=east fling=speed=0 pitch=0 yaw=0 filter blacklist none
+  Modular Router: slot 0 points up
+  module 0 at 161,100,0: modularrouters:flinger_module dir=up target=up fling=speed=1 pitch=0 yaw=0 filter blacklist none
+  Modular Router: module 0 flings at speed=1 pitch=90 yaw=0
+  module 0 at 169,100,0: modularrouters:flinger_module dir=front target=east fling=speed=1 pitch=90 yaw=0 filter blacklist none
+  Modular Router: module 0 flings at speed=1 pitch=0 yaw=60
+  module 0 at 177,100,0: modularrouters:flinger_module dir=front target=east fling=speed=1 pitch=0 yaw=60 filter blacklist none
+  Modular Router: slot 0 filter updated
+  V1 (flinger, speed 1 east):        buffer 0, 8 past the adjacent block (near 0)
+  V2 (the same at speed 0):          buffer 0, 8 in the adjacent block (far 0)
+  V3 (dir=up, base pitch 90):        buffer 0, 8 above the router (east 0)
+  V4 (pitch 90 on a horizontal aim): buffer 0, 8 adjacent (far 0)
+  V5 (yaw 60 on a horizontal aim):   buffer 0, 8 north of the row (in the row 0)
+  V6 (flinger, whitelist dirt):      buffer 8, 0 on the floor (the filter)
+```
+
+and the new recipe in the same run (`craft_check.py`, J1):
+
+```
+  flinger module: a dropper module and gunpowder, shapeless -> {"count": 1, "item": "modularrouters:flinger_module", "slot": 200}
+  flinger module with a stick where the gunpowder goes -> null
+  twenty-two carried recipes craft their declared id and count, the grid empties,
+  each distinctive ingredient is consumed, and fifteen wrong-ingredient controls craft nothing
+```
+
+**Why the assertions can fail, six ways.** (1) The 0.2.13 run above refuses the install (`EXIT:1`).
+(2) **V1 vs V2 is the speed**: the identical flinger at speed 0 leaves its eight in the adjacent
+block, so "past the adjacent block" is the velocity, not the spawn point. (3) **V3 is the
+direction/base pitch**: a `dir=up` flinger's eight end above the router with none east, which a
+`fling_velocity` that ignored the direction (always the router's facing) would not produce. (4)
+**V4 is the pitch setting**: a pitch-90 throw on a horizontal aim rises and falls back into the
+adjacent block, none in the far column. (5) **V5 is the yaw setting**: +60° swings the aim north, so
+the eight land north of the row and none in it. (6) **V6 is the filter**, shared with the dropper:
+the whitelist that names dirt keeps all eight. The unit tests drive the rest
+(`fling_velocity` for all four quadrants, speed scaling, zero, ±pitch, ±yaw, the router-facing base
+of a tilted vertical fling, the spawn point; `Flinger::validated` at every bound, at infinity and at
+NaN; `pick_drop` shared with the dropper; the save round trip and the readout), and U6's eight-stone
+rigs are the old U1–U5 assertions unchanged. `SELFTEST=1` fails phase A
+(`FAIL: SELFTEST: the target chest holds stone, so the check is alive`, `EXIT:1`) and the unmodded
+control exits 1 at phase A's `give` (`FAIL: give modularrouters:modular_router failed (is the
+package loaded in this game?)`, `EXIT:1`) — `e2e-selftest-0.2.14.log`, `e2e-control-0.2.14.log`.
+
+### A harness finding worth recording (V)
+
+**A `/fill` in an unloaded chunk is refused while `ctl command` still answers ok.** The flinger rigs
+put the floor out to x=200, and one run failed with *"the vacuum rig at 102,100,3 has no floor:
+minecraft:air"* — the arena's fills had run before those chunks loaded, so the scan found air and
+the vacuum was blamed. `arena()` now stands in the middle of the whole floor, waits for both the
+near and the far edge to report `loaded`, and asserts the far floor with a retry. Recorded because
+the symptom points at the module, not the harness.
+
+### Ladder (every compile step in a `build-slot.sh` lease, `BUILD_LOCAL=1` on the package steps)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | **63 errors** (`Flinger`, `ModuleKind::Flinger`, `flinger()`), exit 101 | `slice14-test-red.log` |
+| red, in game | `tools/e2e.sh` phase V on the **0.2.13** game | `Unknown module 'modularrouters:flinger_module' …`, `FAIL`, `EXIT:1` | `modularrouters-e2e/e2e-red-flinger.log` |
+| red, vacuum fix | the same tests against a counterfactual without the room check / budget stop | 3 failed (`left: 1 right: 0`, `left: 3 right: 1`) | `slice14-test-red-vacuum.log` |
+| tests | `cargo test --offline` | **83 passed**, 0 failed | `slice14-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice14-clippy.log` (= `sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice14-fmt.log` (= `sdk-fmt.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **151,564 B** | `slice14-build.log`, `slice14-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.14 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `151564 bytes, SHA-256 5f5bc461…7e5d`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, `EXIT:0` | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` | `sdk-fits-0b14f8a.log` |
+| recipe types | `python3 ports/tools/check-recipe-types.py modularrouters` | `modularrouters: ok`, exit 0 | (this session) |
+| package contents | `unzip -l modularrouters.hmod` | **126 entries** (was 121: the item definition, its model, the jar texture, the recipe and the item model definition), no `Cargo.lock` | the gate below |
+| data shape | `tools/data_shape.py modularrouters.hmod` | every carried recipe/loot file in the 26.3 dialect (J4) | in the leg's log |
+| manifest bump | `launcher-game.sh build modularrouters` (every `native-*` tag carrying this mod removed first) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.14** (`4a7e12ef…`), one library `libmodularrouters.so` | `modularrouters-e2e/game-build-0.2.14.log` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (83 tests, package = tree, no lock) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | **PASS** + `EXIT:0` | `modularrouters-e2e/e2e-launcher-0.2.14.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.14.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-control-0.2.14.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=61 ok=61`, 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.14: **151,564 B**, SHA-256 `5f5bc461a58c94e3829a17f68dfc80c9c7789f7f54b576c9643566cf21e57e5d`,
+126 entries, no `Cargo.lock`.
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -2405,19 +2612,20 @@ Every family the jar carries, against what this port does with it. `tested` name
 | **Sender Mk2 (buffer → the selected container, 24 blocks, 48 with augments)** | **tested** | E2E R — the target is selected by a sneak right-click with the module in hand (the chest does not open) and installed by right-click, `info` names it (`at=80,100,-10 range=24`), and **8 stone written into the buffer all reach that chest ten blocks away (chest 8, buffer 0)**; an **identical Mk2 with no target keeps all 8** although a chest stands ten blocks along its facing (the differential), a target **25** blocks out moves **nothing** at `range=24` and **exactly one item per operation** after one Range Up augment takes it to `range=25`; `runtime::tests` cover `sender2_range` (24/25/48/1), the kind and its 24/23 augment limits, `current_range`, the `in_range` boundary and the saved target, `support::tests` the readout and the save |
 | **Void Module (buffer → nothing: the filtered stack is destroyed, down to the module's regulation amount)** | **tested** | E2E Q — eight stone written into a router's buffer are **gone** after fifteen operations, the same module with a Regulator Augment and an amount of 3 stops at **3**, a Sender Mk1 with **no direction** (so no target) beside it keeps all **8** (the differential), and a Void whose whitelist names only dirt destroys **nothing** of the stone (the filter); its readout is `modularrouters:void_module dir=none target=none`, with `regulate=3 augments regulator` once augmented; an empty buffer is no operation; `runtime::tests` cover the count rule, the floor, the filter and the kind, `support::tests` the readout |
 | **Dropper Module (buffer → the adjacent block: the filtered stack is thrown as an item entity, down to the module's regulation amount)** | **tested** | E2E T — eight stone written into a router's buffer are **eight stone on the floor of the block north of it** after fifteen operations, the buffer **0**, with the drop block's column empty before the run (an explicit `kill` of the End's item entities, so the count is a difference); a **Void Module** beside it, the same module without a destination, destroys its eight and leaves **0** item entities (the differential); a dropper whose whitelist names dirt keeps all **8** and throws **0** (the filter); a dropper with a Regulator Augment and an amount of 3 keeps **3** and throws **5** (the floor); its readout is `modularrouters:dropper_module dir=front target=north`, with `regulate=3 augments regulator` once augmented; `runtime::tests` cover the count rule, the floor, the filter, the kind and `drop_point`'s spawn position (the target block's middle, 0.2 back toward the router), `support::tests` the readout |
-| **Vacuum Module (fills the buffer from the dropped items in a box six blocks around it, the buffer's own item deciding what it collects)** | **tested** | E2E U — eight stone summoned **six blocks north** of a `dir=none` vacuum (the box's edge) are **eight in the buffer and none left on the ground** after fifteen operations; the same rig with a whitelist naming dirt collects **none** of the eight (the filter); an identical vacuum at **seven** blocks collects **none** (the reach boundary, `vacuumBaseRange` 6); a vacuum whose buffer already holds **eight dirt** keeps its dirt and takes **none** of the stone (the identity rule: `isSameItemSameComponents`, not the first acceptable entity); and a vacuum with a Regulator Augment at **3** stops at three and leaves five (the amount is the buffer's **cap**); its readout is `modularrouters:vacuum_module dir=none target=none range=6`, with `regulate=3 augments regulator` once augmented; `runtime::tests` cover the count rule (one per operation, the whole stack, the shared budget over two stacks), the pickup delay, the filter, the buffered resource, the amount as a cap at 0/2/3 buffered, the max-stack ceiling and `items = 0`, `vacuum_centre`/`vacuum_box` and `vacuum_range` (6/12/1) with the module's 6/5 augment limits, `support::tests` the readout |
+| **Vacuum Module (fills the buffer from the dropped items in a box six blocks around it, the buffer's own item deciding what it collects)** | **tested** | E2E U — eight stone summoned **six blocks north** of a `dir=none` vacuum (the box's edge) are **eight in the buffer and none left on the ground** after fifteen operations; the same rig with a whitelist naming dirt collects **none** of the eight (the filter); an identical vacuum at **seven** blocks collects **none** (the reach boundary, `vacuumBaseRange` 6); a vacuum whose buffer already holds **eight dirt** keeps its dirt and takes **none** of the stone (the identity rule: `isSameItemSameComponents`, not the first acceptable entity); a vacuum with a Regulator Augment at **3** stops at three and leaves five (the amount is the buffer's **cap**); and **U6** a vacuum whose buffer already holds a **full 64 stone** takes **none** of the 64 stone in its reach (the operation resolves no entity at all: review `NikitaMGrimm`, 2026-11-23, fixed in 0.2.14); its readout is `modularrouters:vacuum_module dir=none target=none range=6`, with `regulate=3 augments regulator` once augmented; `runtime::tests` cover the count rule (one per operation, the whole stack, the shared budget over two stacks), the pickup delay, the filter, the buffered resource, the amount as a cap at 0/2/3 buffered, the max-stack ceiling and `items = 0`, the **zero resolutions** of a full buffer (counted, not inferred), the **pickup-budget stop** and the **64-candidate inspection cap**, `vacuum_centre`/`vacuum_box` and `vacuum_range` (6/12/1) with the module's 6/5 augment limits, `support::tests` the readout |
 | module install by right-click and by command | tested | E2E F (click), A/C (commands) |
 | placement facing | tested | E2E G (a real placement, not a setblock) |
 | state + persistence across relaunch | tested | E2E H |
-| the seven base module recipes (blank module, router, puller, sender, void, dropper, vacuum) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, wrong-ingredient controls empty; the Void Module's lava bucket leaves the vanilla bucket remainder, the Vacuum Module's hopper and ender eye are consumed, and a stick in either's place crafts nothing) |
+| the eight base module recipes (blank module, router, puller, sender, void, dropper, vacuum, flinger) | tested | E2E J1 (real table: id, count, grid emptied, ingredient consumed, wrong-ingredient controls empty; the Void Module's lava bucket leaves the vanilla bucket remainder, the Vacuum Module's hopper and ender eye are consumed, the Flinger Module's gunpowder is consumed, and a stick in any of their places crafts nothing) |
 | **the two Puller Mk2 and two Sender Mk2 recipes** (Mk1 + ender pearl → 1; four Mk1s + one pearl → 4; the same pair from the Sender Mk1) | **tested** | E2E J1 — each crafts its declared id and count in a real table, the grid empties, the pearl is consumed, and a stick in its place crafts nothing |
-| the nine module items (blank module, router, both pullers, both senders, void, dropper, vacuum) | tested | E2E J2 (give + read back, plus the one give in phase M, the one in phase R and T's install) |
+| the ten module items (blank module, router, both pullers, both senders, void, dropper, vacuum, flinger) | tested | E2E J2 (give + read back, plus the one give in phase M, the one in phase R, T's install and V's installs) |
 | the router's loot table | tested | E2E J3 (iron pickaxe, with a vanilla block as the differential) |
 | the `minecraft:mineable/pickaxe` + `needs_iron_tool` block tags | tested | E2E J3 (the router breaks with an iron pickaxe and drops) |
-| the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers, both senders, the void, the dropper and the vacuum module (M installs the Puller Mk2 and R the Sender Mk2 through it) |
+| the `modularrouters:modules` item tag (the module registry) | tested | E2E K (a world pack's tag makes `minecraft:stick` a module: installs by command and right-click; dirt and the blank module are not in it and are refused); the package's own tag lists both pullers, both senders, the void, the dropper, the vacuum and the flinger module (M installs the Puller Mk2 and R the Sender Mk2 through it) |
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
 | **`sender_module_3`** (a targeted sender with `isRangeLimited()` false: no distance limit, the target in the router's world *or* a permitted dimension) | `blocked(cross-level-capability)` — probed in game, not shipped | the probe (§ *Blocked: the Sender Module Mk3*): the Mk3 kind installs, its readout prints **no `range=`** where the Mk2's prints `range=24`, and a same-level target **60 blocks** out receives all eight — but a target in the Overworld is unreachable from an End tick: `{loaded: 1b, in_place: 0b, capability: 0b, merge: "stale"}`, buffer 8 kept; the Mk2 keeps its 8 too (the differential) and a blacklisted dimension is refused |
-| the other 14 modules (`flinger`, `placer`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| **Flinger Module (the Dropper Module with a velocity: the same filtered stack thrown the same way, given the module's saved speed, pitch and yaw)** | **tested** | E2E V — eight stone in a flinger's buffer with `dir=front` on an east-facing router at **speed 1** land as **eight stone in a column past the adjacent block** with the buffer **0**; the identical flinger at **speed 0** leaves them in the **adjacent** block, exactly as a dropper does (the speed differential); a `dir=up` flinger (base pitch 90°) throws them **above the router** with **none east**; a **pitch 90** throw on a horizontal aim goes straight up and back into the adjacent block with none in the far column; a **yaw 60** throw lands **north** of the row and none in it; and a flinger whose whitelist names dirt keeps all **8** and throws **0** (the filter); its readout is `modularrouters:flinger_module dir=front target=east fling=speed=1 pitch=0 yaw=0`; `runtime::tests` cover `fling_velocity` for every quadrant, the speed scale and zero, ±pitch, ±yaw, the router-facing base of a tilted up/down fling and the spawn point, `Flinger::validated` at every bound, at infinity and at NaN, the shared `pick_drop` rule, and the save round trip (an out-of-range save reads as the default triple); `support::tests` the readout and the save |
+| the other 13 modules (`placer`, `breaker`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
 | **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
 | the three upgrade recipes (blank, Speed, Stack) | tested | E2E J1 (real table: id, count, grid emptied, distinctive ingredient consumed, one wrong-ingredient control each) |
 | the three upgrade items | tested | E2E L (give + read back from the inventory) |
@@ -2512,7 +2720,19 @@ binary does not list the port's own tests.
    Augment's amount is the buffer's **cap**; range 6 → 12 with Range Augments. The
    **XP Vacuum** mode (the item's `VacuumSettings` and its XP collection types) is
    gap 3, and the Fast Pickup augment that would skip a fresh drop's delay is gap 3
-   too, so a delayed drop is skipped.
+   too, so a delayed drop is skipped. Its review finding (`NikitaMGrimm`,
+   2026-11-23) is **fixed in 0.2.14** as `runtime::VacuumOp`: the buffer's room is
+   checked before the level is read (a full buffer resolves no entity), one
+   operation inspects at most `VACUUM_CANDIDATE_LIMIT` (64) candidates, and the
+   loop stops when the pickup budget is filled (see *Slice 14*).
+   **`flinger_module` ships** (slice 14, E2E V): it is the Dropper Module with a
+   velocity — the same filtered stack thrown into the block its direction names,
+   given the module's saved `FlingerSettings` (speed 0–20, pitch −90–90, yaw ±60,
+   a triple outside any range reading as the default) and aimed by
+   `fling_velocity` (the direction's own quadrant as the base yaw, ±90° base pitch
+   for up/down with the router's facing as the base yaw); `/modularrouters fling
+   <pos> <slot> <speed> <pitch> <yaw>` and `fling=` in the readout stand in for
+   its settings screen (gap 4), and its particle puff and sound are gap 5.
    1b. **The Mk2s' other half**: the item-beam particles `CompiledPullerModule2`
    and `CompiledSenderModule2` add; a sneak right-click **in air** does not clear
    a target (the click hook is block-only; `/modularrouters target … none` does).

@@ -49,6 +49,7 @@ REGULATOR_AUGMENT = "modularrouters:regulator_augment"
 VOID_MODULE = "modularrouters:void_module"
 DROPPER_MODULE = "modularrouters:dropper_module"
 VACUUM_MODULE = "modularrouters:vacuum_module"
+FLINGER_MODULE = "modularrouters:flinger_module"
 
 
 def main() -> int:
@@ -401,6 +402,17 @@ def main() -> int:
         ],
         VACUUM_MODULE, 1, "minecraft:ender_eye",
     )
+    # The Flinger Module: the jar's shapeless recipe from a dropper module and
+    # gunpowder — the one recipe whose ingredient is this mod's own item.
+    check(
+        "flinger module: a dropper module and gunpowder, shapeless",
+        [(DROPPER_MODULE, 1), ("minecraft:gunpowder", 1)],
+        [
+            (DROPPER_MODULE, every(GRID["tl"])),
+            ("minecraft:gunpowder", every(GRID["mm"])),
+        ],
+        FLINGER_MODULE, 1, "minecraft:gunpowder",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -531,6 +543,11 @@ def main() -> int:
         [(BLANK, every(GRID["tl"])), ("minecraft:stick", every(GRID["mm"]))],
     )
     empty_control(
+        "flinger module with a stick where the gunpowder goes",
+        [(DROPPER_MODULE, 1), ("minecraft:stick", 1)],
+        [(DROPPER_MODULE, every(GRID["tl"])), ("minecraft:stick", every(GRID["mm"]))],
+    )
+    empty_control(
         "vacuum module with a stick where the ender eye goes",
         [(BLANK, 1), ("minecraft:hopper", 1), ("minecraft:stick", 1)],
         [
@@ -544,8 +561,8 @@ def main() -> int:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  twenty-one carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and fourteen wrong-ingredient controls craft nothing")
+    print("  twenty-two carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and fifteen wrong-ingredient controls craft nothing")
     return 0
 
 

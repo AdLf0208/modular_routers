@@ -27,12 +27,12 @@ use mod_api::{
 
 use crate::runtime::{
     AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, Dropped, FACE_NAMES, Face, Facing,
-    Filter, MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind, Pos, Relative, Slot, Stack, Target,
-    UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, buffer_after_pull, buffer_after_send,
-    drop_point, face_of_normal, facing_for_placement, facing_of_state, in_range, is_operation_tick,
-    items_per_operation, parse_pos, phase_of, pick_drop, pick_pull, pick_send, pick_vacuum,
-    pick_void, scan_positions, send_quota, side_towards, step, tick_rate, vacuum_box,
-    vacuum_centre,
+    Filter, Flinger, MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind, Pos, Relative, Slot,
+    Stack, Target, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, VacuumOp, buffer_after_pull,
+    buffer_after_send, drop_point, face_of_normal, facing_for_placement, facing_of_state,
+    fling_velocity, in_range, is_operation_tick, items_per_operation, parse_pos, phase_of,
+    pick_drop, pick_pull, pick_send, pick_void, scan_positions, send_quota, side_towards, step,
+    tick_rate, vacuum_box, vacuum_centre,
 };
 
 /// The router block (and its item).
@@ -69,6 +69,14 @@ const TARGET_DIMENSION: &str = "dim";
 /// `component_types`, because a patch naming a type the game does not know is not
 /// a value the item can hold.
 const TARGET_COMPONENT: &str = "modularrouters:target";
+/// A flinger's flight settings inside its `Modules` entry: upstream keeps
+/// `FlingerSettings` in the module item's `FLINGER_SETTINGS` component; this port
+/// keeps a module's settings in the router's save, so they ride beside `dir` and
+/// `filter` as `{speed, pitch, yaw}` floats.
+const MODULE_FLINGER: &str = "Flinger";
+const FLINGER_SPEED: &str = "speed";
+const FLINGER_PITCH: &str = "pitch";
+const FLINGER_YAW: &str = "yaw";
 
 /// The component id a targeted module carries its selected block in, for
 /// `Hooks::component_types` to register.
@@ -213,6 +221,38 @@ fn count(nbt: &Compound, name: &str) -> u32 {
     u32::try_from(int(nbt, name).unwrap_or(0).max(0)).unwrap_or(0)
 }
 
+/// An `f32` field of a saved compound: `Tag::Float` holds its IEEE bits.
+fn float(nbt: &Compound, name: &str) -> Option<f32> {
+    match nbt.get(&name.into()) {
+        Some(Tag::Float(bits)) => Some(f32::from_bits(*bits)),
+        _ => None,
+    }
+}
+
+/// A flinger's settings (`FlingerSettings`), read through
+/// [`Flinger::validated`] so a save outside the module's ranges behaves as the
+/// item's component does when it is read: the default triple, not a partial one.
+fn read_flinger(entry: &Compound) -> Flinger {
+    let Some(Tag::Compound(settings)) = entry.get(&MODULE_FLINGER.into()) else {
+        return Flinger::DEFAULT;
+    };
+    Flinger::new(
+        float(settings, FLINGER_SPEED).unwrap_or(0.0),
+        float(settings, FLINGER_PITCH).unwrap_or(0.0),
+        float(settings, FLINGER_YAW).unwrap_or(0.0),
+    )
+    .validated()
+}
+
+/// Write a flinger's settings into the module's saved entry.
+fn write_flinger(entry: &mut Compound, flinger: Flinger) {
+    let mut settings = Compound::new();
+    settings.insert(FLINGER_SPEED.into(), Tag::Float(flinger.speed.to_bits()));
+    settings.insert(FLINGER_PITCH.into(), Tag::Float(flinger.pitch.to_bits()));
+    settings.insert(FLINGER_YAW.into(), Tag::Float(flinger.yaw.to_bits()));
+    entry.insert(MODULE_FLINGER.into(), Tag::Compound(settings));
+}
+
 /// A target's fields, as both the module's save and the item's component spell them.
 fn target_entry(target: &Target) -> Compound {
     let mut entry = Compound::new();
@@ -312,7 +352,8 @@ fn read_modules(nbt: &Compound) -> Vec<Module> {
                 _ => Vec::new(),
             };
             let module = Module::new(kind, direction, Filter::new(whitelist, items))
-                .with_regulation(count(entry, MODULE_REGULATE));
+                .with_regulation(count(entry, MODULE_REGULATE))
+                .with_flinger(read_flinger(entry));
             let module = match read_target(entry) {
                 Some(target) => module.with_target(target),
                 None => module,
@@ -350,6 +391,9 @@ fn write_modules(nbt: &mut Compound, modules: &[Module]) {
                     MODULE_REGULATE.into(),
                     Tag::Int(i32::try_from(module.regulation()).unwrap_or(i32::MAX)),
                 );
+            }
+            if matches!(module.kind, ModuleKind::Flinger) {
+                write_flinger(&mut entry, module.flinger());
             }
             if let Some(target) = &module.target {
                 write_target(&mut entry, target);
@@ -807,24 +851,34 @@ fn void_from_buffer(
     true
 }
 
+/// One thrown stack's geometry: the direction it is thrown through (where it
+/// spawns) and the velocity it leaves with. A dropper's velocity is zero; a
+/// flinger's is [`fling_velocity`].
+#[derive(Debug, Clone, Copy)]
+struct Throw {
+    face: Face,
+    velocity: [f64; 3],
+}
+
 /// One Dropper operation: throw the filtered buffer stack into the block the
 /// module's direction names (`CompiledDropperModule.execute`).
 ///
 /// The count is the Void Module's rule (`pick_drop`), so the module's saved
 /// regulation amount is the buffer's floor. The stack is spawned just inside the
-/// adjacent block with **no velocity** — upstream's `setupItemVelocity` zeroes it,
-/// unlike a vanilla dropper's toss — and with a pickup delay of zero, which is what
-/// it has without the Pickup Delay augment (gap 3: a tagged one is carried
-/// inertly). The items leave the buffer only once the drop exists in the world, as
-/// upstream `peekBuffer`s and then `extractBuffer`s.
+/// adjacent block with the throw's velocity — a dropper's is zero, a flinger's is
+/// [`fling_velocity`] (`setupItemVelocity`, the one thing the subclass changes) —
+/// and with a pickup delay of zero, which is what it has without the Pickup Delay
+/// augment (gap 3: a tagged one is carried inertly). The items leave the buffer
+/// only once the drop exists in the world, as upstream `peekBuffer`s and then
+/// `extractBuffer`s.
 fn drop_from_buffer(
     host: &mut dyn ServerHost,
     level: LevelRef,
     pos: Pos,
-    face: Face,
     module: &Module,
     entity: &mut mod_api::ModBlockEntityView<'_>,
     items: u32,
+    throw: Throw,
 ) -> bool {
     let Some(stack) = entity
         .items
@@ -847,13 +901,13 @@ fn drop_from_buffer(
     if dropped.set_count(to_drop).is_err() {
         return false;
     }
-    let [x, y, z] = drop_point(pos, face);
+    let [x, y, z] = drop_point(pos, throw.face);
     // `LevelRef::spawn_item_with_motion` is the pin's handle for upstream's
     // `new ItemEntity(level, x, y, z, stack)` + `addFreshEntity`: the one public
     // route from a tick to a dropped item. A refused spawn (an unknown item, a
     // level not in place) is no operation and the buffer keeps its stack.
     if level
-        .spawn_item_with_motion(&mut *host, x, y, z, dropped, [0.0, 0.0, 0.0], 0)
+        .spawn_item_with_motion(&mut *host, x, y, z, dropped, throw.velocity, 0)
         .ok()
         .flatten()
         .is_none()
@@ -892,6 +946,15 @@ fn write_buffer(entity: &mut mod_api::ModBlockEntityView<'_>, stack: Option<Item
 /// (or any item while the buffer is empty) and passes the filter is fair game, one
 /// operation taking `items` of them in the order the world lists them.
 ///
+/// **The buffer is read first, and an operation with no room reads no entities at
+/// all.** Review (NikitaMGrimm, 2026-11-23) found the earlier version resolving
+/// and saving every nearby drop before asking whether the buffer had room; the
+/// pin's SDK resolves a dropped item by searching the level's list, so a full
+/// buffer beside a crowded pile burned a server tick. [`VacuumOp`] now answers
+/// whether there is anything to do before `entities_in` is called, hands out one
+/// candidate at a time while the pickup budget lasts, and stops after
+/// [`VACUUM_CANDIDATE_LIMIT`] inspections.
+///
 /// The writes are the tick's: the buffer is the block entity's own data, and the
 /// ground stacks go through `ItemEntityRef::set_stack` / `EntityRef::discard`,
 /// which the SDK stages with the tick's snapshot — so a rejected tick puts an item
@@ -909,6 +972,31 @@ fn vacuum_from_ground(
     let Some(range) = module.current_range() else {
         return false;
     };
+    // The buffer is the block entity's own data (no world lookup), and its room is
+    // the operation's first question: a full buffer, one at the module's amount,
+    // or one holding an item its filter refuses has nothing to collect, so the
+    // level is never queried.
+    let held = entity
+        .items
+        .get(BUFFER_SLOT)
+        .and_then(Option::as_ref)
+        .cloned();
+    let buffer = held.as_ref().map(|stack| saved_stack(&*host, stack));
+    // Only a non-empty buffer's own item can be collected, so its max stack is the
+    // one that decides `isBufferFull` — a registry read, not a world search.
+    let held_max = held
+        .as_ref()
+        .map(|stack| host.max_stack_size(stack.item()).unwrap_or(64))
+        .unwrap_or(0);
+    let Some(mut op) = VacuumOp::start(
+        buffer.as_ref(),
+        &module.filter,
+        module.regulation_amount(),
+        items,
+        held_max,
+    ) else {
+        return false;
+    };
     let centre = vacuum_centre(pos, module.direction.resolve(facing), range);
     let (min, max) = vacuum_box(centre, range);
     // The ticking level is the one in place, so its entity list resolves (a parked
@@ -916,59 +1004,32 @@ fn vacuum_from_ground(
     let Some(seen) = level.entities_in(&*host, min, max) else {
         return false;
     };
-    let mut dropped = Vec::new();
-    let mut refs = Vec::new();
-    let mut keys = BTreeMap::new();
-    for entity_ref in seen {
+    // Resolve a candidate only when the operation asks for its index: the pickup
+    // budget and the inspection cap both end this loop, not the list's length.
+    let mut first_taken = None;
+    while let Some(index) = op.next_candidate(seen.len()) {
+        let entity_ref = seen[index];
         let Some(item) = host.item_entity(entity_ref) else {
             continue;
         };
         let Some(stack) = item.stack(&*host) else {
             continue;
         };
-        keys.insert(
-            stack.item().id(&*host),
-            host.max_stack_size(stack.item()).unwrap_or(64),
-        );
         let delayed = item.pickup_delay(&*host).is_some_and(|delay| delay > 0);
-        dropped.push(Dropped {
+        let dropped = Dropped {
             stack: saved_stack(&*host, &stack),
             delayed,
-        });
-        refs.push((entity_ref, item, stack));
-    }
-    if dropped.is_empty() {
-        return false;
-    }
-    let held = entity
-        .items
-        .get(BUFFER_SLOT)
-        .and_then(Option::as_ref)
-        .cloned();
-    let buffer = held.as_ref().map(|stack| saved_stack(&*host, stack));
-    let max_for = |item: &str| keys.get(item).map_or(64, |max| *max);
-    let plan = pick_vacuum(
-        buffer.as_ref(),
-        &dropped,
-        &module.filter,
-        items,
-        module.regulation_amount(),
-        max_for,
-    );
-    if !plan.worked() {
-        return false;
-    }
-    // The ground first: a stack that ran out leaves the world, one that kept items
-    // is written back short, and a refused write is no operation (the buffer is not
-    // credited for an item the world did not give up).
-    for (index, (_, item, stack)) in refs.iter().enumerate() {
-        let taken = plan.taken(index);
-        if taken == 0 {
+        };
+        let item_max = host.max_stack_size(stack.item()).unwrap_or(64);
+        let Some(taken) = op.offer(index, &dropped, &module.filter, item_max) else {
             continue;
-        }
-        let left = dropped[index].stack.count.saturating_sub(taken);
+        };
+        // The ground first: a stack that ran out leaves the world, one that kept
+        // items is written back short, and a refused write is no operation (the
+        // buffer is not credited for an item the world did not give up).
+        let left = dropped.stack.count.saturating_sub(taken);
         if left == 0 {
-            if !refs[index].0.discard(&mut *host) {
+            if !entity_ref.discard(&mut *host) {
                 return false;
             }
         } else {
@@ -983,17 +1044,20 @@ fn vacuum_from_ground(
                 return false;
             }
         }
+        if first_taken.is_none() {
+            first_taken = Some(stack);
+        }
+    }
+    let plan = op.finish();
+    if !plan.worked() {
+        return false;
     }
     let Some(after) = plan.buffer else {
         return false;
     };
     // The buffer keeps the stack object it already held (its components travel with
     // it); when it was empty, the item it now holds is the one that was taken.
-    let Some(mut kept) = held.or_else(|| {
-        plan.takes
-            .first()
-            .and_then(|(index, _)| refs.get(*index).map(|(_, _, stack)| stack.clone()))
-    }) else {
+    let Some(mut kept) = held.or(first_taken) else {
         return false;
     };
     if kept.set_count(after.count).is_err() {
@@ -1128,9 +1192,40 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
                         send(host, level, pos, face, module, &mut event.entity, items)
                     }
                     // A dropper throws its buffer into the block its direction
-                    // names, so unlike a void it has no target without one.
-                    ModuleKind::Dropper => {
-                        drop_from_buffer(host, level, pos, face, module, &mut event.entity, items)
+                    // names, so unlike a void it has no target without one; a
+                    // flinger is the same throw with the module's own velocity.
+                    ModuleKind::Dropper => drop_from_buffer(
+                        host,
+                        level,
+                        pos,
+                        module,
+                        &mut event.entity,
+                        items,
+                        Throw {
+                            face,
+                            velocity: [0.0, 0.0, 0.0],
+                        },
+                    ),
+                    ModuleKind::Flinger => {
+                        let fling = module.flinger();
+                        drop_from_buffer(
+                            host,
+                            level,
+                            pos,
+                            module,
+                            &mut event.entity,
+                            items,
+                            Throw {
+                                face,
+                                velocity: fling_velocity(
+                                    face,
+                                    facing,
+                                    fling.yaw,
+                                    fling.pitch,
+                                    fling.speed,
+                                ),
+                            },
+                        )
                     }
                     _ => false,
                 }
@@ -1724,6 +1819,18 @@ fn module_line(
         Some(range) => format!(" range={range}"),
         None => String::new(),
     };
+    // A flinger's flight settings decide where its item goes, so the line names
+    // them the way the module screen's three fields would.
+    let fling = match module.kind {
+        ModuleKind::Flinger => {
+            let fling = module.flinger();
+            format!(
+                " fling=speed={} pitch={} yaw={}",
+                fling.speed, fling.pitch, fling.yaw
+            )
+        }
+        _ => String::new(),
+    };
     // `CompiledModule.getItemsPerTick`: a module holding Stack Augments moves a
     // count of its own, so say how many — beside the slots that decided it. A
     // module without one moves the router's count, which the summary line names.
@@ -1753,7 +1860,7 @@ fn module_line(
         format!(" augments {}", list.join(","))
     };
     format!(
-        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{items}{regulate}{augments} filter {mode} {list}",
+        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{fling}{items}{regulate}{augments} filter {mode} {list}",
         pos[0],
         pos[1],
         pos[2],
@@ -1817,7 +1924,7 @@ pub(crate) fn declare_commands(commands: &mut Vec<Command>) {
 /// player-chosen coordinates — and `install`/`upgrade`/`augment` add to it with no
 /// item cost — so they are gamemaster tools (level 2), as `/data` is; `info` is a
 /// readout.
-pub(crate) fn usages() -> [(&'static str, u8); 10] {
+pub(crate) fn usages() -> [(&'static str, u8); 11] {
     [
         ("modularrouters info <pos:block_pos>", 0),
         (
@@ -1850,6 +1957,10 @@ pub(crate) fn usages() -> [(&'static str, u8); 10] {
             2,
         ),
         (
+            "modularrouters fling <pos:block_pos> <slot:integer> <speed:number> <pitch:number> <yaw:number>",
+            2,
+        ),
+        (
             "modularrouters target <pos:block_pos> <slot:integer> <at:text>",
             2,
         ),
@@ -1876,6 +1987,14 @@ fn word<'a>(invocation: &'a mod_api::CommandInvocation, name: &str) -> Option<&'
 fn integer(invocation: &mod_api::CommandInvocation, name: &str) -> Option<i32> {
     match invocation.argument(name)? {
         CommandArgumentValue::Integer(value) => Some(*value),
+        _ => None,
+    }
+}
+
+/// A `number` argument (`brigadier:double`), as the pin parses it.
+fn number(invocation: &mod_api::CommandInvocation, name: &str) -> Option<f64> {
+    match invocation.argument(name)? {
+        CommandArgumentValue::Number(value) => Some(*value),
         _ => None,
     }
 }
@@ -1976,6 +2095,19 @@ pub(crate) fn run_command(host: &mut dyn ServerHost, event: &mut RunModCommandEv
                 return Flow::Cancel;
             };
             let line = set_regulation(host, level, pos, slot, amount);
+            say(host, &line);
+        }
+        ["fling"] => {
+            let (Some(slot), Some(speed), Some(pitch), Some(yaw)) = (
+                integer(invocation, "slot"),
+                number(invocation, "speed"),
+                number(invocation, "pitch"),
+                number(invocation, "yaw"),
+            ) else {
+                say(host, USAGE);
+                return Flow::Cancel;
+            };
+            let line = set_fling(host, level, pos, slot, speed, pitch, yaw);
             say(host, &line);
         }
         ["target"] => {
@@ -2399,6 +2531,55 @@ fn set_regulation(
     }
 }
 
+/// `/modularrouters fling`: save a Flinger Module's speed, pitch and yaw — the
+/// module screen's three fields, which this port replaces with a command and the
+/// readout.
+///
+/// A number outside the module's own ranges is `FlingerSettings.validate`: the
+/// whole triple falls back to the default (0, 0, 0), never keeping the fields that
+/// fit, and the reply says which ranges were asked for.
+fn set_fling(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    slot: i32,
+    speed: f64,
+    pitch: f64,
+    yaw: f64,
+) -> String {
+    let Ok(slot) = usize::try_from(slot) else {
+        return "Usage: /modularrouters fling <x> <y> <z> <slot> <speed> <pitch> <yaw>".to_string();
+    };
+    // The component stores `f32`s; the command's `number` is a double.
+    let asked = Flinger::new(speed as f32, pitch as f32, yaw as f32);
+    let saved = asked.validated();
+    let mut found = false;
+    let mut is_flinger = false;
+    let applied = edit_module(host, level, pos, slot, |module| {
+        found = true;
+        if !matches!(module.kind, ModuleKind::Flinger) {
+            return false;
+        }
+        is_flinger = true;
+        module.set_flinger(saved);
+        true
+    });
+    if applied {
+        format!(
+            "Modular Router: module {slot} flings at speed={} pitch={} yaw={}",
+            saved.speed, saved.pitch, saved.yaw
+        )
+    } else if !found {
+        format!("Modular Router: no module in slot {slot}")
+    } else if is_flinger {
+        // The write answered false although the module is a flinger: the only way
+        // that happens is the settings were already exactly these.
+        format!("Modular Router: module {slot} already flings at those settings")
+    } else {
+        format!("Modular Router: slot {slot} is not a flinger module")
+    }
+}
+
 /// An item argument without a namespace is a vanilla item, as the GUI's list is.
 fn namespaced(item: &str) -> String {
     if item.contains(':') {
@@ -2407,7 +2588,6 @@ fn namespaced(item: &str) -> String {
         format!("minecraft:{item}")
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2423,7 +2603,7 @@ mod tests {
     #[test]
     fn the_readout_is_open_and_every_mutation_is_operator_gated() {
         let usages = usages();
-        assert_eq!(usages.len(), 10);
+        assert_eq!(usages.len(), 11);
         for (usage, level) in usages {
             let expected = if usage.contains(" info ") { 0 } else { 2 };
             assert_eq!(level, expected, "{usage}");
@@ -3193,5 +3373,85 @@ mod tests {
             "module 0 at 102,100,2: modularrouters:vacuum_module dir=front target=north \
              range=6 filter blacklist none"
         );
+    }
+
+    #[test]
+    fn a_flinger_modules_line_names_its_flight_settings() {
+        // The flinger's settings are the module screen's three fields, which this
+        // port replaces with a command and the readout; they are part of the line
+        // because they decide where the item goes.
+        let module = Module::new(ModuleKind::Flinger, Relative::Front, Filter::any());
+        let lines = describe(
+            [145, 100, 0],
+            Facing::East,
+            false,
+            std::slice::from_ref(&module),
+            None,
+            0,
+            0,
+        );
+        assert_eq!(
+            lines[1],
+            "module 0 at 145,100,0: modularrouters:flinger_module dir=front target=east \
+             fling=speed=0 pitch=0 yaw=0 filter blacklist none"
+        );
+        let configured = module.with_flinger(Flinger::new(1.0, 0.0, 0.0));
+        let lines = describe(
+            [145, 100, 0],
+            Facing::East,
+            false,
+            std::slice::from_ref(&configured),
+            None,
+            0,
+            0,
+        );
+        assert_eq!(
+            lines[1],
+            "module 0 at 145,100,0: modularrouters:flinger_module dir=front target=east \
+             fling=speed=1 pitch=0 yaw=0 filter blacklist none"
+        );
+        // A module that is not a flinger keeps the line it always had.
+        let dropper = Module::new(ModuleKind::Dropper, Relative::Front, Filter::any());
+        let lines = describe([145, 100, 0], Facing::East, false, &[dropper], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 145,100,0: modularrouters:dropper_module dir=front target=east \
+             filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn a_flingers_settings_round_trip_through_the_saved_compound() {
+        let flinger = Module::new(ModuleKind::Flinger, Relative::Front, Filter::any())
+            .with_flinger(Flinger::new(1.5, -30.0, 60.0));
+        let mut nbt = Compound::new();
+        write_modules(&mut nbt, std::slice::from_ref(&flinger));
+        let read = read_modules(&nbt);
+        assert_eq!(
+            read,
+            vec![flinger],
+            "the flight settings are part of the save"
+        );
+
+        // A saved triple outside the ranges is upstream's `FlingerSettings.validate`:
+        // the module reads as the default, all three fields, not the ones that fit.
+        let mut entry = Compound::new();
+        entry.insert(MODULE_ITEM.into(), Tag::String(ModuleKind::FLINGER.into()));
+        let mut settings = Compound::new();
+        settings.insert(FLINGER_SPEED.into(), Tag::Float(1.0f32.to_bits()));
+        settings.insert(FLINGER_PITCH.into(), Tag::Float(91.0f32.to_bits()));
+        settings.insert(FLINGER_YAW.into(), Tag::Float(0.0f32.to_bits()));
+        entry.insert(MODULE_FLINGER.into(), Tag::Compound(settings));
+        let mut nbt = Compound::new();
+        nbt.insert(KEY_MODULES.into(), Tag::List(vec![Tag::Compound(entry)]));
+        let read = read_modules(&nbt);
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].flinger(), Flinger::DEFAULT);
+
+        // An entry with no settings at all is the default, as the item component is.
+        let bare = Module::new(ModuleKind::Flinger, Relative::Front, Filter::any());
+        let mut nbt = Compound::new();
+        write_modules(&mut nbt, std::slice::from_ref(&bare));
+        assert_eq!(read_modules(&nbt), vec![bare]);
     }
 }

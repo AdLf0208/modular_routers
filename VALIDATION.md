@@ -1,5 +1,81 @@
 # Modular Routers — validation ladder
 
+## 0.2.14 — the Flinger Module and the vacuum's review fix (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 14: `CompiledFlingerModule`
+extends `CompiledDropperModule` and overrides **only** `setupItemVelocity`, so the operation, filter,
+count and regulation amount are the shipped dropper's and the new work is the module's saved
+`FlingerSettings` (speed 0–20, pitch −90–90, yaw −60–60; any field out of range or infinite resets
+**all three**), the pure `fling_velocity(face, router_facing, yaw, pitch, speed)` (`x =
+cos(yaw)·cos(pitch)`, `y = sin(pitch)`, `z = −sin(yaw)·cos(pitch)`, scaled by the speed, with the
+direction's own quadrant as the base yaw and ±90° base pitch for up/down, whose base yaw is the
+router's facing), and `/modularrouters fling <pos> <slot> <speed> <pitch> <yaw>`. The settings are
+saved as `Flinger: {speed, pitch, yaw}` in the module's `Modules` entry (this port keeps module
+settings in the router's save) and read back through `Flinger::validated`; the readout names them
+(`fling=speed=1 pitch=0 yaw=0`).
+
+The same version carries the review of the staged 0.2.13 (`NikitaMGrimm`, 2026-11-23): the vacuum
+resolved and serialized every nearby drop before checking buffer space or the pickup budget. Fixed
+in `runtime::VacuumOp` — room checked first (a full buffer resolves no entity), at most
+`VACUUM_CANDIDATE_LIMIT` (64) candidates inspected per operation, and the loop stops when the pickup
+budget is filled. The flinger does **not** share the pattern (it extends the dropper, which reads
+only its own buffer slot and spawns one entity; the vacuum was the port's only entity-scanning
+module).
+
+Every compile step ran inside a `ports/tools/build-slot.sh` lease (`BUILD_LOCAL=1` only on the
+package steps; `cargo test`/`clippy`/`fmt` forwarded to the remote runner) with
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the names existed (red) | **63 errors** (`Flinger`, `ModuleKind::Flinger`, `flinger()`), `could not compile … (lib test)`, exit 101 | `slice14-test-red.log` |
+| 2 | `tools/e2e.sh` phase V on the **0.2.13** package (red) | `Unknown module 'modularrouters:flinger_module'`, `FAIL: expected the reply to say 'Modular Router: modularrouters:flinger_module in slot 0'`, `EXIT:1` | `modularrouters-e2e/e2e-red-flinger.log` |
+| 3 | the new vacuum tests against a counterfactual without the room check / budget stop (red) | 3 failed: `left: 1 right: 0`, `left: 3 right: 1`, `left: 1 right: 0` | `slice14-test-red-vacuum.log` |
+| 4 | `cargo test --offline` | **83 passed**, 0 failed | `slice14-test.log` (= `sdk-test.log`) |
+| 5 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice14-clippy.log` (= `sdk-clippy.log`) |
+| 6 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice14-fmt.log` (= `sdk-fmt.log`) |
+| 7 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **151,564 B**, sha256 `5f5bc461…7e5d` | `slice14-build.log`, `slice14-build-second.log` |
+| 8 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.14 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `151564 bytes, SHA-256 5f5bc461a58c94e3829a17f68dfc80c9c7789f7f54b576c9643566cf21e57e5d`, **exit 0** | `sdk-check.log` |
+| 9 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 10 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 11 | `python3 ports/tools/check-recipe-types.py modularrouters` | `modularrouters: ok`, exit 0 | (this session) |
+| 12 | `unzip -l modularrouters.hmod` | **126 entries** (121 + the item definition, item model, jar texture, recipe and model), no `Cargo.lock` | the gate below |
+| 13 | `tools/data_shape.py modularrouters.hmod` | every carried recipe/loot file in the 26.3 dialect (also J4 in the leg) | in the leg's log |
+| 14 | `launcher-game.sh build modularrouters` (manifest 0.2.13 → 0.2.14, every `native-*` tag carrying this mod removed first; rebuilt once after a README-only edit so the export is the delivered tree) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.14** (`4a7e12ef12cb`), one library `libmodularrouters.so`, the flinger's recipe present | `modularrouters-e2e/game-build-0.2.14.log` |
+| 15 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, K, L–T, **U (incl. U6)**, **V (V1–V6)**, J1–J4 (126-entry package `5f5bc461…`) | `modularrouters-e2e/e2e-launcher-0.2.14.log` |
+| 16 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.14.log` |
+| 17 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.14.log` |
+| 18 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=61 ok=61`, 0 missing/bad exit lines | — |
+| 19 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (83 tests, package = tree, no lock) | `verify-sdk-package.log` |
+
+### What phase V proves (parity rule)
+
+Six flinger rigs at x = 145, 153, 161, 169, 177, 185 on an east-facing row (eight blocks apart: a
+speed-1 fling carries about six blocks before it settles), eight stone written into each buffer after
+every module is installed and configured, then fifteen operations:
+
+| Rig | Module | Stone after 300 ticks |
+|---|---|---|
+| V1 | `dir=front` (east), speed 1, pitch 0, yaw 0 | **8** in the column past the adjacent block, **0** beside it, buffer **0** |
+| V2 | the same, speed 0 | **8** in the adjacent block, **0** past it, buffer **0** (the speed differential) |
+| V3 | `dir=up` (base pitch 90°), speed 1 | **8** above the router, **0** east, buffer **0** |
+| V4 | `dir=front` (east), speed 1, pitch 90 | **8** in the adjacent block, **0** in the far column (the pitch) |
+| V5 | `dir=front` (east), speed 1, yaw 60 | **8** north of the row, **0** in it (the yaw) |
+| V6 | `dir=front` (east), speed 1, whitelist dirt | buffer **8**, **0** on the floor (the filter) |
+
+### What phase U6 proves (the review fix, in game)
+
+A vacuum whose buffer already holds a full 64 stone, with 64 stone summoned in its reach, ends with
+`buffer 64, 64 left` — the operation takes nothing, and (per the unit test) resolves no entity at
+all. The **cost** claim is the unit test's counted `resolved` value, not a wall-clock measurement:
+`ctl` cannot separate one operation's entity resolution from the 20-tick cadence and the dropped
+items' own physics. The unit tests `a_vacuum_with_no_room_in_its_buffer_resolves_no_dropped_item`
+and `a_vacuum_operation_stops_reading_drops_once_its_budget_is_filled` drive the same loop the tick
+runs (`VacuumOp::start` → `next_candidate` → `offer`) and fail against a counterfactual without the
+fix (`slice14-test-red-vacuum.log`).
+
 ## 0.2.13 — the Vacuum Module (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

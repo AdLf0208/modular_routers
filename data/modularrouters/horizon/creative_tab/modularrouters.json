@@ -18,6 +18,7 @@
     "modularrouters:regulator_augment",
     "modularrouters:vacuum_module",
     "modularrouters:void_module",
-    "modularrouters:dropper_module"
+    "modularrouters:dropper_module",
+    "modularrouters:flinger_module"
   ]
 }

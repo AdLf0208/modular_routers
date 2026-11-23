@@ -58,6 +58,18 @@ pub const PULLER_MAX_RANGE: i32 = 24;
 pub const VACUUM_BASE_RANGE: i32 = 6;
 /// `CommonConfig.module.vacuumMaxRange`: up to 12 with Range Augments.
 pub const VACUUM_MAX_RANGE: i32 = 12;
+/// `FlingerModule.MIN_SPEED` / `MAX_SPEED`: the speed a flinger's item leaves
+/// with, in blocks per tick (`Vec3.scale(speed)` on the unit aim vector).
+pub const FLINGER_MIN_SPEED: f32 = 0.0;
+pub const FLINGER_MAX_SPEED: f32 = 20.0;
+/// `FlingerModule.MIN_PITCH` / `MAX_PITCH`: degrees added to the throw's base
+/// pitch (0 for a horizontal direction, ±90 for up/down).
+pub const FLINGER_MIN_PITCH: f32 = -90.0;
+pub const FLINGER_MAX_PITCH: f32 = 90.0;
+/// `FlingerModule.MIN_YAW` / `MAX_YAW`: degrees added to the direction's own
+/// quadrant (±60 of the module's aim, so a fling cannot be aimed backwards).
+pub const FLINGER_MIN_YAW: f32 = -60.0;
+pub const FLINGER_MAX_YAW: f32 = 60.0;
 /// `AugmentItem.SLOTS`: every module has four augment slots.
 pub const AUGMENT_SLOTS: usize = 4;
 /// One Range Up/Down augment moves a module's reach one block, as
@@ -299,6 +311,10 @@ pub enum ModuleKind {
     /// `modularrouters:vacuum_module`: fills the buffer from the dropped items in
     /// the box it sweeps.
     Vacuum,
+    /// `modularrouters:flinger_module`: the Dropper Module with a velocity — the
+    /// same filtered stack thrown into the block its direction names, given the
+    /// module's saved speed, pitch and yaw.
+    Flinger,
     /// A module this port does not implement, carried by its id.
     Registered(String),
 }
@@ -311,6 +327,7 @@ impl ModuleKind {
     pub const VOID: &'static str = "modularrouters:void_module";
     pub const DROPPER: &'static str = "modularrouters:dropper_module";
     pub const VACUUM: &'static str = "modularrouters:vacuum_module";
+    pub const FLINGER: &'static str = "modularrouters:flinger_module";
 
     /// The kind an item id names: one of the modules this port runs, or a
     /// registered kind that keeps the id unchanged.
@@ -324,6 +341,7 @@ impl ModuleKind {
             Self::VOID => ModuleKind::Void,
             Self::DROPPER => ModuleKind::Dropper,
             Self::VACUUM => ModuleKind::Vacuum,
+            Self::FLINGER => ModuleKind::Flinger,
             other => ModuleKind::Registered(other.to_string()),
         }
     }
@@ -340,6 +358,7 @@ impl ModuleKind {
                 | ModuleKind::Void
                 | ModuleKind::Dropper
                 | ModuleKind::Vacuum
+                | ModuleKind::Flinger
         )
     }
 
@@ -370,6 +389,7 @@ impl ModuleKind {
             ModuleKind::Void => Self::VOID,
             ModuleKind::Dropper => Self::DROPPER,
             ModuleKind::Vacuum => Self::VACUUM,
+            ModuleKind::Flinger => Self::FLINGER,
             ModuleKind::Registered(item) => item,
         }
     }
@@ -386,6 +406,7 @@ impl ModuleKind {
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
+            | ModuleKind::Flinger
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -401,6 +422,7 @@ impl ModuleKind {
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
+            | ModuleKind::Flinger
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -504,7 +526,7 @@ impl Filter {
 /// A module installed in one slot: what it is, where it points, what it takes,
 /// the block a targeted one selected, the augments in its four slots and the
 /// amount a Regulator Augment makes it leave in the source.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     pub kind: ModuleKind,
     pub direction: Relative,
@@ -516,6 +538,9 @@ pub struct Module {
     /// `ModuleSettings.regulatorAmount`: what a Regulator Augment makes the
     /// operation leave in the source. Zero, and inert without the augment.
     regulation: u32,
+    /// `FlingerSettings`: the flight settings of a Flinger Module, carried by
+    /// every module and read only by that kind.
+    flinger: Flinger,
 }
 
 impl Module {
@@ -527,7 +552,28 @@ impl Module {
             target: None,
             augments: Augments::default(),
             regulation: 0,
+            flinger: Flinger::DEFAULT,
         }
+    }
+
+    /// The module's saved flight settings (`FlingerSettings`); the default
+    /// (0, 0, 0) on a module that is not a flinger, where they are inert.
+    #[must_use]
+    pub fn flinger(&self) -> Flinger {
+        self.flinger
+    }
+
+    /// The same module saving `flinger` — the validated triple, as
+    /// [`Flinger::validated`] leaves it.
+    #[must_use]
+    pub fn with_flinger(mut self, flinger: Flinger) -> Self {
+        self.flinger = flinger.validated();
+        self
+    }
+
+    /// Set the saved flight settings (the module screen's three fields).
+    pub fn set_flinger(&mut self, flinger: Flinger) {
+        self.flinger = flinger.validated();
     }
 
     /// The same module with `target` selected on it.
@@ -627,6 +673,7 @@ impl Module {
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
+            | ModuleKind::Flinger
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -1435,6 +1482,115 @@ pub fn drop_point(from: Pos, face: Face) -> [f64; 3] {
     ]
 }
 
+/// A Flinger Module's saved flight settings (`FlingerSettings`): how fast its
+/// item leaves, and the pitch and yaw offsets added to the direction's own aim.
+///
+/// The field order and ranges are `FlingerModule`'s (`speed` 0–20, `pitch`
+/// −90–90, `yaw` −60–60); a module with the default (0, 0, 0) throws exactly as a
+/// Dropper does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Flinger {
+    /// `FlingerSettings.speed`, in blocks per tick.
+    pub speed: f32,
+    /// `FlingerSettings.pitch`, degrees in −90–90 added to the base pitch.
+    pub pitch: f32,
+    /// `FlingerSettings.yaw`, degrees in −60–60 added to the base yaw.
+    pub yaw: f32,
+}
+
+impl Flinger {
+    /// `FlingerSettings.DEFAULT`: no push and no offset, a dropper's throw.
+    pub const DEFAULT: Flinger = Flinger {
+        speed: 0.0,
+        pitch: 0.0,
+        yaw: 0.0,
+    };
+
+    /// The settings as written, before [`Flinger::validated`] is applied.
+    #[must_use]
+    pub const fn new(speed: f32, pitch: f32, yaw: f32) -> Self {
+        Self { speed, pitch, yaw }
+    }
+
+    /// Whether every setting is inside its range. `FlingerSettings.validateSetting`
+    /// is `val >= min && val <= max && !Float.isInfinite(val)`, so a NaN is out of
+    /// range too (both comparisons are false).
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        in_flinger_range(self.speed, FLINGER_MIN_SPEED, FLINGER_MAX_SPEED)
+            && in_flinger_range(self.pitch, FLINGER_MIN_PITCH, FLINGER_MAX_PITCH)
+            && in_flinger_range(self.yaw, FLINGER_MIN_YAW, FLINGER_MAX_YAW)
+    }
+
+    /// `FlingerSettings.validate`: a triple with **any** field out of range is not
+    /// used at all — the module falls back to `DEFAULT` for all three, never
+    /// keeping the two that fit.
+    #[must_use]
+    pub fn validated(self) -> Self {
+        if self.is_valid() { self } else { Self::DEFAULT }
+    }
+}
+
+impl Default for Flinger {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// One fling setting inside its range (`FlingerSettings.validateSetting`).
+fn in_flinger_range(value: f32, min: f32, max: f32) -> bool {
+    value >= min && value <= max && value.is_finite()
+}
+
+/// `yawFromFacing`: the base yaw a direction's quadrant gives, in degrees —
+/// east 0 (the +X axis), north 90 (−Z), west 180, south 270. A vertical face has
+/// no quadrant of its own and reads 0, as upstream's `default -> 0` does.
+#[must_use]
+pub fn yaw_of_face(face: Face) -> f32 {
+    match face {
+        EAST => 0.0,
+        NORTH => 90.0,
+        WEST => 180.0,
+        SOUTH => 270.0,
+        _ => 0.0,
+    }
+}
+
+/// The velocity a flinger gives its item — `CompiledFlingerModule.setupItemVelocity`.
+///
+/// `face` is the module's absolute direction (the block the item is thrown into),
+/// and `router_facing` is the router block's own facing: upstream's base yaw for
+/// an **up or down** throw is `yawFromFacing(routerFacing)`, so a tilted vertical
+/// fling leans the way its router points, where a horizontal throw's base yaw is
+/// the direction's own quadrant. The base pitch is `±90` for up/down and 0
+/// otherwise; the settings are added to both, and the unit aim is scaled by the
+/// speed. `x = cos(yaw)·cos(pitch)`, `y = sin(pitch)`,
+/// `z = −sin(yaw)·cos(pitch)` — east is +X and north is −Z.
+#[must_use]
+pub fn fling_velocity(
+    face: Face,
+    router_facing: Facing,
+    yaw: f32,
+    pitch: f32,
+    speed: f32,
+) -> [f64; 3] {
+    let (base_pitch, base_yaw) = match face {
+        UP | DOWN => (
+            if face == UP { 90.0 } else { -90.0 },
+            yaw_of_face(router_facing.face()),
+        ),
+        _ => (0.0, yaw_of_face(face)),
+    };
+    let yaw = f64::from(base_yaw + yaw).to_radians();
+    let pitch = f64::from(base_pitch + pitch).to_radians();
+    let speed = f64::from(speed);
+    [
+        yaw.cos() * pitch.cos() * speed,
+        pitch.sin() * speed,
+        -(yaw.sin() * pitch.cos()) * speed,
+    ]
+}
+
 /// One dropped item a Vacuum Module can see, as its tick reads it: the stack the
 /// item entity holds, and whether it still carries a pickup delay.
 ///
@@ -1536,8 +1692,23 @@ pub fn vacuum_box(centre: Pos, range: i32) -> ([f64; 3], [f64; 3]) {
     )
 }
 
-/// What one Vacuum operation collects out of the dropped items it can see
-/// (`CompiledVacuumModule.handleItemMode`).
+/// The most entity handles one Vacuum operation inspects, however many drops the
+/// box holds. The pin resolves a handle by searching the level's dropped-item list
+/// (`Host::item_entity`, then `ItemEntityRef::stack`), so one operation costs at
+/// most this many searches instead of one per drop in the pile.
+pub const VACUUM_CANDIDATE_LIMIT: usize = 64;
+
+/// One Vacuum operation in progress (`CompiledVacuumModule.handleItemMode`), fed
+/// the dropped items one candidate at a time.
+///
+/// Resolving a candidate is the expensive step — the pin's SDK searches the
+/// level's dropped-item list for each one — so the operation decides **before** it
+/// looks: [`VacuumOp::start`] answers `None` when the buffer can take nothing (it
+/// is full, it is at the module's regulation amount, or it holds an item the
+/// filter refuses), and the tick then reads no entities at all; and
+/// [`VacuumOp::next_candidate`] hands out an index only while the operation still
+/// wants one, so a filled pickup budget or a pile past [`VACUUM_CANDIDATE_LIMIT`]
+/// ends the loop rather than the list's length.
 ///
 /// Three tests decide a candidate, in upstream's order: it carries no pickup
 /// delay, it is **the buffer's own resource** while the buffer holds anything
@@ -1545,72 +1716,153 @@ pub fn vacuum_box(centre: Pos, range: i32) -> ([f64; 3], [f64; 3]) {
 /// own item and components, not "the first acceptable entity"), and the module's
 /// filter accepts it. The room is `min(max_stack, keep) − buffered`, where `keep`
 /// is the Regulator Augment's saved amount and zero without it; the budget is
-/// `items` items in the whole operation, one operation's worth of candidates.
-///
-/// `max_stack` is the item's own `getMaxStackSize`, as upstream reads it from the
-/// ground stack — resolved per item id, because every candidate that passes the
-/// buffer's test is that same item.
-pub fn pick_vacuum<F>(
-    buffer: Option<&Stack>,
-    dropped: &[Dropped],
-    filter: &Filter,
-    items: u32,
+/// `items` items in the whole operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VacuumOp {
+    /// The buffer after what the operation has taken so far.
+    plan: Vacuum,
+    /// Items still to take this operation.
+    budget: u32,
+    /// Candidates still to inspect (`VACUUM_CANDIDATE_LIMIT`).
+    inspect_left: usize,
+    /// How many candidate indices have been handed out.
+    next: usize,
+    /// `Module::regulation_amount`: zero without the Regulator Augment.
     keep: u32,
-    max_stack: F,
-) -> Vacuum
-where
-    F: Fn(&str) -> u32,
-{
-    let mut plan = Vacuum {
-        takes: Vec::new(),
-        buffer: buffer.cloned(),
-    };
-    if items == 0 {
-        return plan;
-    }
-    let mut budget = items;
-    for (index, candidate) in dropped.iter().enumerate() {
-        if budget == 0 {
-            break;
+}
+
+impl VacuumOp {
+    /// The operation's start, or `None` when it can take nothing — a full buffer,
+    /// a buffer at the module's amount, an item its filter refuses, or an
+    /// operation that moves no items. `None` means the tick must not read the
+    /// level: there is nothing a resolved drop could change.
+    ///
+    /// `max_stack` is the **buffer's own** item's `getMaxStackSize` when the
+    /// buffer holds something (the only resource it can collect); with an empty
+    /// buffer it is not used, and [`VacuumOp::offer`] takes the candidate's.
+    #[must_use]
+    pub fn start(
+        buffer: Option<&Stack>,
+        filter: &Filter,
+        keep: u32,
+        items: u32,
+        max_stack: u32,
+    ) -> Option<Self> {
+        if items == 0 {
+            return None;
         }
-        if candidate.delayed || candidate.stack.count == 0 {
-            continue;
+        let (plan, budget) = match buffer {
+            Some(held) => {
+                // A non-empty buffer collects only its own resource, so a filter
+                // that refuses the buffer's item leaves nothing to collect.
+                if !filter.accepts(&held.item) {
+                    return None;
+                }
+                // `isBufferFull()` and `spaceInRouter`: the amount, where a
+                // Regulator Augment gives one, is a **cap** on the buffer.
+                let cap = max_stack.max(1);
+                let room = if keep > 0 { cap.min(keep) } else { cap };
+                let budget = items.min(room.saturating_sub(held.count));
+                if budget == 0 {
+                    return None;
+                }
+                (
+                    Vacuum {
+                        takes: Vec::new(),
+                        buffer: Some(held.clone()),
+                    },
+                    budget,
+                )
+            }
+            None => (Vacuum::default(), items),
+        };
+        Some(Self {
+            plan,
+            budget,
+            inspect_left: VACUUM_CANDIDATE_LIMIT,
+            next: 0,
+            keep,
+        })
+    }
+
+    /// Whether the operation still wants another candidate: it has items left to
+    /// take and inspections left to spend. A refused candidate does not spend the
+    /// item budget, so a box of a thousand drops the filter refuses costs exactly
+    /// [`VACUUM_CANDIDATE_LIMIT`] inspections and stops.
+    #[must_use]
+    pub fn wants(&self) -> bool {
+        self.budget > 0 && self.inspect_left > 0
+    }
+
+    /// The index of the next candidate to resolve, or `None` when the loop must
+    /// stop: the pickup budget is filled, the inspection cap is spent, or there
+    /// are no handles left. The caller resolves **only** the index it is handed.
+    pub fn next_candidate(&mut self, available: usize) -> Option<usize> {
+        if !self.wants() || self.next >= available {
+            return None;
+        }
+        let index = self.next;
+        self.next += 1;
+        self.inspect_left -= 1;
+        Some(index)
+    }
+
+    /// Offer the resolved candidate at `index`: how many of it the operation takes
+    /// (zero is a refusal), with the buffer updated as if those items were in it.
+    /// The caller writes the ground stack and credits the buffer for the answer.
+    pub fn offer(
+        &mut self,
+        index: usize,
+        dropped: &Dropped,
+        filter: &Filter,
+        max_stack: u32,
+    ) -> Option<u32> {
+        if !self.wants() || dropped.delayed || dropped.stack.count == 0 {
+            return None;
         }
         // The buffer's item is the operation's subject: `bufferStack.isEmpty() ||
         // ItemStack.isSameItemSameComponents(stackOnGround, bufferStack)`.
-        if let Some(held) = &plan.buffer
-            && !held.same_resource(&candidate.stack)
+        if let Some(held) = &self.plan.buffer
+            && !held.same_resource(&dropped.stack)
         {
-            continue;
+            return None;
         }
-        if !filter.accepts(&candidate.stack.item) {
-            continue;
+        if !filter.accepts(&dropped.stack.item) {
+            return None;
         }
-        // `isBufferFull()`: a buffer already at the item's max stack has no room.
-        let cap = max_stack(&candidate.stack.item).max(1);
-        // `spaceInRouter`: the amount, where a Regulator Augment gives one, is a
-        // **cap** on the buffer, not a floor.
-        let room = if keep > 0 { cap.min(keep) } else { cap };
-        let buffered = plan.buffer.as_ref().map_or(0, |held| held.count);
-        let take = budget
+        let cap = max_stack.max(1);
+        let room = if self.keep > 0 {
+            cap.min(self.keep)
+        } else {
+            cap
+        };
+        let buffered = self.plan.buffer.as_ref().map_or(0, |held| held.count);
+        let take = self
+            .budget
             .min(room.saturating_sub(buffered))
-            .min(candidate.stack.count);
+            .min(dropped.stack.count);
         if take == 0 {
-            continue;
+            return None;
         }
-        budget -= take;
-        match &mut plan.buffer {
+        self.budget -= take;
+        match &mut self.plan.buffer {
             Some(held) => held.count += take,
             None => {
-                plan.buffer = Some(Stack {
+                self.plan.buffer = Some(Stack {
                     count: take,
-                    ..candidate.stack.clone()
+                    ..dropped.stack.clone()
                 });
             }
         }
-        plan.takes.push((index, take));
+        self.plan.takes.push((index, take));
+        Some(take)
     }
-    plan
+
+    /// The operation's plan: what it took and the buffer afterwards.
+    #[must_use]
+    pub fn finish(self) -> Vacuum {
+        self.plan
+    }
 }
 
 /// The buffer after `sent` items left it — a send, or the items a Void Module
@@ -1741,7 +1993,6 @@ mod tests {
         // module and a newer save's module both reach the router this way.
         for id in [
             "mekanisticrouters:chemical_puller_module",
-            "modularrouters:flinger_module",
             "example:foreign_module",
         ] {
             let kind = ModuleKind::of(id);
@@ -2933,9 +3184,188 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_flinger_module_is_a_dropper_with_its_own_flight_settings() {
+        // `FlingerModule extends DropperModule` and `CompiledFlingerModule
+        // extends CompiledDropperModule`: the only thing it changes is the
+        // velocity it gives the item it throws, so its operation, filter, count
+        // and regulation amount are the dropper's (`pick_drop`).
+        assert_eq!(
+            ModuleKind::of("modularrouters:flinger_module"),
+            ModuleKind::Flinger
+        );
+        assert!(ModuleKind::Flinger.is_known());
+        assert_eq!(ModuleKind::Flinger.item(), ModuleKind::FLINGER);
+        assert!(
+            !ModuleKind::Flinger.is_targeted(),
+            "it throws through its direction, not a block the player selected"
+        );
+        assert!(
+            !ModuleKind::Flinger.is_sender(),
+            "its amount is the buffer's floor, not the target's"
+        );
+        let flinger = Module::new(ModuleKind::Flinger, Relative::Front, Filter::any());
+        assert_eq!(
+            flinger.current_range(),
+            None,
+            "a flinger is not ranged: it throws into the block beside it"
+        );
+        assert_eq!(flinger.flinger(), Flinger::DEFAULT);
+        assert_eq!(
+            ModuleKind::Flinger.augment_limit(&AugmentKind::Regulator),
+            1,
+            "a flinger takes the Regulator Augment (upstream's list of the two kinds that take none)"
+        );
+        assert_eq!(
+            ModuleKind::Flinger.augment_limit(&AugmentKind::Stack),
+            6,
+            "and six Stack Augments, its operation being an item count"
+        );
+
+        // The operation itself is the dropper's rule, unchanged.
+        let eight = Stack::of("minecraft:stone", 8);
+        assert_eq!(pick_drop(Some(&eight), &Filter::any(), 64, 3), Some(5));
+        assert_eq!(
+            pick_drop(
+                Some(&eight),
+                &Filter::new(true, vec!["minecraft:dirt".to_string()]),
+                64,
+                0
+            ),
+            None
+        );
+
+        // `FlingerSettings.validate`: in range keeps every field, out of range
+        // (or infinite, or NaN) resets **all three** to the default.
+        let asked = Flinger::new(1.0, 0.0, 0.0);
+        assert_eq!(asked.validated(), asked);
+        assert_eq!(
+            Flinger::new(20.0, 90.0, 60.0).validated(),
+            Flinger::new(20.0, 90.0, 60.0)
+        );
+        assert_eq!(Flinger::new(-0.1, 0.0, 0.0).validated(), Flinger::DEFAULT);
+        assert_eq!(Flinger::new(20.1, 0.0, 0.0).validated(), Flinger::DEFAULT);
+        assert_eq!(Flinger::new(1.0, -90.1, 0.0).validated(), Flinger::DEFAULT);
+        assert_eq!(Flinger::new(1.0, 90.1, 0.0).validated(), Flinger::DEFAULT);
+        assert_eq!(Flinger::new(1.0, 0.0, -60.1).validated(), Flinger::DEFAULT);
+        assert_eq!(Flinger::new(1.0, 0.0, 60.1).validated(), Flinger::DEFAULT);
+        assert_eq!(
+            Flinger::new(1.0, 0.0, 0.0).validated(),
+            Flinger::new(1.0, 0.0, 0.0),
+            "one field out of range must not be the only one reset"
+        );
+        assert_eq!(
+            Flinger::new(f32::INFINITY, 0.0, 0.0).validated(),
+            Flinger::DEFAULT
+        );
+        assert_eq!(
+            Flinger::new(f32::NAN, 0.0, 0.0).validated(),
+            Flinger::DEFAULT
+        );
+
+        // The settings a module saves travel with it.
+        let configured = flinger.with_flinger(Flinger::new(3.5, -15.0, 45.0));
+        assert_eq!(configured.flinger(), Flinger::new(3.5, -15.0, 45.0));
+        let mut set = configured;
+        set.set_flinger(Flinger::new(2.0, 0.0, 0.0));
+        assert_eq!(set.flinger().speed, 2.0);
+    }
+
+    #[test]
+    fn a_flingers_item_leaves_along_its_aim_not_the_routers() {
+        // `CompiledFlingerModule.setupItemVelocity`: base yaw is the module's own
+        // absolute direction (`yawFromFacing`: east 0, north 90, west 180, south
+        // 270) and base pitch is 0 — except for an UP/DOWN throw, whose base pitch
+        // is ±90 and whose base yaw is the **router's** facing, so a tilted
+        // vertical fling leans the way the router points.
+        let east = fling_velocity(EAST, Facing::North, 0.0, 0.0, 1.0);
+        assert!((east[0] - 1.0).abs() < 1e-12, "speed 1 east: {east:?}");
+        assert!(east[1].abs() < 1e-12 && east[2].abs() < 1e-12);
+        let north = fling_velocity(NORTH, Facing::East, 0.0, 0.0, 1.0);
+        assert!(north[0].abs() < 1e-12 && north[1].abs() < 1e-12);
+        assert!((north[2] + 1.0).abs() < 1e-12, "north is −Z: {north:?}");
+        let west = fling_velocity(WEST, Facing::North, 0.0, 0.0, 1.0);
+        assert!((west[0] + 1.0).abs() < 1e-12, "west is −X: {west:?}");
+        let south = fling_velocity(SOUTH, Facing::North, 0.0, 0.0, 1.0);
+        assert!((south[2] - 1.0).abs() < 1e-12, "south is +Z: {south:?}");
+
+        // The speed scales the whole vector; zero is a dropper's drop.
+        let fast = fling_velocity(EAST, Facing::North, 0.0, 0.0, 20.0);
+        assert!((fast[0] - 20.0).abs() < 1e-12);
+        assert_eq!(fling_velocity(EAST, Facing::North, 0.0, 0.0, 0.0), [0.0; 3]);
+
+        // Pitch tilts the throw: 90 is straight up, −90 straight down.
+        let up = fling_velocity(EAST, Facing::North, 0.0, 90.0, 1.0);
+        assert!(up[0].abs() < 1e-12 && up[2].abs() < 1e-12);
+        assert!((up[1] - 1.0).abs() < 1e-12, "pitch 90 is up: {up:?}");
+        let down = fling_velocity(EAST, Facing::North, 0.0, -90.0, 1.0);
+        assert!((down[1] + 1.0).abs() < 1e-12, "pitch −90 is down: {down:?}");
+
+        // Yaw swings it: +60 turns 60° toward north (−Z).
+        let swung = fling_velocity(EAST, Facing::North, 60.0, 0.0, 1.0);
+        assert!((swung[0] - 0.5).abs() < 1e-6, "cos 60 east: {swung:?}");
+        assert!(
+            (swung[2] + 0.866_025_4).abs() < 1e-6,
+            "sin 60 north: {swung:?}"
+        );
+
+        // An UP throw's base pitch is +90 (straight up at pitch 0) and its base
+        // yaw is the router's facing; the same rig with pitch −30 leans that way
+        // (60° above the horizon), so the direction it leans is the router's.
+        let straight_up = fling_velocity(UP, Facing::North, 0.0, 0.0, 1.0);
+        assert!((straight_up[1] - 1.0).abs() < 1e-12);
+        let tilted_north = fling_velocity(UP, Facing::North, 0.0, -30.0, 1.0);
+        assert!(
+            (tilted_north[1] - 0.866_025_4).abs() < 1e-6,
+            "60° above the horizon: {tilted_north:?}"
+        );
+        assert!(
+            (tilted_north[2] + 0.5).abs() < 1e-6,
+            "a tilted up fling leans the way its router faces (north): {tilted_north:?}"
+        );
+        let tilted_east = fling_velocity(UP, Facing::East, 0.0, -30.0, 1.0);
+        assert!(
+            (tilted_east[0] - 0.5).abs() < 1e-6 && tilted_east[2].abs() < 1e-6,
+            "the same fling on an east-facing router leans east: {tilted_east:?}"
+        );
+        let straight_down = fling_velocity(DOWN, Facing::North, 0.0, 0.0, 1.0);
+        assert!((straight_down[1] + 1.0).abs() < 1e-12);
+
+        // The spawn point is the dropper's: the target block's middle, 0.2 back
+        // toward the router, so a flinger at (145,100,0) throws from x=146.3.
+        let spawn = drop_point([145, 100, 0], EAST);
+        assert!((spawn[0] - 146.3).abs() < 1e-9, "{spawn:?}");
+        assert!((spawn[1] - 100.5).abs() < 1e-9);
+        assert!((spawn[2] - 0.5).abs() < 1e-9);
+    }
+
     /// The dropped items one operation can see: a plain stack, or none.
     fn ground(item: &str, count: u32) -> Dropped {
         Dropped::of(item, count, false)
+    }
+
+    /// Run one operation over `dropped` the way the tick does — a candidate is
+    /// resolved **only** when the operation hands out its index — and answer the
+    /// plan with how many candidates it resolved. Resolving one is a search of the
+    /// level's dropped-item list in the pin's SDK, so that count is the
+    /// operation's cost.
+    fn sweep(
+        buffer: Option<&Stack>,
+        dropped: &[Dropped],
+        filter: &Filter,
+        items: u32,
+        keep: u32,
+        max_stack: u32,
+    ) -> (Vacuum, usize) {
+        let Some(mut op) = VacuumOp::start(buffer, filter, keep, items, max_stack) else {
+            return (Vacuum::default(), 0);
+        };
+        let mut resolved = 0;
+        while let Some(index) = op.next_candidate(dropped.len()) {
+            resolved += 1;
+            op.offer(index, &dropped[index], filter, max_stack);
+        }
+        (op.finish(), resolved)
     }
 
     #[test]
@@ -2956,37 +3386,30 @@ mod tests {
         assert!(!ModuleKind::Vacuum.is_sender());
 
         let eight = ground("minecraft:stone", 8);
-        let plan = pick_vacuum(
-            None,
-            std::slice::from_ref(&eight),
-            &Filter::any(),
-            1,
-            0,
-            |_| 64,
-        );
+        let (plan, _) = sweep(None, std::slice::from_ref(&eight), &Filter::any(), 1, 0, 64);
         assert_eq!(plan.takes, vec![(0, 1)], "one item per operation");
         assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 1)));
         assert!(plan.worked());
 
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             None,
             std::slice::from_ref(&eight),
             &Filter::any(),
             64,
             0,
-            |_| 64,
+            64,
         );
         assert_eq!(plan.takes, vec![(0, 8)], "never more than the stack holds");
         assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 8)));
 
         // The budget is shared over the candidates, in the order they are seen.
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             None,
             &[ground("minecraft:stone", 2), ground("minecraft:stone", 8)],
             &Filter::any(),
             3,
             0,
-            |_| 64,
+            64,
         );
         assert_eq!(plan.takes, vec![(0, 2), (1, 1)]);
         assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 3)));
@@ -2994,13 +3417,13 @@ mod tests {
         // A fresh drop carries a pickup delay and is not collectable yet (`!fastPickup
         // && item.hasPickUpDelay()` skips it; the Fast Pickup augment is gap 3).
         let delayed = Dropped::of("minecraft:stone", 8, true);
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             None,
             std::slice::from_ref(&delayed),
             &Filter::any(),
             64,
             0,
-            |_| 64,
+            64,
         );
         assert!(plan.takes.is_empty(), "a delayed item is skipped");
         assert_eq!(plan.buffer, None);
@@ -3009,26 +3432,19 @@ mod tests {
         // `Filter.test` comes after the item test: a whitelist that does not name
         // the dropped item collects nothing, and an empty whitelist accepts none.
         let only_dirt = Filter::new(true, vec!["minecraft:dirt".to_string()]);
-        let plan = pick_vacuum(
-            None,
-            std::slice::from_ref(&eight),
-            &only_dirt,
-            64,
-            0,
-            |_| 64,
-        );
+        let (plan, _) = sweep(None, std::slice::from_ref(&eight), &only_dirt, 64, 0, 64);
         assert!(plan.takes.is_empty());
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             None,
             std::slice::from_ref(&eight),
             &Filter::new(true, Vec::new()),
             64,
             0,
-            |_| 64,
+            64,
         );
         assert!(plan.takes.is_empty(), "an empty whitelist accepts nothing");
         let not_dirt = Filter::new(false, vec!["minecraft:dirt".to_string()]);
-        let plan = pick_vacuum(None, std::slice::from_ref(&eight), &not_dirt, 64, 0, |_| 64);
+        let (plan, _) = sweep(None, std::slice::from_ref(&eight), &not_dirt, 64, 0, 64);
         assert_eq!(plan.takes, vec![(0, 8)], "a blacklist of dirt takes stone");
     }
 
@@ -3038,13 +3454,13 @@ mod tests {
         // bufferStack)`: a buffer that already holds something decides what the
         // operation is **for** — it is not "the first acceptable entity".
         let stone = Stack::of("minecraft:stone", 4);
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             Some(&stone),
             &[ground("minecraft:stone", 8), ground("minecraft:dirt", 8)],
             &Filter::any(),
             64,
             0,
-            |_| 64,
+            64,
         );
         assert_eq!(
             plan.takes,
@@ -3054,13 +3470,13 @@ mod tests {
         assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 12)));
 
         let dirt = Stack::of("minecraft:dirt", 1);
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             Some(&dirt),
             std::slice::from_ref(&ground("minecraft:stone", 8)),
             &Filter::any(),
             64,
             0,
-            |_| 64,
+            64,
         );
         assert!(plan.takes.is_empty(), "a buffer of dirt takes no stone");
         assert_eq!(plan.buffer, Some(dirt));
@@ -3073,37 +3489,37 @@ mod tests {
             extra: "hex:0a".to_string(),
         };
         let plain = ground("minecraft:stone", 8);
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             Some(&named),
             std::slice::from_ref(&plain),
             &Filter::any(),
             64,
             0,
-            |_| 64,
+            64,
         );
         assert!(plan.takes.is_empty(), "components are part of the identity");
 
         // `spaceInRouter` with a Regulator Augment's amount: `min(maxStack, amount) −
         // inRouter`. The amount is a **cap** on the buffer, not a floor.
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             None,
             std::slice::from_ref(&ground("minecraft:stone", 8)),
             &Filter::any(),
             64,
             3,
-            |_| 64,
+            64,
         );
         assert_eq!(plan.takes, vec![(0, 3)], "the amount caps the buffer");
         assert_eq!(plan.buffer, Some(Stack::of("minecraft:stone", 3)));
 
         let two = Stack::of("minecraft:stone", 2);
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             Some(&two),
             std::slice::from_ref(&ground("minecraft:stone", 8)),
             &Filter::any(),
             64,
             3,
-            |_| 64,
+            64,
         );
         assert_eq!(
             plan.takes,
@@ -3111,59 +3527,175 @@ mod tests {
             "a buffer at two has room for one of an amount of three"
         );
         let full = Stack::of("minecraft:stone", 3);
-        let plan = pick_vacuum(
+        let (plan, resolved) = sweep(
             Some(&full),
             std::slice::from_ref(&ground("minecraft:stone", 8)),
             &Filter::any(),
             64,
             3,
-            |_| 64,
+            64,
         );
         assert!(plan.takes.is_empty(), "a buffer at the amount has no room");
+        assert_eq!(resolved, 0, "and then the operation reads no entity");
 
         // Without the augment the item's own max stack is the cap, and a full buffer
         // is no operation at all (`isBufferFull`).
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             None,
             std::slice::from_ref(&ground("minecraft:stone", 8)),
             &Filter::any(),
             64,
             0,
-            |_| 16,
+            16,
         );
         assert_eq!(plan.takes, vec![(0, 8)], "an item whose max stack is 16");
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             None,
             std::slice::from_ref(&ground("minecraft:stone", 8)),
             &Filter::any(),
             u32::MAX,
             0,
-            |_| 4,
+            4,
         );
         assert_eq!(plan.takes, vec![(0, 4)], "never past the max stack");
         let one = Stack::of("minecraft:stone", 1);
-        let plan = pick_vacuum(
+        let (plan, resolved) = sweep(
             Some(&one),
             std::slice::from_ref(&ground("minecraft:stone", 8)),
             &Filter::any(),
             64,
             0,
-            |_| 1,
+            1,
         );
         assert!(
             plan.takes.is_empty(),
             "a full one-item buffer is no operation"
         );
+        assert_eq!(resolved, 0);
 
         // A zero budget moves nothing, as `getItemsPerTick` can only be 0 on a
         // module whose count a save cut to nothing.
-        let plan = pick_vacuum(
+        let (plan, _) = sweep(
             None,
             std::slice::from_ref(&ground("minecraft:stone", 8)),
             &Filter::any(),
             0,
             0,
-            |_| 64,
+            64,
+        );
+        assert!(plan.takes.is_empty());
+    }
+
+    #[test]
+    fn a_vacuum_with_no_room_in_its_buffer_resolves_no_dropped_item() {
+        // Found in review (NikitaMGrimm, 2026-11-23): the vacuum used to resolve and
+        // store every nearby drop before asking whether the buffer had room, and the
+        // pin's SDK searches the level's dropped-item list for each resolution —
+        // so a full buffer next to a crowded pile stalled a server tick for nothing.
+        // The operation must decide **before** it reads the world: zero resolutions.
+        let eight = ground("minecraft:stone", 8);
+        let full = Stack::of("minecraft:stone", 64);
+        let (plan, resolved) = sweep(
+            Some(&full),
+            std::slice::from_ref(&eight),
+            &Filter::any(),
+            64,
+            0,
+            64,
+        );
+        assert_eq!(resolved, 0, "a full buffer resolves no entity at all");
+        assert_eq!(plan, Vacuum::default());
+        assert!(VacuumOp::start(Some(&full), &Filter::any(), 0, 64, 64).is_none());
+
+        // The same for a buffer at the module's regulation amount (`spaceInRouter`
+        // is `min(maxStack, amount) − inRouter`, so the amount of three is full).
+        let at_amount = Stack::of("minecraft:stone", 3);
+        let (_, resolved) = sweep(
+            Some(&at_amount),
+            std::slice::from_ref(&eight),
+            &Filter::any(),
+            64,
+            3,
+            64,
+        );
+        assert_eq!(resolved, 0, "a buffer at its amount resolves nothing");
+
+        // A buffer whose own item the filter refuses can collect nothing either: a
+        // non-empty buffer takes only its own resource.
+        let dirt = Stack::of("minecraft:dirt", 1);
+        let only_stone = Filter::new(true, vec!["minecraft:stone".to_string()]);
+        let (_, resolved) = sweep(
+            Some(&dirt),
+            std::slice::from_ref(&eight),
+            &only_stone,
+            64,
+            0,
+            64,
+        );
+        assert_eq!(
+            resolved, 0,
+            "a refused buffer item leaves nothing to collect"
+        );
+
+        // An operation that moves no items reads nothing either.
+        assert!(VacuumOp::start(None, &Filter::any(), 0, 0, 64).is_none());
+
+        // The control: one item of room does read, and takes it.
+        let nearly = Stack::of("minecraft:stone", 63);
+        let (plan, resolved) = sweep(
+            Some(&nearly),
+            std::slice::from_ref(&eight),
+            &Filter::any(),
+            64,
+            0,
+            64,
+        );
+        assert_eq!(resolved, 1, "one item of room resolves the first candidate");
+        assert_eq!(plan.takes, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn a_vacuum_operation_stops_reading_drops_once_its_budget_is_filled() {
+        // The second half of the same review point: inspection is bounded per
+        // operation, and the loop stops at the pickup budget instead of running to
+        // the end of the list.
+        let eight = ground("minecraft:stone", 8);
+        let (plan, resolved) = sweep(
+            None,
+            &[eight.clone(), eight.clone(), eight.clone()],
+            &Filter::any(),
+            1,
+            0,
+            64,
+        );
+        assert_eq!(
+            resolved, 1,
+            "a budget of one stops after the first successful take"
+        );
+        assert_eq!(plan.takes, vec![(0, 1)]);
+
+        // A budget of eight is filled by the first stack of eight, so the rest of
+        // the pile is never resolved.
+        let (plan, resolved) = sweep(
+            None,
+            &[eight.clone(), eight.clone()],
+            &Filter::any(),
+            8,
+            0,
+            64,
+        );
+        assert_eq!(resolved, 1);
+        assert_eq!(plan.takes, vec![(0, 8)]);
+
+        // Refused candidates spend inspections, not the item budget, so the cap —
+        // not the pile — bounds the operation.
+        let delayed: Vec<Dropped> = (0..200)
+            .map(|_| Dropped::of("minecraft:stone", 8, true))
+            .collect();
+        let (plan, resolved) = sweep(None, &delayed, &Filter::any(), 64, 0, 64);
+        assert_eq!(
+            resolved, VACUUM_CANDIDATE_LIMIT,
+            "one operation inspects at most its cap, however many drops lie there"
         );
         assert!(plan.takes.is_empty());
     }
