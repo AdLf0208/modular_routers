@@ -12,6 +12,7 @@
     "modularrouters:stack_upgrade",
     "modularrouters:augment_core",
     "modularrouters:range_up_augment",
-    "modularrouters:range_down_augment"
+    "modularrouters:range_down_augment",
+    "modularrouters:stack_augment"
   ]
 }

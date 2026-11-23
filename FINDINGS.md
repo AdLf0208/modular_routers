@@ -170,6 +170,10 @@ Taken (see `notes.md` for the boundary and the gaps):
 - **slice 6:** `range_up_augment`, `range_down_augment` and `augment_core`, a
   module's four augment slots (one kind per slot, the module's own limit), and the
   reach those augments move — see §5;
+- **slice 7:** `stack_augment`, the one augment whose number is not a range:
+  `CompiledModule.getItemsPerTick` overrides the router's Stack-Upgrade count
+  (`min(1 << n, 64)`) instead of adding to it, with `getMaxAugments` 6 — and 0
+  on the seven kinds whose operation is not an item count — see §5;
 - carried content: the router block + item, `blank_module`, `puller_module_1`,
   `puller_module_2`, `sender_module_1`, the three upgrades, the three augments,
   their craft chain, models, textures, lang, loot and tags.
@@ -185,7 +189,7 @@ The brief named `RangeAugment`/`SpeedAugment`; the artefact has **no `SpeedAugme
 |---|---|---|
 | `item/augment/AugmentItem.java` | `SLOTS = 4`; `getMaxAugments(ModuleItem)` is abstract | four slots (`runtime::AUGMENT_SLOTS`), the per-augment limit |
 | `item/augment/RangeAugments.java` | `RangeUpAugment`: `IRangedModule ? getHardMaxRange() − getBaseRange() : 0`; `RangeDownAugment`: `base − 1` | the Mk2's 12 Up / 11 Down, the Sender Mk1's 8 / 7, 0 for a module that is not ranged |
-| `item/augment/StackAugment.java` | `getMaxAugments` is **6**, and **0** for the Detector, both Extruders, Breaker, Placer and both Fluid modules — the one augment whose limit is not range and differs per module | recorded for the next augment slice; not carried |
+| `item/augment/StackAugment.java` | `getMaxAugments` is **6**, and **0** for the Detector, both Extruders, Breaker, Placer and both Fluid modules — the one augment whose limit is not range and differs per module | shipped in slice 7: `STACK_AUGMENT_LIMIT`, `NO_STACK_AUGMENT`, `ModuleKind::stack_augment_limit` |
 | `container/handler/AugmentHandler.java` | `super(SLOTS)`; `isItemValid` refuses an augment whose limit is 0 and refuses the same augment in a second slot; `getStackLimit` is that augment's limit; the saved component keeps the first `SLOTS` entries | one kind per slot; a saved list is cut to four; a count is cut to the limit |
 | `item/module/ModuleItem.java` | `getRangeModifier = count(RANGE_UP) − count(RANGE_DOWN)` | `Augments::range_boost` |
 | `item/module/IRangedModule.java` | `getCurrentRange = max(1, min(hardMax, base + modifier))` | `puller_range` / `sender_range` |

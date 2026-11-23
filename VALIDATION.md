@@ -1,5 +1,58 @@
 # Modular Routers — validation ladder
 
+## 0.2.7 — the Stack Augment (2026-11-23)
+
+Pin: SDK nightly **`0a875da91dbbf0dcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 7: `AugmentKind::Stack` in
+`runtime` with `ModuleKind::stack_augment_limit` (six, and none on the seven ids whose operation is
+not an item count), `Module::items_per_operation(router_items)` — upstream's
+`n > 0 ? min(1 << n, 64) : router` override — the tick asking each module for its own count and the
+readout's `items=<n>` on an augmented module line, plus the carried `stack_augment` item with the
+jar's recipe, model, texture, tag, lang and creative-tab entry. Unit work: 4 new tests, 59 in all.
+
+Every command ran inside a `ports/tools/build-slot.sh` lease with `BUILD_LOCAL=1` and
+`CARGO_INCREMENTAL=0`; logs are in `ports/_shared/evidence/modularrouters/` and
+`ports/_shared/evidence/modularrouters-e2e/`.
+
+| # | Command | Result | Log |
+|---|---|---|---|
+| 1 | `cargo test --offline` before the types existed (red) | **29 errors** (`cannot find value MAX_ITEMS_PER_OPERATION`, `no variant … Stack`, `no method named items_per_operation`), `could not compile … (lib test)`, exit 101 | `slice7-test-red.log` |
+| 2 | `tools/e2e.sh` phase O on the **0.2.6** game (red) | `FAIL: give modularrouters:stack_augment failed (is the augment in this package?)`, `EXIT:1` | `modularrouters-e2e/e2e-red-stack-augment.log` |
+| 3 | `tools/e2e.sh` phase O5 on the fixed port, first attempt (harness red) | `FAIL: the augmented Mk1 stopped moving four per operation after a relaunch` — rig A's buffer had filled to 64, so there was no operation to sample; O5 now empties it with `/data merge` | `modularrouters-e2e/e2e-0.2.7-o5-buffer-red.log` |
+| 4 | `launcher-game.sh build modularrouters` (manifest 0.2.6 → 0.2.7) | `Compiling modularrouters (1 of 1)` — no cached-package reuse | `modularrouters-e2e/game-build-0.2.7.log` |
+| 5 | `cargo test --offline` | **59 passed**, 0 failed | `slice7-test.log` (= `sdk-test.log`) |
+| 6 | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice7-clippy.log` (= `sdk-clippy.log`) |
+| 7 | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice7-fmt.log` (= `sdk-fmt.log`) |
+| 8 | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second build `cmp`-identical, **110,063 B** | `slice7-build.log`, `slice7-build-second.log` |
+| 9 | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.7 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `110063 bytes, SHA-256 5d540a0d…3516`, **exit 0** | `sdk-check.log` |
+| 10 | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| 11 | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-0b14f8a.log` |
+| 12 | `unzip -l modularrouters.hmod` | **95 entries**, no `Cargo.lock` | `slice7-entries.txt` |
+| 13 | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (59 tests) | `verify-sdk-package.log` |
+| 14 | `tools/e2e.sh` (launcher-built game, `--offscreen`) | **PASS**, `EXIT:0` — phases A–I, **M**, **N**, **O**, L, J1–J4, K | `modularrouters-e2e/e2e-launcher-0.2.7.log` |
+| 15 | `tools/e2e.sh` with the tick ignoring the augment (counterfactual) | **fails as required**: `FAIL: one operation moved 2 items into 58,100,0, not 4` + `EXIT:1`; the source was then restored byte-identically and the rebuilt library is the same `f3b0280d…` as the green run's | `modularrouters-e2e/e2e-0.2.7-override-counterfactual.log` |
+| 16 | `SELFTEST=1 tools/e2e.sh` | **fails as required**: `FAIL: SELFTEST: the target chest holds stone, so the check is alive` + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.7.log` |
+| 17 | `GAME=$CONTROL_GAME tools/e2e.sh` | **`EXIT:1`**: `FAIL: give modularrouters:modular_router failed (is the package loaded in this game?)` | `modularrouters-e2e/e2e-control-0.2.7.log` |
+| 18 | `python3 ports/tools/check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=30 ok=30`, 0 missing/bad exit lines | — |
+| 19 | `python3 ports/tools/check-skills.py --notes ports/modularrouters --strict` | PASS | — |
+
+### What phase O proves (parity rule)
+
+| Step | Assertion |
+|---|---|
+| O1, the override | a Mk1 whose router holds one Stack Upgrade reads `2 item(s) every 20 ticks`; two Stack Augments installed by **sneak right-click** make its line `items=4 augments stack x2` and its operation moves **exactly 4** (`7 operation(s), +4 item(s) each`) — a multiplying augment would move 8 |
+| O2, the augment not the upgrade | the same two augments on the same module with **no** Stack Upgrade: the router reads `1 item(s) every 20 ticks`, the module `items=4`, and the operation still moves **4** (`7 operation(s), +4 each`) |
+| O3, the differential | the identical Mk1 with its own chest and no augment: `7 operation(s), +1 item(s) each`, so the four in O1/O2 is the augment's |
+| O4, the cap and the limit | six augments read `items=64` (the slot's `getMaxAugments`), a seventh answers `module 0 already holds 6 stack augment(s), its limit`, and with the module pointed at air the buffer is 0 of a fresh 64-strong chest; pointed at the chest, **one** operation fills the buffer with 64 and leaves the chest 0 |
+| O5, the save | quit + relaunch: `items=4 augments stack x2` reads back and the module moves `6 operation(s), +4 each` again |
+| J1, the recipe | the Stack Augment crafts from an augment core and a Stack Upgrade in a real table (id, count 1, grid emptied, the Stack Upgrade consumed); a stick where the upgrade goes crafts nothing |
+
+### Delivered package (0.2.7)
+
+| file | size | SHA-256 | entries |
+|---|---|---|---|
+| `modularrouters.hmod` | 110,063 B | `5d540a0da4df2fe08465b4cc0591800d8cf0ccbe7b3db7ae4b9a216aece33516` | 95 |
+
 ## 0.2.6 — the Range Augments and a module's four augment slots (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

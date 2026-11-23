@@ -9,8 +9,11 @@ into the first container along its facing (up to 8 blocks, 16 with range upgrade
 — the two upgrades the router's own numbers are about, in its **five upgrade
 slots** (a **Speed Upgrade** shortens the operation interval by two ticks,
 20 → 18 → 16 … down to 2; a **Stack Upgrade** doubles the items one operation
-moves, 1 → 2 → 4 … up to 64), and the **Range Up/Down Augments** that fit a
-module's four augment slots and move that module's reach one block each.
+moves, 1 → 2 → 4 … up to 64), and the **augments** that fit a module's four
+augment slots: the **Range Up/Down Augments** move that module's reach one block
+each, and the **Stack Augment** sets how many items one operation of that module
+moves (`1 << n`, up to 64), overriding the router's Stack Upgrades rather than
+adding to them.
 
 Ported from Modular Routers 13.2.7 (`desht/ModularRouters`, MIT) as a
 clean-room rewrite for Horizon 26.3, built against SDK nightly `0a875da`
@@ -66,12 +69,14 @@ reply says `target set`), then install the module — it reaches 12 blocks, in t
 router's own level, with no line of sight needed. With no block selected it does
 nothing, and a block out of reach is no operation either. Each Speed
 Upgrade takes two ticks off that second, each Stack Upgrade doubles what one
-operation moves. The buffer is the block's item container on every side, so
-hoppers and pipes can fill or empty it.
+operation moves — and a Stack Augment on a module overrides that count for that
+module (one augment 2, two 4, six 64), which is the one augment whose number is
+not a range. The buffer is the block's item container on every side, so hoppers
+and pipes can fill or empty it.
 
-The screen, the other 18 modules, the other 8 upgrades, the other 9 augments
-(Stack, Mimic, Regulator, Pickup Delay, …) and smart filters are not ported yet
-— see `notes.md`.
+The screen, the other 18 modules, the other 8 upgrades, the other 8 augments
+(Mimic, Regulator, Pickup Delay, …) and smart filters are not ported yet — see
+`notes.md`.
 
 ### Modules from another mod
 

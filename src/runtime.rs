@@ -54,6 +54,23 @@ pub const AUGMENT_SLOTS: usize = 4;
 /// One Range Up/Down augment moves a module's reach one block, as
 /// `ModuleItem.getRangeModifier` counts them (up − down, one each).
 pub const RANGE_PER_AUGMENT: i32 = 1;
+/// `StackAugment.getMaxAugments`: a module takes six Stack Augments in one slot.
+pub const STACK_AUGMENT_LIMIT: u32 = 6;
+/// `CompiledModule.getItemsPerTick`: `min(1 << n, 64)` — the most one operation
+/// moves, whatever the augment or upgrade counts add up to.
+pub const MAX_ITEMS_PER_OPERATION: u32 = 64;
+/// `StackAugment.getMaxAugments` names the modules that take **none** of it: their
+/// operation is not an item count. Upstream tests the module class; this port has
+/// no class for a kind it does not run yet (gap 1), so its rule is the id's.
+pub const NO_STACK_AUGMENT: [&str; 7] = [
+    "modularrouters:detector_module",
+    "modularrouters:extruder_module_1",
+    "modularrouters:extruder_module_2",
+    "modularrouters:breaker_module",
+    "modularrouters:placer_module",
+    "modularrouters:fluid_module",
+    "modularrouters:fluid_module_2",
+];
 
 /// The face's unit vector, as `Direction.normal()` gives it.
 pub const fn face_normal(face: Face) -> [i32; 3] {
@@ -326,9 +343,11 @@ impl ModuleKind {
     /// How many of `augment` this module accepts in one slot
     /// (`AugmentItem.getMaxAugments`): a Range Up augment is worth
     /// `hardMax − base` of them, a Range Down one `base − 1`, and a module that
-    /// is not ranged takes neither. An augment this port does not run is carried
-    /// one per slot when it is installed — what it does, and how many of it fit,
-    /// are its own mod's, so a saved count of it is kept as written.
+    /// is not ranged takes neither. A Stack Augment is `StackAugment`'s own
+    /// number — six, or none on a module whose operation is not an item count. An
+    /// augment this port does not run is carried one per slot when it is
+    /// installed — what it does, and how many of it fit, are its own mod's, so a
+    /// saved count of it is kept as written.
     #[must_use]
     pub fn augment_limit(&self, augment: &AugmentKind) -> u32 {
         let limit = match augment {
@@ -337,9 +356,21 @@ impl ModuleKind {
                 .zip(self.base_range())
                 .map(|(max, base)| max - base),
             AugmentKind::RangeDown => self.base_range().map(|base| base - 1),
+            AugmentKind::Stack => self.stack_augment_limit(),
             AugmentKind::Registered(_) => Some(OTHER_PER_SLOT as i32),
         };
         limit.map_or(0, |count| u32::try_from(count.max(0)).unwrap_or(u32::MAX))
+    }
+
+    /// `StackAugment.getMaxAugments`: six for a module whose operation moves
+    /// items, and none for the seven kinds whose operation is not an item count
+    /// (the Detector, both Extruders, the Breaker, the Placer and both Fluid
+    /// modules). Upstream tests the module class, so every other module —
+    /// including one this build only carries — takes six.
+    #[must_use]
+    pub fn stack_augment_limit(&self) -> Option<i32> {
+        (!NO_STACK_AUGMENT.contains(&self.item()))
+            .then(|| i32::try_from(STACK_AUGMENT_LIMIT).unwrap_or(i32::MAX))
     }
 }
 
@@ -480,6 +511,23 @@ impl Module {
             ModuleKind::SenderMk1 => Some(sender_range(boost)),
             ModuleKind::PullerMk1 | ModuleKind::Registered(_) => None,
         }
+    }
+
+    /// How many items one operation of this module moves —
+    /// `CompiledModule.getItemsPerTick`: `n > 0 ? min(1 << n, 64) : router's count`,
+    /// where `n` is the Stack Augments in its slots and the router's count is what
+    /// its Stack Upgrades give it. The augment **overrides** that count; it does
+    /// not add to it or multiply it.
+    #[must_use]
+    pub fn items_per_operation(&self, router_items: u32) -> u32 {
+        // The slot limit is six, so the shift can never reach past 64; both bounds
+        // are upstream's (`min(1 << n, 64)`), and the shift is clamped rather than
+        // trusted because a save can write a count the GUI could not.
+        let stacks = self.augments.count(&AugmentKind::Stack);
+        if stacks == 0 {
+            return router_items;
+        }
+        (1u32 << stacks.min(STACK_AUGMENT_LIMIT)).min(MAX_ITEMS_PER_OPERATION)
     }
 
     /// Whether this module works on its selected block rather than the one its
@@ -785,8 +833,8 @@ impl Upgrades {
     }
 }
 
-/// An augment installed in one of a module's four slots: a Range Up or Range
-/// Down augment, or any other id a save or another mod carries.
+/// An augment installed in one of a module's four slots: a Range Up, Range Down or
+/// Stack augment, or any other id a save or another mod carries.
 ///
 /// The last case is the **registered** path, as [`ModuleKind::Registered`] is for
 /// modules and [`UpgradeKind::Registered`] for upgrades: an add-on's augment keeps
@@ -797,6 +845,9 @@ pub enum AugmentKind {
     RangeUp,
     /// `modularrouters:range_down_augment`: one block less.
     RangeDown,
+    /// `modularrouters:stack_augment`: how many items one operation moves,
+    /// **instead of** the count the router's Stack Upgrades give it.
+    Stack,
     /// An augment this port does not run, carried by its id.
     Registered(String),
 }
@@ -804,14 +855,16 @@ pub enum AugmentKind {
 impl AugmentKind {
     pub const RANGE_UP: &'static str = "modularrouters:range_up_augment";
     pub const RANGE_DOWN: &'static str = "modularrouters:range_down_augment";
+    pub const STACK: &'static str = "modularrouters:stack_augment";
 
-    /// The kind an item id names: one of the two augments this port runs, or a
+    /// The kind an item id names: one of the three augments this port runs, or a
     /// registered kind that keeps the id unchanged.
     #[must_use]
     pub fn of(item: &str) -> Self {
         match item {
             Self::RANGE_UP => AugmentKind::RangeUp,
             Self::RANGE_DOWN => AugmentKind::RangeDown,
+            Self::STACK => AugmentKind::Stack,
             other => AugmentKind::Registered(other.to_string()),
         }
     }
@@ -822,6 +875,7 @@ impl AugmentKind {
         match name {
             "range_up" => Some(AugmentKind::RangeUp),
             "range_down" => Some(AugmentKind::RangeDown),
+            "stack" => Some(AugmentKind::Stack),
             _ => None,
         }
     }
@@ -829,7 +883,10 @@ impl AugmentKind {
     /// Whether this port runs the augment itself rather than only carrying it.
     #[must_use]
     pub fn is_known(&self) -> bool {
-        matches!(self, AugmentKind::RangeUp | AugmentKind::RangeDown)
+        matches!(
+            self,
+            AugmentKind::RangeUp | AugmentKind::RangeDown | AugmentKind::Stack
+        )
     }
 
     /// The item id this augment is.
@@ -838,6 +895,7 @@ impl AugmentKind {
         match self {
             AugmentKind::RangeUp => Self::RANGE_UP,
             AugmentKind::RangeDown => Self::RANGE_DOWN,
+            AugmentKind::Stack => Self::STACK,
             AugmentKind::Registered(item) => item,
         }
     }
@@ -848,6 +906,7 @@ impl AugmentKind {
         match self {
             AugmentKind::RangeUp => "range_up",
             AugmentKind::RangeDown => "range_down",
+            AugmentKind::Stack => "stack",
             AugmentKind::Registered(item) => item,
         }
     }
@@ -1939,5 +1998,115 @@ mod tests {
         assert_eq!(module.current_range(), Some(PULLER_MAX_RANGE));
         assert_eq!(Augment::new(AugmentKind::RangeUp, 0), None);
         assert!(Augments::default().is_empty());
+    }
+
+    #[test]
+    fn a_stack_augment_overrides_the_routers_items_per_operation() {
+        // `CompiledModule.getItemsPerTick`: `n > 0 ? min(1 << n, 64) : router.getItemsPerTick()`.
+        // The augment **replaces** the count the router's Stack Upgrades give it; it
+        // does not multiply it, which is the one augment whose number is not a range.
+        assert_eq!(
+            AugmentKind::of("modularrouters:stack_augment"),
+            AugmentKind::Stack
+        );
+        assert!(AugmentKind::Stack.is_known());
+        assert_eq!(AugmentKind::Stack.item(), "modularrouters:stack_augment");
+        assert_eq!(AugmentKind::Stack.name(), "stack");
+        assert_eq!(AugmentKind::from_name("stack"), Some(AugmentKind::Stack));
+
+        let with_stack = |count: u32| {
+            Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any()).with_augments(
+                Augments::new(vec![
+                    Augment::new(AugmentKind::Stack, count).expect("a stack augment slot"),
+                ]),
+            )
+        };
+        // One Stack Upgrade in the router reads `2 item(s) every 20 ticks`; two Stack
+        // Augments on the module make the operation four, not `2 × 4`.
+        assert_eq!(items_per_operation(1), 2, "the router's own count");
+        assert_eq!(with_stack(2).items_per_operation(items_per_operation(1)), 4);
+        // The same two augments with no upgrade at all: still four. The augment is
+        // what moves them, not the upgrade.
+        assert_eq!(with_stack(2).items_per_operation(items_per_operation(0)), 4);
+        // Six augments are the cap: `min(1 << 6, 64)` is 64.
+        assert_eq!(with_stack(6).items_per_operation(1), 64);
+        assert_eq!(with_stack(1).items_per_operation(1), 2);
+        // No augment: the router's count is what the operation moves, unchanged.
+        let plain = Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any());
+        assert_eq!(plain.items_per_operation(1), 1);
+        assert_eq!(plain.items_per_operation(64), 64);
+        // The Sender moves the augmented count too (`CompiledSenderModule1`).
+        let sender = Module::new(ModuleKind::SenderMk1, Relative::Back, Filter::any())
+            .with_augments(Augments::new(vec![
+                Augment::new(AugmentKind::Stack, 2).expect("two stack augments"),
+            ]));
+        assert_eq!(sender.items_per_operation(1), 4);
+    }
+
+    #[test]
+    fn a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items() {
+        // `StackAugment.getMaxAugments`: six, except the Detector, both Extruders, the
+        // Breaker, the Placer and both Fluid modules — their operation is not an item
+        // count. Those kinds are gap 1 in this port (carried by id, never run), so the
+        // rule is the module **id**'s; every other module, including one this port
+        // only carries, takes upstream's six.
+        for known in [
+            ModuleKind::PullerMk1,
+            ModuleKind::PullerMk2,
+            ModuleKind::SenderMk1,
+        ] {
+            assert_eq!(
+                known.augment_limit(&AugmentKind::Stack),
+                6,
+                "{} takes six",
+                known.item()
+            );
+        }
+        for id in [
+            "modularrouters:detector_module",
+            "modularrouters:extruder_module_1",
+            "modularrouters:extruder_module_2",
+            "modularrouters:breaker_module",
+            "modularrouters:placer_module",
+            "modularrouters:fluid_module",
+            "modularrouters:fluid_module_2",
+        ] {
+            let kind = ModuleKind::of(id);
+            assert_eq!(
+                kind.augment_limit(&AugmentKind::Stack),
+                0,
+                "{id} takes none"
+            );
+            let mut module = Module::new(kind, Relative::Front, Filter::any());
+            assert!(!module.add_augment(AugmentKind::Stack), "{id}");
+            assert_eq!(module.augments().used(), 0);
+        }
+        assert_eq!(
+            ModuleKind::Registered("example:other_module".to_string())
+                .augment_limit(&AugmentKind::Stack),
+            6,
+            "upstream's rule lists the classes that take none, so the rest take six"
+        );
+        // A Stack augment is not a Range augment: it does not touch a reach.
+        let mut mk2 = Module::new(ModuleKind::PullerMk2, Relative::None, Filter::any());
+        assert!(mk2.add_augment(AugmentKind::Stack));
+        assert_eq!(mk2.current_range(), Some(PULLER_BASE_RANGE));
+    }
+
+    #[test]
+    fn a_saved_stack_augment_count_is_cut_to_the_modules_six() {
+        // The slot holds at most six, so a save naming nine reads as six — and the
+        // shift never reaches a count the slot's limit cannot give it.
+        let saved = Augments::new(vec![
+            Augment::new(AugmentKind::Stack, 9).expect("nine saved"),
+        ]);
+        let mut module =
+            Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any()).with_augments(saved);
+        assert_eq!(module.augments().count(&AugmentKind::Stack), 6);
+        assert_eq!(module.items_per_operation(1), MAX_ITEMS_PER_OPERATION);
+        assert!(module.remove_augment(&AugmentKind::Stack));
+        assert_eq!(module.augments().count(&AugmentKind::Stack), 5);
+        assert_eq!(module.items_per_operation(1), 32);
+        assert_eq!(module.augment_limit(&AugmentKind::Stack), 6);
     }
 }

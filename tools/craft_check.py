@@ -14,7 +14,7 @@ as 200 (`ctl screen`). For each of the fourteen carried recipes this:
 6. asserts the grid is empty and the recipe's distinctive ingredient was
    consumed.
 
-Eight deliberately wrong patterns must leave the result empty, so the check cannot
+Nine deliberately wrong patterns must leave the result empty, so the check cannot
 pass on a table that crafts whatever it is handed. Exits 1 on the first
 mismatch, printing the observed result.
 
@@ -43,6 +43,7 @@ STACK_UPGRADE = "modularrouters:stack_upgrade"
 AUGMENT_CORE = "modularrouters:augment_core"
 RANGE_UP = "modularrouters:range_up_augment"
 RANGE_DOWN = "modularrouters:range_down_augment"
+STACK_AUGMENT = "modularrouters:stack_augment"
 
 
 def main() -> int:
@@ -307,6 +308,17 @@ def main() -> int:
         [(RANGE_DOWN, every(GRID["tl"]))],
         RANGE_UP, 1, RANGE_DOWN,
     )
+    # The Stack Augment is the jar's one-augment recipe: an augment core and a
+    # Stack Upgrade, shapeless, one at a time.
+    check(
+        "stack augment: an augment core and a stack upgrade, shapeless",
+        [(AUGMENT_CORE, 1), (STACK_UPGRADE, 1)],
+        [
+            (AUGMENT_CORE, every(GRID["tl"])),
+            (STACK_UPGRADE, every(GRID["mm"])),
+        ],
+        STACK_AUGMENT, 1, STACK_UPGRADE,
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -395,13 +407,21 @@ def main() -> int:
         [("minecraft:stick", 1)],
         [("minecraft:stick", every(GRID["tl"]))],
     )
+    empty_control(
+        "stack augment with a stick where the stack upgrade goes",
+        [(AUGMENT_CORE, 1), ("minecraft:stick", 1)],
+        [
+            (AUGMENT_CORE, every(GRID["tl"])),
+            ("minecraft:stick", every(GRID["mm"])),
+        ],
+    )
 
     if failures:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  fourteen carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and eight wrong-ingredient controls craft nothing")
+    print("  fifteen carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and nine wrong-ingredient controls craft nothing")
     return 0
 
 

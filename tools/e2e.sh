@@ -25,7 +25,7 @@
 #  G  a placed router faces the opposite of its placer (real placement, not a
 #     setblock), and one package carries the code and the content.
 #  H  the modules and the buffer survive a relaunch.
-#  J  the fourteen carried recipes craft in a real crafting table (id, count, grid
+#  J  the fifteen carried recipes craft in a real crafting table (id, count, grid
 #     emptied, the distinctive ingredient consumed; five wrong-ingredient
 #     controls craft nothing), every carried item is give-able and an unknown
 #     id is refused, the router's loot table drops it when broken (with a
@@ -63,6 +63,16 @@
 #     ranged; and a saved list is cut to the four slots and the module's limit
 #     (fifteen in one slot read as twelve, 24 blocks). The augments survive a
 #     relaunch.
+#  O  the Stack Augment, the one augment whose number is not a range: it
+#     *overrides* the count the router's Stack Upgrades give it
+#     (`CompiledModule.getItemsPerTick` = `n > 0 ? min(1 << n, 64) : router`). A
+#     Mk1 whose router has one Stack Upgrade (`2 item(s) every 20 ticks`) and whose
+#     module holds two Stack Augments moves exactly **4** per operation — not 8,
+#     which is what a multiplying augment would move — while the identical module
+#     with no upgrade moves 4 as well and the plain Mk1 beside them moves 1. Six
+#     augments in one slot (its limit; a seventh is refused) read `items=64` and
+#     fill the one-slot buffer with a whole stack in one operation. A module with
+#     no Stack augment keeps the readout line it always had.
 #
 # The harness pack is the only data this script adds to the game: a world data
 # pack, not part of the package (see `harness_pack`).
@@ -125,6 +135,7 @@ STACK_UPGRADE=modularrouters:stack_upgrade
 AUGMENT_CORE=modularrouters:augment_core
 RANGE_UP=modularrouters:range_up_augment
 RANGE_DOWN=modularrouters:range_down_augment
+STACK_AUGMENT=modularrouters:stack_augment
 
 [ -x "$CTL" ] || { echo "missing horizon-ctl: $CTL" >&2; exit 1; }
 [ -n "$GAME" ] || {
@@ -206,9 +217,10 @@ arena() {
     ctl command "execute in minecraft:the_end run fill -12 99 -20 48 99 16 minecraft:stone"
     ctl command "execute in minecraft:the_end run fill -12 100 -20 48 108 16 minecraft:air"
     # The Range Augment rigs stand east of the main arena: same floor, air above,
-    # so a sender's scan runs twelve blocks north over nothing but air.
-    ctl command "execute in minecraft:the_end run fill 49 99 -20 62 99 16 minecraft:stone"
-    ctl command "execute in minecraft:the_end run fill 49 100 -20 62 108 16 minecraft:air"
+    # so a sender's scan runs twelve blocks north over nothing but air. The Stack
+    # Augment rigs stand east of those, on the same floor.
+    ctl command "execute in minecraft:the_end run fill 49 99 -20 70 99 16 minecraft:stone"
+    ctl command "execute in minecraft:the_end run fill 49 100 -20 70 108 16 minecraft:air"
     ctl command "execute in minecraft:the_end run kill @e[type=!player]"
     ctl wait 20
 }
@@ -658,10 +670,10 @@ ctl container 50 100 -14 minecraft:stone 8 >/dev/null
 ctl container 52 100 -12 minecraft:stone 8 >/dev/null
 ctl wait 4
 
-# N1: the three augment items are in this package, and the tag that names an
-# augment to another mod lists the two this build runs.
+# N1: the four augment items are in this package, and the tag that names an
+# augment to another mod lists the three this build runs.
 ctl command "gamemode creative @s" >/dev/null
-for id in "$AUGMENT_CORE" "$RANGE_UP" "$RANGE_DOWN"; do
+for id in "$AUGMENT_CORE" "$RANGE_UP" "$RANGE_DOWN" "$STACK_AUGMENT"; do
     ctl command "clear @s" >/dev/null
     ctl give "$id" 1 >/dev/null || fail "give $id failed (is the augment in this package?)"
     ctl wait 3
@@ -669,11 +681,11 @@ for id in "$AUGMENT_CORE" "$RANGE_UP" "$RANGE_DOWN"; do
     [ "$held" -ge 1 ] || fail "$id is not in the inventory after give ($held)"
 done
 ctl command "clear @s" >/dev/null
-for id in "$RANGE_UP" "$RANGE_DOWN"; do
+for id in "$RANGE_UP" "$RANGE_DOWN" "$STACK_AUGMENT"; do
     unzip -p "$HMOD" data/modularrouters/tags/item/augments.json | grep -q "\"$id\"" \
         || fail "the package's modularrouters:augments tag does not list $id"
 done
-echo "  augment core, range up and range down read back; the modularrouters:augments tag lists both"
+echo "  augment core, range up, range down and stack read back; the modularrouters:augments tag lists all three"
 
 # N2: a module that is not ranged takes no Range augment at all (`getMaxAugments`
 # is 0 for a module that is not an `IRangedModule`): rig D of phase M holds a
@@ -794,6 +806,127 @@ ctl wait 4
 sample_steps 50 0 minecraft:stone 1 12
 [ "$STEPS" -ge 3 ] || fail "the augmented Mk2 stopped pulling after a relaunch"
 echo "  after the relaunch: range=16, buffer $(count 50 100 0 minecraft:stone), chest $(count 50 100 -14 minecraft:stone)"
+
+echo "== O: the Stack Augment — the count one operation moves, overriding the Stack Upgrades =="
+# The jar's Stack Augment is the one augment whose number is not a range
+# (`CompiledModule.getItemsPerTick`): `n > 0 ? min(1 << n, 64) : router's count`.
+# It **overrides** the router's Stack-Upgrade count. Four rigs, one Mk1 each with
+# its own chest one block north:
+#   A (58,100,0)  one Stack Upgrade in the router + two augments  -> +4, not +8
+#   B (60,100,0)  the same two augments, no upgrade               -> +4, not +1
+#   C (62,100,0)  no augment, no upgrade                          -> +1 (the control)
+#   D (64,100,0)  six augments in one slot (its limit)            -> items=64, one 64 op
+for x in 58 60 62 64; do
+    block_at "$x" 0 "$ROUTER[facing=north]"
+    block_at "$x" -1 minecraft:chest
+done
+ctl wait 6
+for x in 58 60 62 64; do ctl container "$x" 100 -1 minecraft:stone 64 >/dev/null; done
+ctl wait 4
+
+# O1: the items are in the package, and the two slots agree: the router reads the
+# count its one Stack Upgrade gives it (2), the module its two augments (4).
+ctl command "gamemode creative @s" >/dev/null
+ctl command "clear @s" >/dev/null
+say "modularrouters install 58 100 0 0 $PULLER"
+say "modularrouters direction 58 100 0 0 front"
+say "modularrouters upgrade 58 100 0 add stack"
+ctl wait 4
+expect_chat "Modular Router: installed modularrouters:stack_upgrade"
+expect_info 58 100 0 "2 item(s) every 20 ticks, 0 speed / 1 stack upgrade(s) of 5"
+ctl give "$STACK_AUGMENT" 2 >/dev/null || fail "give $STACK_AUGMENT 2 failed (is the stack augment in this package?)"
+ctl wait 4
+ctl tp 58.5 100 2.5 >/dev/null
+ctl select "$STACK_AUGMENT" >/dev/null || fail "no stack augment in the hotbar"
+ctl look-at-block 58 100 0 south >/dev/null
+ctl wait 3
+for _ in 1 2; do
+    ctl key shift down >/dev/null
+    ctl wait 2 >/dev/null
+    ctl interact 58 100 0 south >/dev/null || fail "the sneak right-click that installs a stack augment failed"
+    ctl key shift up >/dev/null
+    ctl wait 3 >/dev/null
+done
+expect_info 58 100 0 "module 0 at 58,100,0: $PULLER dir=front target=north items=4 augments stack x2"
+echo "  the router with one Stack Upgrade reads 2 item(s)/operation and its augmented module 4"
+sample_steps 58 0 minecraft:stone 4 12
+[ "$STEPS" -ge 3 ] || fail "the augmented Mk1 moved $STEPS operation(s), not the four per operation the augment gives"
+pulled=$(count 58 100 0 minecraft:stone)
+echo "  two Stack Augments + one Stack Upgrade: the buffer holds $pulled, the chest $(count 58 100 -1 minecraft:stone)"
+[ "$pulled" -ge 12 ] || fail "the buffer holds $pulled after four operations of four"
+ctl command "clear @s" >/dev/null
+
+# O2: the augment, not the upgrade. The same two augments on the same module with
+# **no** Stack Upgrade in the router: the router's own count is 1, the operation
+# still moves 4, so the augment is what decides it.
+say "modularrouters install 60 100 0 0 $PULLER"
+say "modularrouters direction 60 100 0 0 front"
+for _ in 1 2; do say "modularrouters augment 60 100 0 0 add stack"; done
+ctl wait 4
+expect_info 60 100 0 "1 item(s) every 20 ticks, 0 speed / 0 stack upgrade(s) of 5"
+expect_info 60 100 0 "module 0 at 60,100,0: $PULLER dir=front target=north items=4 augments stack x2"
+echo "  with no upgrade the router reads 1 item(s)/operation and its augmented module 4"
+sample_steps 60 0 minecraft:stone 4 12
+[ "$STEPS" -ge 3 ] || fail "a Mk1 with two Stack Augments and no upgrade moved $STEPS operation(s) of four"
+
+# O3: the differential. The same Mk1 with its chest, neither an augment nor an
+# upgrade: one item per operation, so O1's and O2's four are the augment's.
+say "modularrouters install 62 100 0 0 $PULLER"
+say "modularrouters direction 62 100 0 0 front"
+ctl wait 4
+expect_info 62 100 0 "module 0 at 62,100,0: $PULLER dir=front target=north filter blacklist none"
+sample_steps 62 0 minecraft:stone 1 12
+[ "$STEPS" -ge 2 ] || fail "the plain Mk1 beside the augmented ones moved $STEPS operation(s)"
+echo "  the identical Mk1 with no augment: +1 per operation, so the four is the augment's"
+
+# O4: the slot's own limit and the cap. Six Stack Augments are what one slot holds
+# (`StackAugment.getMaxAugments`), `min(1 << 6, 64)` is 64, and the router's
+# one-slot buffer takes a whole stack in that one operation. A seventh is refused.
+say "modularrouters install 64 100 0 0 $PULLER"
+for _ in $(seq 1 6); do say "modularrouters augment 64 100 0 0 add stack"; done
+ctl wait 4
+expect_info 64 100 0 "module 0 at 64,100,0: $PULLER dir=none target=none items=64 augments stack x6"
+say "modularrouters augment 64 100 0 0 add stack"
+expect_chat "Modular Router: module 0 already holds 6 stack augment(s), its limit"
+# The module points at air while the rig is prepared (`left` on a north-facing
+# router is east), so nothing can be pulled before the assertion starts; the
+# chest is rebuilt empty and filled with exactly one stack.
+say "modularrouters direction 64 100 0 0 left"
+ctl wait 4
+ctl command 'data merge block 64 100 0 {Items:[]}' >/dev/null
+block_at 64 -1 minecraft:air
+block_at 64 -1 minecraft:chest
+ctl wait 2
+ctl container 64 100 -1 minecraft:stone 64 >/dev/null
+ctl wait 40
+empty=$(count 64 100 0 minecraft:stone)
+stock=$(count 64 100 -1 minecraft:stone)
+echo "  with the module pointed at air: buffer $empty, a fresh chest of $stock stone"
+[ "$empty" = 0 ] || fail "the rig pulled $empty item(s) before the assertion"
+[ "$stock" = 64 ] || fail "the fresh chest holds $stock, not the 64 the check needs"
+say "modularrouters direction 64 100 0 0 front"
+ctl wait 100 >/dev/null
+held=$(count 64 100 0 minecraft:stone)
+left=$(count 64 100 -1 minecraft:stone)
+echo "  six Stack Augments: one operation moved 64 into the buffer ($held), the chest holds $left"
+[ "$held" = 64 ] || fail "six Stack Augments left the buffer at $held, not the full stack of 64"
+[ "$left" = 0 ] || fail "six Stack Augments left $left of the chest's 64, not a whole operation"
+
+# O5: the augment is the module's saved entry, as the Range Augments are: the
+# count reads back after a relaunch and the module still moves four. The buffer
+# filled to a stack while the other rigs ran, so it is emptied before sampling —
+# a full buffer is no operation at all, which is not what this step is about.
+ctl command "clear @s" >/dev/null
+ctl quit >/dev/null
+sleep 2
+launch
+expect_info 58 100 0 "module 0 at 58,100,0: $PULLER dir=front target=north items=4 augments stack x2"
+ctl command 'data merge block 58 100 0 {Items:[]}' >/dev/null
+ctl container 58 100 -1 minecraft:stone 64 >/dev/null
+ctl wait 4
+sample_steps 58 0 minecraft:stone 4 12
+[ "$STEPS" -ge 3 ] || fail "the augmented Mk1 stopped moving four per operation after a relaunch"
+echo "  after the relaunch: items=4, buffer $(count 58 100 0 minecraft:stone), chest $(count 58 100 -1 minecraft:stone)"
 
 echo "== I: one package — the .hmod carries the code and the content =="
 python3 - "$HMOD" "$PORT/src/runtime.rs" <<'PY'
@@ -993,7 +1126,7 @@ ctl wait 4
 sample_steps 2 5 minecraft:stone 2 12
 [ "$STEPS" -ge 3 ] || fail "the upgraded router stopped moving two items after a relaunch"
 
-echo "== J1: the fourteen carried recipes craft in a real crafting table =="
+echo "== J1: the fifteen carried recipes craft in a real crafting table =="
 # A carried recipe whose ingredient is in the 1.21.1 object form
 # (`{"item": "..."}`) is rejected by the 26.3 parser at load, so the recipe is
 # dead data. The server names it once, at startup: print those lines as the
@@ -1131,4 +1264,4 @@ say "modularrouters remove 8 100 4 0"
 expect_chat "Modular Router: removed example:foreign_module"
 expect_info 8 100 4 "1 of 9 module(s)"
 
-echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the four module recipes, the three upgrade recipes and the five augment recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all eleven item ids read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch; the Range Augments are *module* augments in four slots, one block of reach each: a Mk2 whose target is fourteen blocks out moves nothing at range=12 and exactly one item per operation once four Range Up augments (installed by sneak right-click) take it to 16, one Range Down augment on a twelve-block target stops the pull at range=11 and comes back to the inventory when removed, a Sender Mk1's twelve-block scan starts delivering at range=16 with eight Range Up augments, a Range augment is refused on a module that is not ranged, a saved slot of fifteen reads as twelve (range=24, the hard maximum) and a fifth slot is cut, and the augments survive a relaunch"
+echo "PASS: a router with a Puller Mk1 and a Sender Mk1 moved 6 stone from one chest to another exactly one item per 20-tick operation with active=true, a placed router faced its placer, a right-click installed a module, the modules survived a relaunch, and a puller with no sender / a filter that refuses / a wall in the way moved nothing; a Stack upgrade installed by right-click doubled the items per operation to exactly two against an un-upgraded router beside it, a Speed upgrade moved the interval 20 -> 18 -> 12 ticks and the 12-tick router delivered about twice the plain one in a 360-tick window, removing an upgrade handed it back and returned the interval, five full slots clamped to the 2-tick floor and refused a sixth, an upgrade the tag names but this build does not run was refused, and the upgrades survived a relaunch; the four module recipes, the three upgrade recipes and the six augment recipes craft their declared id and count in a real table with the grid emptied and the distinctive ingredient consumed, wrong-ingredient controls craft nothing, all twelve item ids read back from the inventory, an unknown id is refused, the router's loot table drops it, one .hmod carries the code and the content, and a module id this port does not implement (minecraft:stick, registered by the harness pack, and example:foreign_module written into the block entity) installs by command and by right-click, reads back by /modularrouters info, keeps its direction, survives a save and relaunch and is removed, while dirt and the blank module are still refused; the Puller Mk2's target is selected by a sneak right-click with the module in hand (the chest does not open), the installed module names it in /modularrouters info, and it pulls exactly one item per operation from ten blocks away while an unselected Mk2, a target thirteen blocks out and a Mk1 at the same distance all leave the buffer empty, a direction it is given does not change the block it pulls from, and the target survives a relaunch; the Range Augments are *module* augments in four slots, one block of reach each: a Mk2 whose target is fourteen blocks out moves nothing at range=12 and exactly one item per operation once four Range Up augments (installed by sneak right-click) take it to 16, one Range Down augment on a twelve-block target stops the pull at range=11 and comes back to the inventory when removed, a Sender Mk1's twelve-block scan starts delivering at range=16 with eight Range Up augments, a Range augment is refused on a module that is not ranged, a saved slot of fifteen reads as twelve (range=24, the hard maximum) and a fifth slot is cut, and the augments survive a relaunch; the Stack Augment is the augment whose number overrides the router rather than adding to it: a Mk1 whose router holds one Stack Upgrade (2 item(s) per operation) and whose module holds two Stack Augments moves exactly four per operation, not eight, the identical module with no upgrade at all moves four as well while the plain Mk1 beside them moves one, six augments in one slot read items=64 and fill the one-slot buffer with a whole stack in one operation, a seventh is refused at the slot's limit, and the count survives a relaunch"

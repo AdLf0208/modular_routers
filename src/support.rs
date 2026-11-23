@@ -90,8 +90,9 @@ const MODULE_TAG: &str = "modularrouters:modules";
 /// Speed and Stack have a behaviour here; a tagged upgrade this build does not
 /// run is refused rather than counted as one it can.
 const UPGRADE_TAG: &str = "modularrouters:upgrades";
-/// The item tag that declares a module augment. Only the two Range augments have
-/// a behaviour here; a tagged augment is carried one per slot and stays inert.
+/// The item tag that declares a module augment. The three this build runs have a
+/// behaviour here; a tagged augment it does not run is carried one per slot and
+/// stays inert.
 const AUGMENT_TAG: &str = "modularrouters:augments";
 /// A block a sender's scan counts as passable: the three airs. Upstream also
 /// sends through any non-solid-render block (glass, torches, water) — a gap.
@@ -750,10 +751,13 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
     }
     let modules = read_modules(&event.entity.nbt);
     let facing = facing_at(&*host, level, pos);
-    let items = items_per_operation(upgrades.stack());
+    let router_items = items_per_operation(upgrades.stack());
     let dimension = level.dimension().id(&*host).unwrap_or_default();
     let mut worked = false;
     for module in &modules {
+        // A module's Stack Augments override the router's count
+        // (`CompiledModule.getItemsPerTick`); without one the router's is used.
+        let items = module.items_per_operation(router_items);
         let ran = match &module.kind {
             // A targeted module acts on its selected block, wherever its direction
             // points (upstream's `isDirectional` is false for it).
@@ -1319,6 +1323,7 @@ fn describe(
     speed: u32,
     stacks: u32,
 ) -> Vec<String> {
+    let router_items = items_per_operation(stacks);
     let mut lines = vec![format!(
         "Modular Router at {},{},{}: facing {}, active {active}, {} of {MODULE_SLOTS} module(s), buffer {}, {} item(s) every {} ticks, {speed} speed / {stacks} stack upgrade(s) of {UPGRADE_SLOTS}",
         pos[0],
@@ -1327,11 +1332,11 @@ fn describe(
         facing.name(),
         modules.len(),
         buffer_text(buffer),
-        items_per_operation(stacks),
+        router_items,
         tick_rate(speed)
     )];
     for (index, module) in modules.iter().enumerate() {
-        lines.push(module_line(pos, index, module, facing));
+        lines.push(module_line(pos, index, module, facing, router_items));
     }
     lines
 }
@@ -1345,7 +1350,13 @@ fn buffer_text(buffer: Option<&Stack>) -> String {
 }
 
 /// One module's line: what it is, where it points and what it takes.
-fn module_line(pos: Pos, index: usize, module: &Module, facing: Facing) -> String {
+fn module_line(
+    pos: Pos,
+    index: usize,
+    module: &Module,
+    facing: Facing,
+    router_items: u32,
+) -> String {
     let mode = if module.filter.whitelist() {
         "whitelist"
     } else {
@@ -1371,6 +1382,13 @@ fn module_line(pos: Pos, index: usize, module: &Module, facing: Facing) -> Strin
         Some(range) => format!(" range={range}"),
         None => String::new(),
     };
+    // `CompiledModule.getItemsPerTick`: a module holding Stack Augments moves a
+    // count of its own, so say how many — beside the slots that decided it. A
+    // module without one moves the router's count, which the summary line names.
+    let items = match module.augments().count(&AugmentKind::Stack) {
+        0 => String::new(),
+        _ => format!(" items={}", module.items_per_operation(router_items)),
+    };
     let augments = if module.augments().is_empty() {
         String::new()
     } else {
@@ -1386,7 +1404,7 @@ fn module_line(pos: Pos, index: usize, module: &Module, facing: Facing) -> Strin
         format!(" augments {}", list.join(","))
     };
     format!(
-        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{augments} filter {mode} {list}",
+        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{items}{augments} filter {mode} {list}",
         pos[0],
         pos[1],
         pos[2],
@@ -1831,8 +1849,8 @@ fn set_upgrade(
     }
 }
 
-/// `/modularrouters augment <pos> <slot> <add|remove> <range_up|range_down>`: the
-/// module screen's four augment slots, for a player without the screen (the
+/// `/modularrouters augment <pos> <slot> <add|remove> <range_up|range_down|stack>`:
+/// the module screen's four augment slots, for a player without the screen (the
 /// sneak-right-click path is the other half, in [`right_click`]).
 fn set_augment(
     host: &mut dyn ServerHost,
@@ -1843,11 +1861,11 @@ fn set_augment(
     augment: &str,
 ) -> String {
     let Ok(slot) = usize::try_from(slot) else {
-        return "Usage: /modularrouters augment <x> <y> <z> <slot> <add|remove> <range_up|range_down>"
+        return "Usage: /modularrouters augment <x> <y> <z> <slot> <add|remove> <augment>"
             .to_string();
     };
     let Some(kind) = AugmentKind::from_name(augment) else {
-        return "Unknown augment: range_up or range_down".to_string();
+        return "Unknown augment: range_up, range_down or stack".to_string();
     };
     match mode {
         "add" => add_augment(host, level, pos, slot, &kind),
@@ -2427,6 +2445,49 @@ mod tests {
             lines[1],
             "module 0 at 0,100,0: modularrouters:sender_module_1 dir=back target=south \
              range=7 augments range_down filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn the_readout_names_a_stack_augment_and_the_items_the_operation_moves() {
+        // `CompiledModule.getItemsPerTick`: when a module holds a Stack Augment the
+        // line says how many items its operation moves, beside the slot that holds it;
+        // a module without one keeps the line it has always had, because its count is
+        // the router's (named on the summary line).
+        let two = Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any()).with_augments(
+            Augments::new(vec![
+                Augment::new(AugmentKind::Stack, 2).expect("two stack augments"),
+            ]),
+        );
+        let lines = describe([0, 100, 0], Facing::North, false, &[two], None, 0, 1);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:puller_module_1 dir=front target=north \
+             items=4 augments stack x2 filter blacklist none",
+            "one Stack Upgrade reads 2 on the summary line and 4 on the augmented module"
+        );
+        assert_eq!(
+            lines[0],
+            "Modular Router at 0,100,0: facing north, active false, 1 of 9 module(s), buffer \
+             empty, 2 item(s) every 20 ticks, 0 speed / 1 stack upgrade(s) of 5"
+        );
+        let six = Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any()).with_augments(
+            Augments::new(vec![
+                Augment::new(AugmentKind::Stack, 6).expect("six stack augments"),
+            ]),
+        );
+        let lines = describe([0, 100, 0], Facing::North, false, &[six], None, 0, 0);
+        assert!(
+            lines[1].contains("items=64 augments stack x6"),
+            "{}",
+            lines[1]
+        );
+        let plain = Module::new(ModuleKind::PullerMk1, Relative::Front, Filter::any());
+        let lines = describe([0, 100, 0], Facing::North, false, &[plain], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 0,100,0: modularrouters:puller_module_1 dir=front target=north \
+             filter blacklist none"
         );
     }
 }

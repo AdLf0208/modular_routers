@@ -6,12 +6,12 @@ Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 1.21.1 NeoForge. Status: `ported-partial` — one slice, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.6** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.7** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
-(the three of those on 2026-11-22), and 0.2.6 the Range Augments in a module's four augment slots
-(2026-11-23). Pin: SDK
+(the three of those on 2026-11-22), 0.2.6 the Range Augments in a module's four augment slots and
+0.2.7 the Stack Augment (both on 2026-11-23). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -1165,6 +1165,163 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.6: **104,859 B**, SHA-256 `491723d43017a9b5dd620c48a56b6542b268b442012f91ea14a3d328975da0ad`,
 90 entries, no `Cargo.lock`.
 
+## Slice 7 (2026-11-23) — the Stack Augment (0.2.7)
+
+Slice chosen from this file's own gap list, item 3 — *"The other 9 augments (Stack, Mimic, Regulator,
+Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum)"* — the first entry, and
+the one `FINDINGS.md` §5's table had already read and marked *"recorded for the next augment slice;
+not carried"*. It is the only augment whose number is not a range and the only one the artefact says
+**overrides** rather than adds: `CompiledModule.getItemsPerTick` is
+`n > 0 ? min(1 << n, 64) : router.getItemsPerTick()`, so a module's Stack Augments replace the count
+the router's Stack Upgrades give it instead of multiplying it. Tier fit: **machines**, the ledger row
+— the module's saved entry, the router's tick and carried items; no renderer and no new machine.
+
+### The artefact's numbers, re-read
+
+At the same commit as slices 5–6 (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`):
+
+| upstream | what it says | used for |
+|---|---|---|
+| `logic/compiled/CompiledModule.java:252` | `getItemsPerTick` = `n > 0 ? Math.min(1 << n, 64) : router.getItemsPerTick()` | `Module::items_per_operation(router_items)` |
+| `item/augment/StackAugment.java` | `getMaxAugments` is **6**, and **0** for the Detector, both Extruders, the Breaker, the Placer and both Fluid modules (their operation is not an item count) | `STACK_AUGMENT_LIMIT`, `NO_STACK_AUGMENT` (seven ids), `ModuleKind::stack_augment_limit` |
+| `logic/compiled/CompiledSenderModule1.java:34` | the Sender takes `getItemsPerTick(router)` too | the tick passes the module's own count to `send` as well as `pull` |
+| `data/modularrouters/recipe/stack_augment.json` | shapeless `augment_core` + `stack_upgrade` → **1** | `data/modularrouters/recipe/stack_augment.json` |
+
+Carried with it (jar facts): the item (model, the jar's `augment/stack_augment.png`, lang, the
+`modularrouters:augments` tag entry, the creative tab) and that recipe, whose ingredient is a Stack
+Upgrade — the item slice 4 already ships.
+
+### How it works here
+
+- **`src/runtime.rs`** — `AugmentKind::Stack` (with `of`/`from_name("stack")`/`is_known`/`item`/
+  `name`) beside the two Range augments; `ModuleKind::augment_limit(Stack)` asks
+  `stack_augment_limit()`, which is `Some(6)` unless the module id is one of the seven. Upstream's
+  rule is a **list of classes that take none**, so every other module — including one this build only
+  carries — takes six. `Module::items_per_operation(router_items)` is the override: no Stack augment
+  is the router's count, one is `2`, two `4`, six `64` (`min(1 << 6, 64)`), and the shift is clamped
+  to the slot's limit so a save cannot shift past it.
+- **`src/support.rs`** — the tick asks **each module** for its count (`let items =
+  module.items_per_operation(router_items)`) and gives it to `pull`, `pull_target` and `send`; the
+  readout gains `items=<n>` on a module line **only when a Stack augment overrides** the router
+  (every existing line stays byte-identical; a plain module still moves the count the summary line
+  names). `/modularrouters augment … add stack` names it, and the sneak right-click install path
+  needed no change beyond `augment_limit`.
+- **Content** — the item, its model and the jar's texture, the recipe, the tag, the creative tab and
+  lang (`Stack Augment`).
+
+### TDD, in the order the ruling asks for
+
+**Red, unit** — the three `runtime` tests and the `support` readout test written before any of the
+types existed (`slice7-test-red.log`, 29 errors, `cargo` exit 101):
+
+```
+error[E0425]: cannot find value `MAX_ITEMS_PER_OPERATION` in this scope
+    --> src/runtime.rs:2043:51
+error[E0599]: no variant, associated function, or constant named `Stack` found for enum `runtime::AugmentKind` in the current scope
+error[E0599]: no method named `items_per_operation` found for struct `runtime::Module` in the current scope
+error: could not compile `modularrouters` (lib test) due to 29 previous errors
+```
+
+**Red, in game** — phase O run on the shipped **0.2.6** game
+(`../_shared/evidence/modularrouters-e2e/e2e-red-stack-augment.log`, mod `libmodularrouters.so`
+`456cf79d…`, package `491723d4…`): the item does not exist in that package, so the first give fails
+and no assertion after it can run.
+
+```
+FAIL: give modularrouters:stack_augment failed (is the augment in this package?)
+EXIT:1
+```
+
+(the run's own continuation shows the earlier gives succeeded — `Gave 1 [Augment Core]`, `Gave 1 [Range Down Augment]` — and only the Stack Augment is absent.)
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.7.log`)
+
+```
+== O: the Stack Augment — the count one operation moves, overriding the Stack Upgrades ==
+  Modular Router: installed modularrouters:stack_upgrade (1 of 5 upgrade slots used)
+  Modular Router at 58,100,0: ... buffer empty, 2 item(s) every 20 ticks, 0 speed / 1 stack upgrade(s) of 5
+  module 0 at 58,100,0: modularrouters:puller_module_1 dir=front target=north items=4 augments stack x2 filter blacklist none
+  the router with one Stack Upgrade reads 2 item(s)/operation and its augmented module 4
+  58,100,0: 7 operation(s), +4 item(s) each
+   Modular Router at 60,100,0: ... buffer minecraft:stone x4, 1 item(s) every 20 ticks, 0 speed / 0 stack upgrade(s) of 5
+  module 0 at 60,100,0: modularrouters:puller_module_1 dir=front target=north items=4 augments stack x2 filter blacklist none
+  with no upgrade the router reads 1 item(s)/operation and its augmented module 4
+  60,100,0: 7 operation(s), +4 item(s) each
+  module 0 at 62,100,0: modularrouters:puller_module_1 dir=front target=north filter blacklist none
+  62,100,0: 7 operation(s), +1 item(s) each
+  the identical Mk1 with no augment: +1 per operation, so the four is the augment's
+  module 0 at 64,100,0: modularrouters:puller_module_1 dir=none target=none items=64 augments stack x6 filter blacklist none
+  Modular Router: module 0 already holds 6 stack augment(s), its limit
+  with the module pointed at air: buffer 0, a fresh chest of 64 stone
+  six Stack Augments: one operation moved 64 into the buffer (64), the chest holds 0
+  … relaunch …
+  module 0 at 58,100,0: ... dir=front target=north items=4 augments stack x2 filter blacklist none
+  58,100,0: 6 operation(s), +4 item(s) each
+  after the relaunch: items=4, buffer 28, chest 36
+```
+
+and the new recipe in the same run (`craft_check.py`, J1):
+
+```
+  stack augment: an augment core and a stack upgrade, shapeless -> {"count": 1, "item": "modularrouters:stack_augment", "slot": 200}
+  stack augment with a stick where the stack upgrade goes -> null
+  fifteen carried recipes craft their declared id and count, the grid empties,
+  each distinctive ingredient is consumed, and nine wrong-ingredient controls craft nothing
+```
+
+**Why the assertions can fail, five ways.** (1) The 0.2.6 run above fails on the item's own give
+(`EXIT:1`). (2) Rig A is the **override itself**: the router's own count is 2 (`2 item(s) every 20
+ticks`) and its module's operation is 4 — an augment that *multiplied* would move 8, and
+`sample_steps` fails on any delta that is not exactly 4. (3) Rig B is the same two augments with **no**
+upgrade: the router reads 1 and the operation still moves 4, so the augment, not the upgrade, decides
+it. (4) Rig C is the same Mk1 with its own chest and neither augment nor upgrade: `+1` per operation,
+which is the differential that makes rigs A and B's four the augment's. (5) Rig D is the cap and the
+limit: six augments read `items=64`, a seventh is refused, and one operation empties a 64-strong
+chest into the one-slot buffer — a count of 4 would have left 60 behind in the 100 ticks. (6) The
+**counterfactual**: with the tick's `let items = module.items_per_operation(router_items)` replaced
+by the router's count (the augment honoured by the readout, ignored by the operation — exactly the
+shape a port that never implemented `getItemsPerTick` would have), the same run fails at rig A:
+`FAIL: one operation moved 2 items into 58,100,0, not 4`, `EXIT:1`
+(`../_shared/evidence/modularrouters-e2e/e2e-0.2.7-override-counterfactual.log`; the source was
+restored byte-identically and the rebuilt `libmodularrouters.so` is the same `f3b0280d…` the green
+run used).
+
+### Harness finding worth recording (O5)
+
+**A full buffer is a scenario bug, not a port failure.** The first green attempt failed O5 at
+`FAIL: the augmented Mk1 stopped moving four per operation after a relaunch`
+(`e2e-0.2.7-o5-buffer-red.log`) — rig A's buffer had filled to 64 while the other three rigs ran,
+so after the relaunch there was no room and no operation to sample. O5 now empties the slot with
+`/data merge` before sampling, the same route N5 uses; the assertion itself was right and stayed.
+
+### Ladder (every command in a `build-slot.sh` lease, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the types existed | **29 errors**, `could not compile … (lib test)`, exit 101 | `slice7-test-red.log` |
+| red, in game | `tools/e2e.sh` phase O on the **0.2.6** game | `FAIL: give modularrouters:stack_augment failed …`, `EXIT:1` | `modularrouters-e2e/e2e-red-stack-augment.log` |
+| red, in game (harness) | the first phase O5 on the fixed port | `FAIL: the augmented Mk1 stopped moving four per operation after a relaunch` (full buffer) | `modularrouters-e2e/e2e-0.2.7-o5-buffer-red.log` |
+| tests | `cargo test --offline` | **59 passed**, 0 failed | `slice7-test.log` (= `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice7-clippy.log` (= `sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice7-fmt.log` (= `sdk-fmt.log`) |
+| manifest bump | `launcher-game.sh build modularrouters` | `Compiling modularrouters (1 of 1)` — the 0.2.7 sources were compiled, not a cached package | `modularrouters-e2e/game-build-0.2.7.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second `cmp`-identical, **110,063 B** | `slice7-build.log`, `slice7-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.7 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `110063 bytes, SHA-256 5d540a0d…3516`, `EXIT:0` | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, `EXIT:0` | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` | `sdk-fits-0b14f8a.log` |
+| package contents | `unzip -l modularrouters.hmod` | **95 entries**, no `Cargo.lock` | `slice7-entries.txt` |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** (59 tests) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` | `modularrouters-e2e/e2e-launcher-0.2.7.log` |
+| the counterfactual (the augment ignored by the tick) | `tools/e2e.sh` | `FAIL: one operation moved 2 items into 58,100,0, not 4` + `EXIT:1` | `e2e-0.2.7-override-counterfactual.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-selftest-0.2.7.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `e2e-control-0.2.7.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | exit 0, `logs=30 ok=30`, 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.7: **110,063 B**, SHA-256 `5d540a0da4df2fe08465b4cc0591800d8cf0ccbe7b3db7ae4b9a216aece33516`,
+95 entries, no `Cargo.lock`.
+
 ## Family coverage (parity rule, ruling 2026-11-20)
 
 Every family the jar carries, against what this port does with it. `tested` names the phase of
@@ -1195,8 +1352,10 @@ Every family the jar carries, against what this port does with it. `tested` name
 | the `modularrouters:upgrades` item tag (the upgrade registry) | tested | E2E L (the package's tag lists both; a world pack's tag makes `minecraft:gunpowder` an upgrade, which is refused by message and changes nothing) |
 | the other 8 upgrade items (Blast, Camouflage, Energy, Fluid, Muffler, Security, Sync, Blank) | not ported (their mechanics are gaps 6 and 9; a tagged upgrade this build does not run is refused) | gap 2 for the items, gaps 6/9 for the behaviour |
 | **Range Up/Down Augments and a module's four augment slots** (one kind per slot, the module's own per-augment limit, removal, the saved entry) | **tested** | E2E N — a Mk2 whose target is **14** blocks out moves nothing at `range=12` and **exactly one item per operation** after four Range Up augments (installed by sneak right-click) take it to `range=16`; one Range Down augment on a **12**-block target freezes the pull at `range=11` and comes back to the inventory when removed; a Sender Mk1's twelve-block scan only starts delivering at `range=16` with eight Range Up augments; a Range augment is refused on a module that is not ranged; a saved slot of fifteen reads as twelve (`range=24`, the hard maximum) and a fifth slot is cut; the augments survive a relaunch; `runtime::tests` cover the limits (12/11 for the Mk2, 8/7 for the Sender, 0 for the Mk1), the one-kind-per-slot rule, the carried foreign id and the capped read |
-| the three augment items and the five augment recipes (core, Range Up, Range Down, and the two conversions) | tested | E2E N1 (three items given and read back, the `augments` tag lists both) and J1 (each crafts its declared id and count ×4/×4/×4/×1/×1 in a real table, the grid empties, the distinctive ingredient is consumed, two wrong-ingredient controls craft nothing) |
-| the other 9 augments (Stack, Mimic, Regulator, Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum) | not ported (a tagged augment is carried inertly, one per slot, and its saved count is kept) | gap 3 |
+| the three augment items and the five augment recipes (core, Range Up, Range Down, and the two conversions) | tested | E2E N1 (three items given and read back, the `augments` tag lists both) and J1 (each crafts its declared id and count ×4/×4/×4/×1/×1 in a real table, the grid empties, the distinctive ingredient is consumed, two wrong-ingredient controls craft nothing) → **now four items and six recipes** with the Stack Augment (below) |
+| **the Stack Augment and the count one operation moves** (`CompiledModule.getItemsPerTick`: `n > 0 ? min(1 << n, 64) : router`) | **tested** | E2E O — a Mk1 whose router holds one Stack Upgrade (`2 item(s) every 20 ticks`) and whose module holds two Stack Augments moves **exactly 4** per operation (7 operations, +4 each; a multiplying augment would move 8 and `sample_steps` fails on any other delta), the identical module with **no** upgrade moves **4 as well** while the plain Mk1 beside them moves **1**, a seventh augment in the slot is refused, six augments read `items=64` and one operation empties a 64-strong chest into the one-slot buffer, the count reads back after a relaunch and it moves four again; `runtime::tests` cover the override (4 not 8, 4 not 1), the 64 cap, the six-per-slot limit and the capped saved count; the Stack Augment's recipe and item are in N1/J1 |
+| the Stack Augment's `getMaxAugments = 0` modules (Detector, both Extruders, Breaker, Placer, both Fluid modules) | `blocked(module-kind)` — unit-tested only | `runtime::tests::a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items` asserts the seven ids take none (and a foreign module takes upstream's six); none of those seven kinds is implemented here (gap 1), so there is no module in game that could show the refusal |
+| the other 8 augments (Mimic, Regulator, Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum) | not ported (a tagged augment is carried inertly, one per slot, and its saved count is kept) | gap 3 |
 | the router screen and every module screen | not ported | gap 4 (commands + a right-click readout stand in) |
 | item beams, particles, sounds | not ported | gap 5 |
 | redstone modes, eco mode, security upgrade | not ported | gap 6 |
@@ -1266,13 +1425,17 @@ binary does not list the port's own tests.
    **Speed, Stack and the blank base ship, with the five slots and their insert
    rules** (slice 4, E2E L): those two are what the tick-rate and stack formulas
    are about.
-3. **The other 9 augments** (Stack, Mimic, Regulator, Pickup Delay, Redstone,
-   Fast Pickup, Filter Round Robin, Pushing, XP Vacuum) and **smart filters** (5:
+3. **The other 8 augments** (Mimic, Regulator, Pickup Delay, Redstone, Fast
+   Pickup, Filter Round Robin, Pushing, XP Vacuum) and **smart filters** (5:
    bulk item, mod, tag, regex, inspection) and the RegexMatcher; this slice's
    filter is a whitelist/blacklist over item ids. **The Range Up/Down Augments and
    a module's four augment slots ship** (slice 6, E2E N), including the carried
    foreign-augment rule; a tagged augment this build does not run stays inert and
-   keeps its saved count.
+   keeps its saved count. **The Stack Augment ships** (slice 7, E2E O) with
+   upstream's `min(1 << n, 64)` override and its six-per-slot limit; its
+   `getMaxAugments = 0` half (the Detector, both Extruders, the Breaker, the
+   Placer and both Fluid modules) is unit-tested and `blocked(module-kind)` —
+   those seven kinds are gap 1, so no module in game can show the refusal.
 4. **GUI**: the router screen (module/upgrade/buffer slots, redstone/eco
    buttons) and every module screen. Replaced here by commands and a right-click
    readout — a player-facing deviation.
