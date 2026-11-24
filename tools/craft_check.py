@@ -51,6 +51,7 @@ DROPPER_MODULE = "modularrouters:dropper_module"
 VACUUM_MODULE = "modularrouters:vacuum_module"
 FLINGER_MODULE = "modularrouters:flinger_module"
 PLACER_MODULE = "modularrouters:placer_module"
+BREAKER_MODULE = "modularrouters:breaker_module"
 
 
 def main() -> int:
@@ -426,6 +427,20 @@ def main() -> int:
         ],
         PLACER_MODULE, 1, "minecraft:dispenser",
     )
+    # The Breaker Module is the jar's special shapeless recipe: a blank module
+    # plus an undamaged pickaxe (upstream `ItemTags.PICKAXES`), which the recipe
+    # also saves into the module's pickaxe slot. Horizon has no pickaxe tag and a
+    # declarative recipe cannot copy its grid ingredient, so this port uses one
+    # pickaxe id and the `pickaxe` command stands in for the component transfer.
+    check(
+        "breaker module: a blank module and an iron pickaxe, shapeless",
+        [(BLANK, 1), ("minecraft:iron_pickaxe", 1)],
+        [
+            (BLANK, every(GRID["tl"])),
+            ("minecraft:iron_pickaxe", every(GRID["mm"])),
+        ],
+        BREAKER_MODULE, 1, "minecraft:iron_pickaxe",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -570,6 +585,11 @@ def main() -> int:
         ],
     )
     empty_control(
+        "breaker module with a stick where the iron pickaxe goes",
+        [(BLANK, 1), ("minecraft:stick", 1)],
+        [(BLANK, every(GRID["tl"])), ("minecraft:stick", every(GRID["mm"]))],
+    )
+    empty_control(
         "vacuum module with a stick where the ender eye goes",
         [(BLANK, 1), ("minecraft:hopper", 1), ("minecraft:stick", 1)],
         [
@@ -583,8 +603,8 @@ def main() -> int:
         for line in failures:
             print(f"  FAIL {line}", file=sys.stderr)
         return 1
-    print("  twenty-three carried recipes craft their declared id and count, the grid empties,")
-    print("  each distinctive ingredient is consumed, and sixteen wrong-ingredient controls craft nothing")
+    print("  twenty-four carried recipes craft their declared id and count, the grid empties,")
+    print("  each distinctive ingredient is consumed, and seventeen wrong-ingredient controls craft nothing")
     return 0
 
 

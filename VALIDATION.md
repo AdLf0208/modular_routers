@@ -1,5 +1,49 @@
 # Modular Routers — validation ladder
 
+## 0.2.16 — the Breaker Module (2026-11-24)
+
+Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 16: the Breaker Module —
+`CompiledBreakerModule.execute` (the **inbound** regulation floor `amount > buffer count`),
+`BlockUtil.tryBreakBlock` (prospective drops, the filter against drops or the block by `MatchType`,
+the harvest-level tier limit, and the "no drops + blacklist still breaks" rule) and the SDK route
+`LevelRef::block_drops` → `LevelRef::destroy_block(drop=true, collect=true)` → the one-slot buffer.
+No new machine, block entity or renderer; `sender_module_3` stays `blocked(cross-level-capability)`.
+Full rule table, deviations and coverage row: `notes.md` § *Slice 16*.
+
+| Step | Command | Result | Evidence |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | 46 errors, `could not compile … (lib test)`, exit 101 | `../_shared/evidence/modularrouters/slice16-test-red.log` |
+| red, in game | `tools/e2e.sh` phase X on the shipped **0.2.15** game | `Unknown module 'modularrouters:breaker_module' …`, `FAIL`, `EXIT:1` | `../_shared/evidence/modularrouters-e2e/e2e-red-breaker.log` |
+| tests | `cargo test --offline` | **94 passed**, 0 failed | `../_shared/evidence/modularrouters/sdk-test.log` |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `../_shared/evidence/modularrouters/sdk-clippy.log` |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `../_shared/evidence/modularrouters/sdk-fmt.log` |
+| manifest bump | `launcher-game.sh build modularrouters` (stale `native-*` tag removed first) | `Compiling modularrouters (1 of 1)`; export names **0.2.16** | `../_shared/evidence/modularrouters-e2e/game-build-0.2.16.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second `cmp`-identical, **166,365 B**, sha256 `c584f8eb…64d98` | `../_shared/evidence/modularrouters/slice16-build{,-second}.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.16 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, `166365 bytes, SHA-256 c584f8eb…64d98`, exit 0 | `../_shared/evidence/modularrouters/sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, exit 0 | `../_shared/evidence/modularrouters/sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `../_shared/evidence/modularrouters/sdk-fits.log` |
+| recipes / data shape | `check-recipe-types.py`, `tools/data_shape.py` | `modularrouters: ok`; 25 recipe/loot files, all 26.3 dialect | this session |
+| package contents | `unzip -Z1`, packed `README.md` vs the tree | **136 entries**, no `Cargo.lock`, README byte-identical | this session |
+| the gate | `python3 ports/tools/verify-sdk-package.py modularrouters` | **1/1** | `../_shared/evidence/modularrouters/verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` | `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.16.log` |
+| counterfactual / control | `SELFTEST=1`, `GAME=$CONTROL_GAME` | `FAIL` + `EXIT:1` each | `../_shared/evidence/modularrouters-e2e/e2e-{selftest,control}-0.2.16.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | 0 missing/bad exit lines | — |
+
+In game, phase X's ten rigs (x = 241…268) read: iron+stone → air / 1 cobble;
+dirt whitelist → stone stays / 0; glass → air / 0; Regulator 4 with a buffer of
+4 → stone stays / 4; BLOCK match with a stone filter → air / 1 cobble; BLOCK
+match with a cobble filter → stone stays / 0; stick on diamond ore → ore stays /
+0; ITEM match with a cobble filter → air / 1 cobble; `dir=none` → stone stays / 0;
+iron on diamond ore → air / 1 diamond. Two harness faults were found and fixed
+in `tools/e2e.sh` (an assertion written before the whitelist was applied, and a
+missing teleport home that left the later upgrade rigs in unloaded chunks); the
+module never failed an assertion after its first green run.
+
+**Skills:** superpowers/using-superpowers, brainstorming, writing-plans,
+test-driven-development, systematic-debugging, verification-before-completion;
+BeautifulRust/rust-best-practices
+
 ## 0.2.15 — the Placer Module (2026-11-23)
 
 Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

@@ -27,13 +27,14 @@ use mod_api::{
 };
 
 use crate::runtime::{
-    AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, Dropped, FACE_NAMES, Face, Facing,
-    Filter, Flinger, MAX_FILTER_ITEMS, MODULE_SLOTS, Module, ModuleKind, Pos, Relative, Slot,
-    Stack, Target, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades, VacuumOp, buffer_after_pull,
-    buffer_after_send, drop_point, face_of_normal, facing_for_placement, facing_of_state,
-    fling_velocity, in_range, is_operation_tick, items_per_operation, parse_pos, phase_of,
-    pick_drop, pick_place, pick_pull, pick_send, pick_void, scan_positions, send_quota,
-    side_towards, step, tick_rate, vacuum_box, vacuum_centre,
+    AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, Break, DEFAULT_PICKAXE, Dropped,
+    FACE_NAMES, Face, Facing, Filter, Flinger, MAX_FILTER_ITEMS, MODULE_SLOTS, MatchType, Module,
+    ModuleKind, Pos, Relative, Slot, Stack, Target, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades,
+    VacuumOp, break_allowed, break_decision, buffer_after_pull, buffer_after_send, drop_point,
+    face_of_normal, facing_for_placement, facing_of_state, fling_velocity, in_range,
+    is_operation_tick, items_per_operation, parse_pos, phase_of, pick_drop, pick_place, pick_pull,
+    pick_send, pick_void, scan_positions, send_quota, side_towards, step, tick_rate, tool_tier,
+    vacuum_box, vacuum_centre,
 };
 
 /// The router block (and its item).
@@ -78,6 +79,13 @@ const MODULE_FLINGER: &str = "Flinger";
 const FLINGER_SPEED: &str = "speed";
 const FLINGER_PITCH: &str = "pitch";
 const FLINGER_YAW: &str = "yaw";
+/// A breaker's two settings inside its `Modules` entry: upstream keeps the
+/// pickaxe in `PICKAXE` and the `MatchType` in `BREAKER_SETTINGS`; this port
+/// keeps a module's settings in the router's save, so they ride beside `dir` and
+/// `filter` as `{pickaxe, match}` strings.
+const MODULE_BREAKER: &str = "Breaker";
+const BREAKER_PICKAXE: &str = "pickaxe";
+const BREAKER_MATCH: &str = "match";
 
 /// The component id a targeted module carries its selected block in, for
 /// `Hooks::component_types` to register.
@@ -254,6 +262,35 @@ fn write_flinger(entry: &mut Compound, flinger: Flinger) {
     entry.insert(MODULE_FLINGER.into(), Tag::Compound(settings));
 }
 
+/// A breaker's saved pickaxe and match type, defaulting exactly as
+/// `IPickaxeUser.getPickaxe` and `BreakerSettings.DEFAULT` do when a save has
+/// neither field.
+fn read_breaker(entry: &Compound) -> Break {
+    let Some(Tag::Compound(settings)) = entry.get(&MODULE_BREAKER.into()) else {
+        return Break::default();
+    };
+    Break::new(
+        string(settings, BREAKER_PICKAXE).unwrap_or_else(|| DEFAULT_PICKAXE.to_string()),
+        string(settings, BREAKER_MATCH)
+            .and_then(|name| MatchType::from_name(&name))
+            .unwrap_or(MatchType::ByItem),
+    )
+}
+
+/// Write a breaker's settings into the module's saved entry.
+fn write_breaker(entry: &mut Compound, breaker: &Break) {
+    let mut settings = Compound::new();
+    settings.insert(
+        BREAKER_PICKAXE.into(),
+        Tag::String(breaker.pickaxe.as_str().into()),
+    );
+    settings.insert(
+        BREAKER_MATCH.into(),
+        Tag::String(breaker.match_type.name().into()),
+    );
+    entry.insert(MODULE_BREAKER.into(), Tag::Compound(settings));
+}
+
 /// A target's fields, as both the module's save and the item's component spell them.
 fn target_entry(target: &Target) -> Compound {
     let mut entry = Compound::new();
@@ -354,7 +391,8 @@ fn read_modules(nbt: &Compound) -> Vec<Module> {
             };
             let module = Module::new(kind, direction, Filter::new(whitelist, items))
                 .with_regulation(count(entry, MODULE_REGULATE))
-                .with_flinger(read_flinger(entry));
+                .with_flinger(read_flinger(entry))
+                .with_breaker(read_breaker(entry));
             let module = match read_target(entry) {
                 Some(target) => module.with_target(target),
                 None => module,
@@ -395,6 +433,9 @@ fn write_modules(nbt: &mut Compound, modules: &[Module]) {
             }
             if matches!(module.kind, ModuleKind::Flinger) {
                 write_flinger(&mut entry, module.flinger());
+            }
+            if matches!(module.kind, ModuleKind::Breaker) {
+                write_breaker(&mut entry, module.breaker());
             }
             if let Some(target) = &module.target {
                 write_target(&mut entry, target);
@@ -1000,6 +1041,123 @@ fn place_from_buffer(
     true
 }
 
+/// `BlockUtil.tryBreakBlock`'s harvest-level limit ("respect the harvest level of
+/// the pickaxe used to craft them"), which is enabled by default upstream: the
+/// block's `incorrect_for_<tier>_tool` tag refuses a tool below its tier. The
+/// tier comes from [`tool_tier`], with upstream's stone fallback for a non-tool.
+fn tool_refuses_block(host: &dyn Host, pickaxe: &str, block_id: &str) -> bool {
+    let tier = tool_tier(pickaxe);
+    let Some(entry) = host.registry_entry("minecraft:block", block_id) else {
+        return false;
+    };
+    host.registry_entry_in_tag(&entry, &format!("minecraft:incorrect_for_{tier}_tool"))
+        .unwrap_or(false)
+}
+
+/// One Breaker operation: break the block its direction names with the module's
+/// saved pickaxe and route the loot into the router's buffer.
+///
+/// Upstream's `CompiledBreakerModule.execute` checks the inbound regulation floor
+/// and calls `BlockUtil.tryBreakBlock`; that helper prepares the drops with the
+/// pickaxe, applies `MatchType` and the filter, and only then destroys the block.
+/// At this pin `LevelRef::block_drops` is the prospective `Block.getDrops` (no
+/// break, no event) and `LevelRef::destroy_block` is the level loot path. The
+/// collected stacks go into the one-slot buffer, merging with its own item; a
+/// stack the buffer cannot hold is popped back into the level.
+fn break_from_buffer(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    face: Face,
+) -> bool {
+    // `isRegulationOK(router, true)`: an amount above the buffer count is
+    // required, so a buffer already at the amount does nothing.
+    let held = entity
+        .items
+        .get(BUFFER_SLOT)
+        .and_then(Option::as_ref)
+        .cloned();
+    let buffer_count = held.as_ref().map_or(0, ItemStack::count);
+    if !break_allowed(buffer_count, module.regulation_amount()) {
+        return false;
+    }
+    // The pickaxe is the module's saved slot (`IPickaxeUser`), defaulting to a
+    // stone one. A non-tool in that slot is still a valid tool stack — the loot
+    // table simply yields no drops for a block that needs a pickaxe.
+    let Ok(id) = Identifier::parse(&module.breaker().pickaxe) else {
+        return false;
+    };
+    let Some(item) = host.item_key(&id) else {
+        return false;
+    };
+    let Some(tool) = ItemStack::new(item, 1) else {
+        return false;
+    };
+    let target = step(pos, face);
+    let Some(block) = level.block(&*host, target) else {
+        return false;
+    };
+    // Upstream's harvest-level limit: a stone-tier fallback (a stick) may not
+    // break a block tagged `incorrect_for_stone_tool`, while an iron pickaxe may.
+    if tool_refuses_block(&*host, &module.breaker().pickaxe, &block.id(&*host)) {
+        return false;
+    }
+    // In `MatchType::BLOCK` mode the filter tests the block, not its drops.
+    let block_item = host.block_item(block).map(|item| item.id(&*host));
+    // The prospective drops decide whether the break happens at all, exactly as
+    // `BlockUtil.tryBreakBlock` does with `Block.getDrops`.
+    let Ok(Some(prospective)) = level.block_drops(&mut *host, target, Some(&tool), None) else {
+        return false;
+    };
+    let drops: Vec<Stack> = prospective
+        .iter()
+        .map(|stack| saved_stack(&*host, stack))
+        .collect();
+    if break_decision(
+        &drops,
+        &module.filter,
+        module.breaker().match_type,
+        block_item.as_deref().unwrap_or(""),
+    )
+    .is_none()
+    {
+        return false;
+    }
+    // The level loot path, with `collect`: the returned stacks are ours to put
+    // in the buffer instead of spawning as item entities on the ground.
+    let Ok(Some(collected)) = level.destroy_block(&mut *host, target, true, Some(&tool), true)
+    else {
+        return false;
+    };
+    let mut current = held;
+    for stack in collected {
+        let resource = saved_stack(&*host, &stack);
+        let take = match module.breaker().match_type {
+            MatchType::ByItem => module.filter.accepts(&resource.item),
+            MatchType::ByBlock => true,
+        };
+        if !take {
+            continue;
+        }
+        match current.take() {
+            None => current = Some(stack),
+            Some(mut held_stack) => {
+                if saved_stack(&*host, &held_stack).same_resource(&resource) {
+                    let _ = held_stack.set_count(held_stack.count() + stack.count());
+                    current = Some(held_stack);
+                } else {
+                    let _ = level.pop_resource(&mut *host, target, stack);
+                    current = Some(held_stack);
+                }
+            }
+        }
+    }
+    write_buffer(entity, current);
+    true
+}
+
 /// Put a stack in the buffer slot, growing the list when the entity has none.
 fn write_buffer(entity: &mut mod_api::ModBlockEntityView<'_>, stack: Option<ItemStack>) {
     if entity.items.len() == BUFFER_SLOT {
@@ -1304,6 +1462,11 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
                     // writes one buffered item into it as a block.
                     ModuleKind::Placer => {
                         place_from_buffer(host, level, pos, module, &mut event.entity, face)
+                    }
+                    // A breaker acts on the block its direction names, with its
+                    // saved pickaxe; a `dir=none` module has no target and skips.
+                    ModuleKind::Breaker => {
+                        break_from_buffer(host, level, pos, module, &mut event.entity, face)
                     }
                     _ => false,
                 }
@@ -1909,6 +2072,19 @@ fn module_line(
         }
         _ => String::new(),
     };
+    // A breaker's pickaxe and match type are the module screen's two fields,
+    // which this port replaces with commands; the readout is their stand-in.
+    let breaker = match module.kind {
+        ModuleKind::Breaker => {
+            let settings = module.breaker();
+            format!(
+                " pickaxe={} match={}",
+                settings.pickaxe,
+                settings.match_type.name()
+            )
+        }
+        _ => String::new(),
+    };
     // `CompiledModule.getItemsPerTick`: a module holding Stack Augments moves a
     // count of its own, so say how many — beside the slots that decided it. A
     // module without one moves the router's count, which the summary line names.
@@ -1938,7 +2114,7 @@ fn module_line(
         format!(" augments {}", list.join(","))
     };
     format!(
-        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{fling}{items}{regulate}{augments} filter {mode} {list}",
+        "module {index} at {},{},{}: {} dir={} target={target}{at}{range}{fling}{breaker}{items}{regulate}{augments} filter {mode} {list}",
         pos[0],
         pos[1],
         pos[2],
@@ -2002,7 +2178,7 @@ pub(crate) fn declare_commands(commands: &mut Vec<Command>) {
 /// player-chosen coordinates — and `install`/`upgrade`/`augment` add to it with no
 /// item cost — so they are gamemaster tools (level 2), as `/data` is; `info` is a
 /// readout.
-pub(crate) fn usages() -> [(&'static str, u8); 11] {
+pub(crate) fn usages() -> [(&'static str, u8); 13] {
     [
         ("modularrouters info <pos:block_pos>", 0),
         (
@@ -2040,6 +2216,14 @@ pub(crate) fn usages() -> [(&'static str, u8); 11] {
         ),
         (
             "modularrouters target <pos:block_pos> <slot:integer> <at:text>",
+            2,
+        ),
+        (
+            "modularrouters pickaxe <pos:block_pos> <slot:integer> <pickaxe:text>",
+            2,
+        ),
+        (
+            "modularrouters match <pos:block_pos> <slot:integer> <mode:word>",
             2,
         ),
     ]
@@ -2195,6 +2379,25 @@ pub(crate) fn run_command(host: &mut dyn ServerHost, event: &mut RunModCommandEv
                 return Flow::Cancel;
             };
             let line = set_target(host, level, pos, slot, at);
+            say(host, &line);
+        }
+        ["pickaxe"] => {
+            let (Some(slot), Some(pickaxe)) =
+                (integer(invocation, "slot"), word(invocation, "pickaxe"))
+            else {
+                say(host, USAGE);
+                return Flow::Cancel;
+            };
+            let line = set_pickaxe(host, level, pos, slot, pickaxe);
+            say(host, &line);
+        }
+        ["match"] => {
+            let (Some(slot), Some(mode)) = (integer(invocation, "slot"), word(invocation, "mode"))
+            else {
+                say(host, USAGE);
+                return Flow::Cancel;
+            };
+            let line = set_match(host, level, pos, slot, mode);
             say(host, &line);
         }
         _ => say(host, USAGE),
@@ -2658,6 +2861,88 @@ fn set_fling(
     }
 }
 
+/// `/modularrouters pickaxe`: save the item in a Breaker Module's pickaxe slot —
+/// the module screen's field, which this port replaces with a command.
+fn set_pickaxe(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    slot: i32,
+    pickaxe: &str,
+) -> String {
+    let Ok(slot) = usize::try_from(slot) else {
+        return "Usage: /modularrouters pickaxe <x> <y> <z> <slot> <item>".to_string();
+    };
+    let id = namespaced(pickaxe);
+    let mut found = false;
+    let mut is_breaker = false;
+    let applied = edit_module(host, level, pos, slot, |module| {
+        found = true;
+        if !matches!(module.kind, ModuleKind::Breaker) {
+            return false;
+        }
+        is_breaker = true;
+        let mut saved = module.breaker().clone();
+        saved.pickaxe = id.clone();
+        module.set_breaker(saved);
+        true
+    });
+    if applied {
+        format!("Modular Router: module {slot} breaks with {id}")
+    } else if !found {
+        format!("Modular Router: no module in slot {slot}")
+    } else if is_breaker {
+        format!("Modular Router: module {slot} already breaks with {id}")
+    } else {
+        format!("Modular Router: slot {slot} is not a breaker module")
+    }
+}
+
+/// `/modularrouters match`: save a Breaker Module's `MatchType` — the other
+/// field of `BreakerSettings`, whose serialized names are `item` and `block`.
+fn set_match(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    slot: i32,
+    mode: &str,
+) -> String {
+    let Ok(slot) = usize::try_from(slot) else {
+        return "Usage: /modularrouters match <x> <y> <z> <slot> <item|block>".to_string();
+    };
+    let Some(match_type) = MatchType::from_name(mode) else {
+        return format!("Modular Router: match must be item or block, not {mode}");
+    };
+    let mut found = false;
+    let mut is_breaker = false;
+    let applied = edit_module(host, level, pos, slot, |module| {
+        found = true;
+        if !matches!(module.kind, ModuleKind::Breaker) {
+            return false;
+        }
+        is_breaker = true;
+        let mut saved = module.breaker().clone();
+        saved.match_type = match_type;
+        module.set_breaker(saved);
+        true
+    });
+    if applied {
+        format!(
+            "Modular Router: module {slot} matches {}",
+            match_type.name()
+        )
+    } else if !found {
+        format!("Modular Router: no module in slot {slot}")
+    } else if is_breaker {
+        format!(
+            "Modular Router: module {slot} already matches {}",
+            match_type.name()
+        )
+    } else {
+        format!("Modular Router: slot {slot} is not a breaker module")
+    }
+}
+
 /// An item argument without a namespace is a vanilla item, as the GUI's list is.
 fn namespaced(item: &str) -> String {
     if item.contains(':') {
@@ -2681,7 +2966,7 @@ mod tests {
     #[test]
     fn the_readout_is_open_and_every_mutation_is_operator_gated() {
         let usages = usages();
-        assert_eq!(usages.len(), 11);
+        assert_eq!(usages.len(), 13);
         for (usage, level) in usages {
             let expected = if usage.contains(" info ") { 0 } else { 2 };
             assert_eq!(level, expected, "{usage}");
@@ -3557,6 +3842,44 @@ mod tests {
         assert_eq!(
             lines[1],
             "module 0 at 201,100,0: modularrouters:placer_module dir=none target=none \
+             filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn a_breaker_modules_line_names_its_pickaxe_and_match_type() {
+        // The module screen's two fields (the pickaxe and MatchType) have no GUI
+        // here; the readout is their stand-in, so a player can see what the module
+        // will break with. A module that is not a breaker keeps its old line.
+        use crate::runtime::{Break, MatchType};
+        let breaker = Module::new(ModuleKind::Breaker, Relative::Front, Filter::any());
+        let lines = describe([241, 100, 0], Facing::North, false, &[breaker], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 241,100,0: modularrouters:breaker_module dir=front target=north \
+             pickaxe=minecraft:stone_pickaxe match=item filter blacklist none"
+        );
+        let configured = Module::new(ModuleKind::Breaker, Relative::Front, Filter::any())
+            .with_breaker(Break::new("minecraft:iron_pickaxe", MatchType::ByBlock));
+        let lines = describe(
+            [241, 100, 0],
+            Facing::North,
+            false,
+            &[configured],
+            None,
+            0,
+            0,
+        );
+        assert_eq!(
+            lines[1],
+            "module 0 at 241,100,0: modularrouters:breaker_module dir=front target=north \
+             pickaxe=minecraft:iron_pickaxe match=block filter blacklist none"
+        );
+        let plain = Module::new(ModuleKind::Placer, Relative::Front, Filter::any());
+        let lines = describe([241, 100, 0], Facing::North, false, &[plain], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 241,100,0: modularrouters:placer_module dir=front target=north \
              filter blacklist none"
         );
     }

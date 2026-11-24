@@ -3,10 +3,10 @@
 Class **content**, tier **machines**, core, priority P0.
 Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 (<https://github.com/desht/ModularRouters>, **MIT**, rank 0), Minecraft Java
-1.21.1 NeoForge. Status: `ported-partial` — fourteen slices, gaps recorded below.
+1.21.1 NeoForge. Status: `ported-partial` — sixteen slices, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.14** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.16** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
@@ -14,7 +14,8 @@ Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged
 0.2.7 the Stack Augment (both on 2026-11-23), 0.2.8 the Regulator Augment, 0.2.9 the Void
 Module, 0.2.10 the targeted Sender Mk2, 0.2.11 the Regulator Augment's **sender** half,
 0.2.12 the Dropper Module, 0.2.13 the Vacuum Module and 0.2.14 the Flinger Module with the
-vacuum's review fix (all on 2026-11-23). Pin: SDK
+vacuum's review fix (all on 2026-11-23), 0.2.15 the Placer Module (2026-11-23) and
+0.2.16 the Breaker Module (2026-11-24). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -2795,8 +2796,9 @@ Every family the jar carries, against what this port does with it. `tested` name
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
 | **`sender_module_3`** (a targeted sender with `isRangeLimited()` false: no distance limit, the target in the router's world *or* a permitted dimension) | `blocked(cross-level-capability)` — probed in game, not shipped | the probe (§ *Blocked: the Sender Module Mk3*): the Mk3 kind installs, its readout prints **no `range=`** where the Mk2's prints `range=24`, and a same-level target **60 blocks** out receives all eight — but a target in the Overworld is unreachable from an End tick: `{loaded: 1b, in_place: 0b, capability: 0b, merge: "stale"}`, buffer 8 kept; the Mk2 keeps its 8 too (the differential) and a blacklisted dimension is refused |
 | **Flinger Module (the Dropper Module with a velocity: the same filtered stack thrown the same way, given the module's saved speed, pitch and yaw)** | **tested** | E2E V — eight stone in a flinger's buffer with `dir=front` on an east-facing router at **speed 1** land as **eight stone in a column past the adjacent block** with the buffer **0**; the identical flinger at **speed 0** leaves them in the **adjacent** block, exactly as a dropper does (the speed differential); a `dir=up` flinger (base pitch 90°) throws them **above the router** with **none east**; a **pitch 90** throw on a horizontal aim goes straight up and back into the adjacent block with none in the far column; a **yaw 60** throw lands **north** of the row and none in it; and a flinger whose whitelist names dirt keeps all **8** and throws **0** (the filter); its readout is `modularrouters:flinger_module dir=front target=east fling=speed=1 pitch=0 yaw=0`; `runtime::tests` cover `fling_velocity` for every quadrant, the speed scale and zero, ±pitch, ±yaw, the router-facing base of a tilted up/down fling and the spawn point, `Flinger::validated` at every bound, at infinity and at NaN, the shared `pick_drop` rule, and the save round trip (an out-of-range save reads as the default triple); `support::tests` the readout and the save |
-| the other 12 modules (`breaker`, …) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| other modules not named above (`extruder_1`/`_2`, `detector`, `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`, `player`, `activator`, `creative`) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
 | **Placer Module (buffer → one block in the module's direction: the item's block form is written into a replaceable state, one item per placement, down to the module's regulation amount)** | **tested** | E2E W — eight stone in a placer's buffer with `dir=front` on a north-facing router become **one stone block** at `(x,100,-1)`, the buffer **7**, and every later operation is refused because the block is occupied (the artefact's one-destination rule; the brief's "buffer 0 after eight operations" is arithmetically impossible and was not coded as a claim); the identical placer with **no direction** places nothing (buffer 8, air unchanged), a buffer of **stick** places nothing (no block form, buffer 8), a whitelist naming **dirt** places nothing (buffer 8), a placer whose destination **already holds stone** places nothing (buffer 8, block unchanged), `dir=up` places **above** the router with none north (buffer 7), and a Regulator Augment at **3** refuses a buffer of exactly three (buffer 3, air) and places one of **four** (buffer 3, stone) — the buffer's floor; the **Stack Augment is refused on the module itself** and its rig still takes exactly one item for its one placement, which is the row that was `blocked(module-kind)` until this slice; its readout is `modularrouters:placer_module dir=front target=north`, with `regulate=3 augments regulator` once augmented; `runtime::tests` cover `pick_place` (one per operation, the floor at/below the count, the filter, the empty buffer and no count parameter), the kind and its augment limits (none of the Stack Augment, one Regulator), the direction (`dir=none` has no face) and the target block; `support::tests` the readout lines |
+| **Breaker Module (block → buffer: the block in the module's direction is broken with its saved pickaxe and the drops that pass the filter go into the buffer)** | **tested** | E2E X — ten rigs at x=241…268: iron on stone reads **air** with **1 cobblestone** in the buffer; a dirt whitelist leaves the stone and the buffer at 0; glass breaks to air for no drops (the artefact's no-drops + blacklist branch); a **Regulator Augment amount 4 with a buffer already at 4** breaks nothing (`amount > count` is required), while X1's empty buffer breaks; `MatchType BLOCK` with a stone filter breaks and a cobble filter refuses the same stone while `MatchType ITEM` does the opposite; a **stick** in the pickaxe slot is the artefact's `Tiers.STONE` fallback and refuses diamond ore (`incorrect_for_stone_tool`) while an iron pickaxe takes **1 diamond**; `dir=none` breaks nothing; its readout names `pickaxe=` and `match=`, its recipe crafts in a real table with the pickaxe consumed and a stick control empty, and J2 gives and reads back the item; `runtime::tests` cover `break_decision` (drop-pass, no-drop/whitelist, the block-item match, the empty-whitelist refusal), `break_allowed` (inbound floor at/below/above), `MatchType`'s serialized names and `tool_tier`'s stone fallback, `support::tests` the readout and the saved settings |
 | **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
 | the three upgrade recipes (blank, Speed, Stack) | tested | E2E J1 (real table: id, count, grid emptied, distinctive ingredient consumed, one wrong-ingredient control each) |
 | the three upgrade items | tested | E2E L (give + read back from the inventory) |
@@ -2805,7 +2807,7 @@ Every family the jar carries, against what this port does with it. `tested` name
 | **Range Up/Down Augments and a module's four augment slots** (one kind per slot, the module's own per-augment limit, removal, the saved entry) | **tested** | E2E N — a Mk2 whose target is **14** blocks out moves nothing at `range=12` and **exactly one item per operation** after four Range Up augments (installed by sneak right-click) take it to `range=16`; one Range Down augment on a **12**-block target freezes the pull at `range=11` and comes back to the inventory when removed; a Sender Mk1's twelve-block scan only starts delivering at `range=16` with eight Range Up augments; a Range augment is refused on a module that is not ranged; a saved slot of fifteen reads as twelve (`range=24`, the hard maximum) and a fifth slot is cut; the augments survive a relaunch; `runtime::tests` cover the limits (12/11 for the Mk2, 8/7 for the Sender, 0 for the Mk1), the one-kind-per-slot rule, the carried foreign id and the capped read |
 | the three augment items and the five augment recipes (core, Range Up, Range Down, and the two conversions) | tested | E2E N1 (three items given and read back, the `augments` tag lists both) and J1 (each crafts its declared id and count ×4/×4/×4/×1/×1 in a real table, the grid empties, the distinctive ingredient is consumed, two wrong-ingredient controls craft nothing) → **now five items and seven recipes** with the Stack and Regulator Augments (below) |
 | **the Stack Augment and the count one operation moves** (`CompiledModule.getItemsPerTick`: `n > 0 ? min(1 << n, 64) : router`) | **tested** | E2E O — a Mk1 whose router holds one Stack Upgrade (`2 item(s) every 20 ticks`) and whose module holds two Stack Augments moves **exactly 4** per operation (7 operations, +4 each; a multiplying augment would move 8 and `sample_steps` fails on any other delta), the identical module with **no** upgrade moves **4 as well** while the plain Mk1 beside them moves **1**, a seventh augment in the slot is refused, six augments read `items=64` and one operation empties a 64-strong chest into the one-slot buffer, the count reads back after a relaunch and it moves four again; `runtime::tests` cover the override (4 not 8, 4 not 1), the 64 cap, the six-per-slot limit and the capped saved count; the Stack Augment's recipe and item are in N1/J1 |
-| the Stack Augment's `getMaxAugments = 0` modules (Detector, both Extruders, Breaker, Placer, both Fluid modules) | **the Placer is tested in game (E2E W5)**; the other six are `blocked(module-kind)` — unit-tested only | E2E W5: `/modularrouters augment 213 100 0 0 add stack` answers `Modular Router: module 0 does not take a stack augment`, the module's line keeps no `augments` segment, and its rig still takes exactly one item per placement (buffer 7 after two operations — a wrongly accepted augment's 2 would read 6). `runtime::tests::a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items` still asserts all seven ids; the six kinds other than the Placer are gap 1, so no module in game can show their refusal yet |
+| the Stack Augment's `getMaxAugments = 0` modules (Detector, both Extruders, Breaker, Placer, both Fluid modules) | **the Placer (E2E W5) and the Breaker (E2E X) are tested in game**; the other five are `blocked(module-kind)` — unit-tested only | E2E W5: `/modularrouters augment 213 100 0 0 add stack` answers `Modular Router: module 0 does not take a stack augment`, the module's line keeps no `augments` segment, and its rig still takes exactly one item per placement (buffer 7 after two operations — a wrongly accepted augment's 2 would read 6). `runtime::tests::a_stack_augment_takes_six_per_slot_and_none_on_the_modules_that_count_no_items` still asserts all seven ids; the six kinds other than the Placer are gap 1, so no module in game can show their refusal yet |
 | **the Regulator Augment and a module's saved regulation amount** (`getRegulationAmount`: the amount only with the augment; `findItemToPull` refuses an operation that would drop the source below it; `CompiledSenderModule1.execute` tops the **target** up to it) | **tested** | E2E P — a Mk1 whose chest holds twelve stone, with the augment (installed by sneak right-click) and `/modularrouters regulate … 3`, ends with **nine in its buffer and three in the chest**; the identical rig with no augment empties the chest into its buffer (**12 / 0**, the differential), `regulate` is refused on a module without the augment, and a chest of **exactly three is never touched** (the boundary); the amount is named `regulate=3` only with the augment and survives the save; **and on a sender the same amount is the target's floor** — E2E S: a Mk1 sending into a chest of six with an amount of ten adds **exactly four and stops** (chest 10, buffer 4), the identical Mk1 with **no** augment empties all eight into it (**14 / 0**, the differential), a chest already holding the amount takes **nothing** (**10 / 8**, the boundary), a Sender Mk2 with the same amount and a selected chest does the same (**10 / 4**), and re-setting the amount answers that it is already set; `runtime::tests` cover the whole-operation rule (`6 − 4 < 3` refuses), the two-slot total, `keep = 0`, the send quota (`0`, `4`, the items cap, `0` at the amount) and the one-per-slot limit with none on the Detector/Extruder Mk2; `support::tests` cover the saved amount and the readouts on both halves |
 | the Regulator Augment's `getMaxAugments = 0` half (the Detector and the Extruder Mk2) | `blocked(module-kind)` — unit-tested only (the **one-fits** half is shown on the Placer in E2E W8/W9) | `runtime::tests::a_regulator_augment_fills_one_slot_and_none_on_the_detector_and_the_second_extruder` asserts the two ids take none (and every other id, including a carried one, takes one); neither of those two kinds is implemented here (gap 1), so no module in game can show their refusal. E2E W8/W9 installs one on a placer and its amount is the buffer's floor |
 | the other 7 augments (Mimic, Pickup Delay, Redstone, Fast Pickup, Filter Round Robin, Pushing, XP Vacuum) | not ported (a tagged augment is carried inertly, one per slot, and its saved count is kept) | gap 3 |
@@ -2865,9 +2867,14 @@ binary does not list the port's own tests.
 ## Gaps (not in this slice)
 
 1. **Modules**: `sender_module_3` (**blocked**, see below),
-   `breaker`, `extruder_1`/`_2`, `detector`,
-   `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`,
-   `player`, `activator`, `creative` — and their settings screens.
+   `extruder_1`/`_2`, `detector`, `distributor`, `energy_distributor`,
+   `energy_output`, `fluid`/`fluid_2`, `player`, `activator`, `creative` — and
+   their settings screens. **`breaker_module` ships** (slice 16, E2E X): it breaks
+   the block in its direction with its saved pickaxe and puts the drops that pass
+   its filter into the buffer; `MatchType ITEM/BLOCK` decides whether the filter
+   tests the drops or the block, the harvest-level tier is the pin's
+   `incorrect_for_<tier>_tool` tag with upstream's stone fallback, and its
+   Regulator amount is the buffer's inbound floor (`amount > count`).
    **`sender_module_3` is `blocked(cross-level-capability)`**: probed in game on 2026-11-23 (see
    *Blocked: the Sender Module Mk3*). The kind, its unlimited target rule and its no-`range=` readout
    all work and a same-level target 60 blocks out receives items, but an End tick cannot reach an
@@ -2935,7 +2942,7 @@ binary does not list the port's own tests.
    upstream's `min(1 << n, 64)` override and its six-per-slot limit; its
    `getMaxAugments = 0` half (the Detector, both Extruders, the Breaker, the
    Placer and both Fluid modules) is **shown in game on the Placer since slice 15
-   (E2E W5)**; the other six kinds are unit-tested and `blocked(module-kind)` —
+   (E2E W5) and on the Breaker since slice 16 (E2E X)**; the other five kinds are unit-tested and `blocked(module-kind)` —
    they are gap 1, so no module in game can show those refusals yet.
    **The Regulator Augment ships** (slice 8, E2E P) with the module's saved
    `regulate` amount and upstream's whole-operation rule ("the source must still
@@ -3000,3 +3007,155 @@ and its content stay local until then.
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --locked --offline`: clean, 15 passed; the embedded run (`python3 tools/horizon.py test --horizon ports/_shared/pins/horizon-1d63e0a`) is 15 passed, 0 failed (`target/horizon-test.log`).
 - `build-slot.sh e2e --job … --port ports/modularrouters -- tools/e2e.sh`: PASS, log `ports/_shared/evidence/modularrouters/e2e-repair.log` ends `EXIT:0` (`check-e2e-logs.py modularrouters --strict` exit 0).
 - `python3 ports/tools/upstream_ready.py modularrouters` and `check-skills.py --notes ports/modularrouters`: exit 0.
+
+## Slice 16 (2026-11-24) — the Breaker Module (0.2.16)
+
+Pin: SDK nightly `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` + mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3. Slice 16 is gap 1's next
+entry, the one right after the placer — *"**Modules**: `sender_module_3`
+(**blocked**), `flinger`, `placer`, `breaker`, `extruder_1`/`_2`, …"* — at the
+ledger's tier **machines**: the module reads a saved pickaxe, a saved
+`MatchType`, its filter and the router's one-slot buffer, and writes one block
+position. No new machine, block entity or renderer. `sender_module_3` stays
+`blocked(cross-level-capability)` and was not re-attempted.
+
+### The artefact's rule (`a26024345ee5d565bb79bf48e5a7fe37a27bba90`)
+
+| upstream | what it says | used for |
+|---|---|---|
+| `item/module/BreakerModule.java` | a plain `ModuleItem` implementing `IPickaxeUser`, so `isDirectional()` is **true** — `dir=none` gives `setupTargets` no target, so `shouldExecute()` is false | `ModuleKind::Breaker` + the existing directional arm |
+| `item/module/IPickaxeUser.java` | `getPickaxe` = the `PICKAXE` slot or `DEFAULT_PICK` = one `minecraft:stone_pickaxe`; the special recipe saves the pickaxe into the module | saved `Pickaxe` id on `Modules[i]`, default `minecraft:stone_pickaxe` |
+| `logic/compiled/CompiledBreakerModule.java:39` | `isRegulationOK(router, true)` — the **inbound** floor: `amount == 0` OK, else `amount > buffer count` (the opposite of the placer's `amount < count`) | `break_allowed(buffer_count, keep)` |
+| `CompiledBreakerModule.MatchType` | `ITEM`/`BLOCK`, serialized `item`/`block`, default `ITEM` | `MatchType::{ByItem,ByBlock}` (named `By…` so a `fits` uses-table cannot mistake a local variant for the SDK's `Item`/`Block` types) |
+| `BlockUtil.tryBreakBlock` (80–116) | refuse air / `destroySpeed < 0` / liquid / (`matchByBlock` && filter refuses the block item); the tier limit refuses a block in `tier.getIncorrectBlocksForDrops()`; prospective `Block.getDrops`; `!matchByBlock && drops.empty && !filter.empty && filter.isWhiteList()` ⇒ refuse; break when `drops.empty \|\| some drop passes the filter` | `break_decision(drops, filter, match_type, block_item)`, `tool_tier` + `#minecraft:incorrect_for_<tier>_tool`, `LevelRef::block_drops` for `getDrops`, `LevelRef::destroy_block(..., collect=true)` for `destroyBlock` |
+| `recipe/breaker_module.json` (a `SimpleCraftingRecipeSerializer`) | shapeless `blank_module` + any undamaged `ItemTags.PICKAXES` → 1, saving that pickaxe into the module | carried recipe `blank_module` + `minecraft:iron_pickaxe` → 1 (no pickaxe tag in Horizon); the `pickaxe` command stands in for the component transfer |
+| jar model + `textures/item/module/breaker_module.png` | three-layer module model and the jar's own texture | carried content (MIT, rank 0, byte-identical from the jar) |
+
+### Deviations, stated
+
+- **The pickaxe is set by command, not by a special recipe's grid transfer.**
+  Horizon has no `ItemTags.PICKAXES` and a declarative recipe cannot copy a grid
+  ingredient into the result's component. The default is the jar's stone
+  pickaxe; `/modularrouters pickaxe <pos> <slot> <item>` and
+  `/modularrouters match <pos> <slot> <item|block>` stand in for the module
+  screen (gap 4), and are the only new usages.
+- **The harvest-level limit uses the pin's block tags.** Horizon exposes no
+  tool-tier accessor, so the six vanilla pickaxes are mapped to their tier and
+  every other id falls back to `Tiers.STONE` — exactly upstream's branch for an
+  item that is not a `TieredItem` (a stick, an add-on's pickaxe). The refusal is
+  membership in `#minecraft:incorrect_for_<tier>_tool`. 26.3's stone loot table
+  has no tool condition, so a stick still gets cobble from stone; the in-game
+  differential therefore uses diamond ore, which the stone tier refuses and the
+  iron tier breaks.
+- **The collected drops go into the one-slot buffer**, merging with its own
+  item; a stack the buffer cannot hold is popped back into the level, standing in
+  for upstream's `MiscEventHandler#onBlockDrops` + `extractBuffer`.
+
+### TDD, in the order the ruling asks for
+
+1. **Unit red** — five breaker tests plus the readout test written before the
+   names existed (`slice16-test-red.log`, 46 errors, exit 101):
+
+   ```
+   error[E0432]: unresolved imports `crate::runtime::Break`, `crate::runtime::MatchType`
+   error[E0599]: no variant, associated function, or constant named `Breaker` found for enum `runtime::ModuleKind`
+   error[E0425]: cannot find function `break_decision` in this scope
+   error: could not compile `modularrouters` (lib test) due to 46 previous errors
+   ```
+
+   A sixth red (`a_breakers_pickaxe_tier_falls_back_to_stone_for_non_tools`,
+   `cannot find function tool_tier`) was added after the first game run showed a
+   stick still breaking stone, which is the artefact's own `Tiers.STONE`
+   fallback; the tier rule was then implemented and proved in game.
+2. **In-game red** — phase X of `tools/e2e.sh` run first on the shipped **0.2.15**
+   game (`modularrouters-e2e/e2e-red-breaker.log`):
+
+   ```
+   == X: the Breaker Module — the tool, MatchType and filter decide the break ==
+   Unknown module 'modularrouters:breaker_module': modularrouters:puller_module_1, modularrouters:sender_module_1 or an item in #modularrouters:modules
+   FAIL: expected the reply to say 'Modular Router: modularrouters:breaker_module in slot 0'
+   EXIT:1
+   ```
+
+   The observed red line is the `Unknown module 'modularrouters:breaker_module': …`
+   line followed by `EXIT:1` in that log.
+3. **Two harness faults, both fixed in the script rather than the port** — the
+   first green attempt asserted the module's readout before its whitelist was
+   written (`filter blacklist none` vs `filter whitelist minecraft:stone`), and
+   the second left the player at x=259 after phase X so the later x=2/10 upgrade
+   rigs sat in unloaded chunks (`the router at 2,100,0 moved 0 operation(s) in
+   6 s with no upgrade`). Neither was a module defect.
+
+### In game, at 0a875da (`tools/e2e.sh`, `../_shared/evidence/modularrouters-e2e/e2e-launcher-0.2.16.log`)
+
+Phase X places ten routers at x = 241…268, three apart, at y=100 facing north,
+so `dir=front` breaks at (x,100,-1). All are installed and configured before any
+block is written; then 80 ticks of operations:
+
+| Rig | Module / target | Result |
+|---|---|---|
+| X1 241 | iron pickaxe, stone, empty buffer | block **air**, buffer **1 cobblestone** |
+| X2 244 | iron, whitelist dirt | stone stays, buffer **0** (the filter) |
+| X3 247 | iron, glass | block **air**, buffer **0** (no drops + blacklist ⇒ break) |
+| X4 250 | iron, Regulator 4, buffer **4 stone** | stone stays, buffer **4** (`amount > count` required) |
+| X5 253 | iron, `MatchType BLOCK`, whitelist stone | block **air**, buffer **1 cobblestone** |
+| X6 256 | iron, `MatchType BLOCK`, whitelist cobblestone | stone stays, buffer **0** |
+| X7 259 | stick, diamond ore | ore stays, buffer **0** (`incorrect_for_stone_tool`) |
+| X8 262 | iron, `MatchType ITEM`, whitelist cobblestone | block **air**, buffer **1 cobblestone** (the opposite of X6 on the same stone) |
+| X9 265 | iron, `dir=none` | stone stays, buffer **0** (no target) |
+| X10 268 | iron, diamond ore | block **air**, buffer **1 diamond** (the tier differential) |
+
+The breaker recipe also crafts in a real table (`craft_check.py`: `breaker
+module: a blank module and an iron pickaxe, shapeless` → 1, grid emptied,
+pickaxe consumed; a stick in its place crafts nothing), and J2 gives and reads
+back the item.
+
+**Why the assertions can fail:** the 0.2.15 run above is phase X's own failure
+(`EXIT:1`); X2/X6/X7/X9 are in-run differentials against X1/X5/X8/X10 on the
+same arena row and the same stone; X6 and X8 are the same filter on the same
+block with only `MatchType` changed; X7 and X10 are the same block with only the
+pickaxe changed; X4 is the buffer-at-the-amount boundary; and X3 is the no-drops
+branch. `SELFTEST=1` fails phase A, and the unmodded control game fails its
+first `give`, both at `EXIT:1`.
+
+### Ladder (every compile step in a `build-slot.sh` lease)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | **46 errors**, exit 101 | `slice16-test-red.log` |
+| red, in game | `tools/e2e.sh` phase X on the **0.2.15** game | `Unknown module 'modularrouters:breaker_module' …`, `EXIT:1` | `modularrouters-e2e/e2e-red-breaker.log` |
+| tests | `cargo test --offline` | **94 passed**, 0 failed | `sdk-test.log` |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings | `sdk-clippy.log` |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `sdk-fmt.log` |
+| manifest bump | `launcher-game.sh build modularrouters` (every `native-*` tag carrying this mod removed first) | `Compiling modularrouters (1 of 1)`; export `native-mods.json` names **0.2.16** | `modularrouters-e2e/game-build-0.2.16.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second `cmp`-identical, **166,365 B**, sha256 `c584f8eb…64d98` | `slice16-build.log`, `slice16-build-second.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.16 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` / `166365 bytes, SHA-256 c584f8eb…64d98`, exit 0 | `sdk-check.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits.log` |
+| recipes / data shape | `check-recipe-types.py`, `tools/data_shape.py` | `modularrouters: ok`; 25 recipe/loot files, all 26.3 dialect | this session |
+| package contents | `unzip -Z1` | **136 entries**, no `Cargo.lock`; packed `README.md` byte-identical to the tree | this session |
+| the gate | `verify-sdk-package.py modularrouters` | 1/1 | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | **PASS** + `EXIT:0` (phases A–I, K, L–X, J1–J4) | `modularrouters-e2e/e2e-launcher-0.2.16.log` |
+| the counterfactual | `SELFTEST=1 tools/e2e.sh` | **FAIL** + `EXIT:1` | `modularrouters-e2e/e2e-selftest-0.2.16.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | **FAIL** + `EXIT:1` (unknown block and item) | `modularrouters-e2e/e2e-control-0.2.16.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.16: **166,365 B**, SHA-256 `c584f8ebbf5c46fc1bd318bac89bb0ec507206a1e96ee02acb01354accb64d98`,
+136 entries, no `Cargo.lock`.
+
+## Next slice
+
+Gap 1's entry after the breaker: `extruder_1`/`_2`. The Mk1 Extruder is the
+breaker + placer pair joined through one block (upstream's
+`PickaxeModuleRecipe.ExtruderModule1Recipe` uses a blank module, a placer and a
+breaker, and `CompiledExtruderModule1` runs them in one operation), so it fits
+**machines** exactly — the two helpers already exist in this port. The Mk2 is a
+different family (a chest-to-chest filter with no stack augment) and stays a
+later slice. The in-game assertion would place an extruder Mk1 at (x,100,0)
+`dir=front` with stone at (x,100,-1) and an empty destination at (x,100,-2), give
+it a saved pickaxe, and assert after enough ticks that the source reads air,
+the destination reads `minecraft:stone`, and the router's buffer still reads
+**empty** (the item went straight through, not into the buffer) — with a
+dirt whitelist and a stone-tier tool on diamond ore as the two differentials.

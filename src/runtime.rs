@@ -102,6 +102,9 @@ pub const NO_REGULATOR_AUGMENT: [&str; 2] = [
     "modularrouters:detector_module",
     "modularrouters:extruder_module_2",
 ];
+/// `IPickaxeUser.DEFAULT_PICK`: the pickaxe a Breaker Module starts with when
+/// the recipe (or a save) did not put one in its slot — one stone pickaxe.
+pub const DEFAULT_PICKAXE: &str = "minecraft:stone_pickaxe";
 
 /// The face's unit vector, as `Direction.normal()` gives it.
 pub const fn face_normal(face: Face) -> [i32; 3] {
@@ -318,6 +321,9 @@ pub enum ModuleKind {
     /// `modularrouters:placer_module`: places one item out of the buffer as a block
     /// in the adjacent block its direction names.
     Placer,
+    /// `modularrouters:breaker_module`: breaks the block its direction names with
+    /// its saved pickaxe, putting the drops that pass its filter into the buffer.
+    Breaker,
     /// A module this port does not implement, carried by its id.
     Registered(String),
 }
@@ -332,6 +338,7 @@ impl ModuleKind {
     pub const VACUUM: &'static str = "modularrouters:vacuum_module";
     pub const FLINGER: &'static str = "modularrouters:flinger_module";
     pub const PLACER: &'static str = "modularrouters:placer_module";
+    pub const BREAKER: &'static str = "modularrouters:breaker_module";
 
     /// The kind an item id names: one of the modules this port runs, or a
     /// registered kind that keeps the id unchanged.
@@ -347,6 +354,7 @@ impl ModuleKind {
             Self::VACUUM => ModuleKind::Vacuum,
             Self::FLINGER => ModuleKind::Flinger,
             Self::PLACER => ModuleKind::Placer,
+            Self::BREAKER => ModuleKind::Breaker,
             other => ModuleKind::Registered(other.to_string()),
         }
     }
@@ -365,6 +373,7 @@ impl ModuleKind {
                 | ModuleKind::Vacuum
                 | ModuleKind::Flinger
                 | ModuleKind::Placer
+                | ModuleKind::Breaker
         )
     }
 
@@ -397,6 +406,7 @@ impl ModuleKind {
             ModuleKind::Vacuum => Self::VACUUM,
             ModuleKind::Flinger => Self::FLINGER,
             ModuleKind::Placer => Self::PLACER,
+            ModuleKind::Breaker => Self::BREAKER,
             ModuleKind::Registered(item) => item,
         }
     }
@@ -415,6 +425,7 @@ impl ModuleKind {
             | ModuleKind::Dropper
             | ModuleKind::Flinger
             | ModuleKind::Placer
+            | ModuleKind::Breaker
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -432,6 +443,7 @@ impl ModuleKind {
             | ModuleKind::Dropper
             | ModuleKind::Flinger
             | ModuleKind::Placer
+            | ModuleKind::Breaker
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -532,6 +544,64 @@ impl Filter {
     }
 }
 
+/// `CompiledBreakerModule.MatchType`: whether a Breaker's filter tests each
+/// drop (`item`) or the block itself (`block`). The serialized names are the
+/// enum's `getSerializedName`; the variants are named `By…` so they cannot be
+/// mistaken for the SDK's `Item`/`Block` types when the package's uses table is
+/// compared across builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchType {
+    ByItem,
+    ByBlock,
+}
+
+impl MatchType {
+    /// The type named by its serialized form, or `None` for anything else.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "item" => Some(Self::ByItem),
+            "block" => Some(Self::ByBlock),
+            _ => None,
+        }
+    }
+
+    /// The serialized name (`MatchType.getSerializedName`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ByItem => "item",
+            Self::ByBlock => "block",
+        }
+    }
+}
+
+/// `BreakerSettings` plus the pickaxe a Breaker Module breaks with: the two
+/// fields upstream keeps in the module item's `BREAKER_SETTINGS` and `PICKAXE`
+/// components. A saved entry without either reads as this default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Break {
+    pub pickaxe: String,
+    pub match_type: MatchType,
+}
+
+impl Break {
+    /// The settings a module carries before a player changes them.
+    #[must_use]
+    pub fn new(pickaxe: impl Into<String>, match_type: MatchType) -> Self {
+        Self {
+            pickaxe: pickaxe.into(),
+            match_type,
+        }
+    }
+}
+
+impl Default for Break {
+    fn default() -> Self {
+        Self::new(DEFAULT_PICKAXE, MatchType::ByItem)
+    }
+}
+
 /// A module installed in one slot: what it is, where it points, what it takes,
 /// the block a targeted one selected, the augments in its four slots and the
 /// amount a Regulator Augment makes it leave in the source.
@@ -550,6 +620,9 @@ pub struct Module {
     /// `FlingerSettings`: the flight settings of a Flinger Module, carried by
     /// every module and read only by that kind.
     flinger: Flinger,
+    /// `BreakerSettings` and the saved pickaxe, carried by every module and read
+    /// only by that kind.
+    breaker: Break,
 }
 
 impl Module {
@@ -562,7 +635,26 @@ impl Module {
             augments: Augments::default(),
             regulation: 0,
             flinger: Flinger::DEFAULT,
+            breaker: Break::default(),
         }
+    }
+
+    /// The module's saved pickaxe and match type (`BreakerSettings`).
+    #[must_use]
+    pub fn breaker(&self) -> &Break {
+        &self.breaker
+    }
+
+    /// The same module saving the given pickaxe and match type.
+    #[must_use]
+    pub fn with_breaker(mut self, breaker: Break) -> Self {
+        self.breaker = breaker;
+        self
+    }
+
+    /// Update the saved pickaxe and match type (the module screen's two fields).
+    pub fn set_breaker(&mut self, breaker: Break) {
+        self.breaker = breaker;
     }
 
     /// The module's saved flight settings (`FlingerSettings`); the default
@@ -684,6 +776,7 @@ impl Module {
             | ModuleKind::Dropper
             | ModuleKind::Flinger
             | ModuleKind::Placer
+            | ModuleKind::Breaker
             | ModuleKind::Registered(_) => None,
         }
     }
@@ -1498,6 +1591,74 @@ pub fn pick_place(buffer: Option<&Stack>, filter: &Filter, keep: u32) -> Option<
         return None;
     }
     Some(1)
+}
+
+/// The harvest tier of a Breaker's saved tool (`BlockUtil.tryBreakBlock`'s
+/// `pickaxe.getItem() instanceof TieredItem t ? t.getTier() : Tiers.STONE`).
+/// Horizon does not expose an item's tier, so the six vanilla pickaxes are named
+/// and everything else — a stick, or an add-on's pickaxe — falls back to stone,
+/// which is exactly upstream's branch for an item that is not a `TieredItem`.
+#[must_use]
+pub fn tool_tier(pickaxe: &str) -> &'static str {
+    match pickaxe {
+        "minecraft:wooden_pickaxe" => "wooden",
+        "minecraft:stone_pickaxe" => "stone",
+        "minecraft:iron_pickaxe" => "iron",
+        "minecraft:golden_pickaxe" => "gold",
+        "minecraft:diamond_pickaxe" => "diamond",
+        "minecraft:netherite_pickaxe" => "netherite",
+        _ => "stone",
+    }
+}
+
+/// `CompiledModule.isRegulationOK(router, true)`: with no amount the break is
+/// always allowed, and with one it needs an amount **above** the buffer's count.
+/// This is the inbound half — the opposite of the placer's `amount < count`, so
+/// a buffer already at the amount stops a breaker where it would let a placer go.
+#[must_use]
+pub fn break_allowed(buffer_count: u32, keep: u32) -> bool {
+    keep == 0 || keep > buffer_count
+}
+
+/// What one Breaker operation decides, mirroring `BlockUtil.tryBreakBlock`:
+///
+/// - in `ByBlock` mode the filter tests the **block item**; a refusal means no
+///   break at all, and every actual drop is taken. This is the field the artefact
+///   calls `getMatchType() == BLOCK`.
+/// - in `ByItem` mode the filter tests each **drop**. The block is broken when
+///   there were no drops, or when at least one drop passed the filter; the drops
+///   that passed are what go into the buffer. The one exception is upstream's
+///   explicit guard `!matchByBlock && allDrops.isEmpty() && !filter.isEmpty() &&
+///   filter.isWhiteList()`: an empty whitelist with no drops refuses the break.
+///   With the default (empty) blacklist and no drops — glass — the break still
+///   happens and yields nothing.
+///
+/// `Some` means "break"; the vector is what may be collected into the buffer.
+#[must_use]
+pub fn break_decision(
+    drops: &[Stack],
+    filter: &Filter,
+    match_type: MatchType,
+    block_item: &str,
+) -> Option<Vec<Stack>> {
+    match match_type {
+        MatchType::ByBlock => filter.accepts(block_item).then(|| drops.to_vec()),
+        MatchType::ByItem => {
+            if drops.is_empty() {
+                return if !filter.is_empty() && filter.whitelist() {
+                    None
+                } else {
+                    Some(Vec::new())
+                };
+            }
+            let passing: Vec<Stack> = drops
+                .iter()
+                .filter(|drop| filter.accepts(&drop.item))
+                .cloned()
+                .collect();
+            (!passing.is_empty()).then_some(passing)
+        }
+    }
 }
 
 /// Where a Dropper's item is spawned: the middle of the block one step along
@@ -3905,5 +4066,161 @@ mod tests {
         );
         assert_eq!(step([201, 100, 0], NORTH), [201, 100, -1]);
         assert_eq!(step([201, 100, 0], UP), [201, 101, 0]);
+    }
+
+    #[test]
+    fn a_breaker_breaks_only_when_a_drop_passes_the_filter() {
+        // `BlockUtil.tryBreakBlock`: `allDrops` is prepared with the pickaxe, then
+        // partitioned by the filter; the block is destroyed only when `drops.empty`
+        // or some drop passed the test. In ITEM mode the filter tests the drops.
+        assert_eq!(
+            ModuleKind::of("modularrouters:breaker_module"),
+            ModuleKind::Breaker
+        );
+        assert!(ModuleKind::Breaker.is_known());
+        assert!(!ModuleKind::Breaker.is_targeted());
+        assert!(!ModuleKind::Breaker.is_sender());
+        assert_eq!(ModuleKind::Breaker.item(), ModuleKind::BREAKER);
+        assert_eq!(
+            Module::new(ModuleKind::Breaker, Relative::Front, Filter::any()).current_range(),
+            None,
+            "a breaker is not ranged"
+        );
+
+        let cobble = vec![Stack::of("minecraft:cobblestone", 1)];
+        assert_eq!(
+            break_decision(
+                &cobble,
+                &Filter::any(),
+                MatchType::ByItem,
+                "minecraft:stone"
+            ),
+            Some(cobble.clone()),
+            "the jar's default blacklist takes stone's cobble drop"
+        );
+        let only_dirt = Filter::new(true, vec!["minecraft:dirt".to_string()]);
+        assert_eq!(
+            break_decision(&cobble, &only_dirt, MatchType::ByItem, "minecraft:stone"),
+            None,
+            "a whitelist that does not list the drop refuses the break"
+        );
+        let not_cobble = Filter::new(false, vec!["minecraft:cobblestone".to_string()]);
+        assert_eq!(
+            break_decision(&cobble, &not_cobble, MatchType::ByItem, "minecraft:stone"),
+            None,
+            "a blacklist naming the drop refuses the break"
+        );
+        let only_cobble = Filter::new(true, vec!["minecraft:cobblestone".to_string()]);
+        assert_eq!(
+            break_decision(&cobble, &only_cobble, MatchType::ByItem, "minecraft:stone"),
+            Some(cobble.clone()),
+            "an ITEM-mode whitelist naming the drop breaks and takes it"
+        );
+    }
+
+    #[test]
+    fn a_breaker_with_no_drops_breaks_on_a_blacklist_but_not_a_whitelist() {
+        // `!matchByBlock && allDrops.isEmpty() && !filter.isEmpty() &&
+        // filter.isWhiteList()` is the one explicit refusal in `tryBreakBlock`;
+        // otherwise `allDrops.isEmpty()` alone lets the break through. That is the
+        // artefact's "glass is broken but yields nothing" case.
+        let none: Vec<Stack> = Vec::new();
+        assert_eq!(
+            break_decision(&none, &Filter::any(), MatchType::ByItem, "minecraft:glass"),
+            Some(Vec::new()),
+            "no drops + the empty blacklist: break, nothing into the buffer"
+        );
+        assert_eq!(
+            break_decision(
+                &none,
+                &Filter::new(true, vec!["minecraft:dirt".to_string()]),
+                MatchType::ByItem,
+                "minecraft:glass"
+            ),
+            None,
+            "no drops + a non-empty whitelist: no break at all"
+        );
+    }
+
+    #[test]
+    fn a_breakers_pickaxe_tier_falls_back_to_stone_for_non_tools() {
+        // `BlockUtil.tryBreakBlock`: `pickaxe.getItem() instanceof TieredItem t ?
+        // t.getTier() : Tiers.STONE`. A stick, or a mod's pickaxe whose tier this
+        // port cannot read, is therefore a stone-tier tool — the artefact's own
+        // fallback, not an invented one.
+        assert_eq!(tool_tier("minecraft:wooden_pickaxe"), "wooden");
+        assert_eq!(tool_tier("minecraft:stone_pickaxe"), "stone");
+        assert_eq!(tool_tier("minecraft:iron_pickaxe"), "iron");
+        assert_eq!(tool_tier("minecraft:golden_pickaxe"), "gold");
+        assert_eq!(tool_tier("minecraft:diamond_pickaxe"), "diamond");
+        assert_eq!(tool_tier("minecraft:netherite_pickaxe"), "netherite");
+        assert_eq!(tool_tier("minecraft:stick"), "stone");
+        assert_eq!(tool_tier("example:mod_pickaxe"), "stone");
+    }
+
+    #[test]
+    fn a_block_match_tests_the_block_item_not_the_drops() {
+        assert_eq!(MatchType::from_name("item"), Some(MatchType::ByItem));
+        assert_eq!(MatchType::from_name("block"), Some(MatchType::ByBlock));
+        assert_eq!(MatchType::from_name("stone"), None);
+        assert_eq!(MatchType::ByItem.name(), "item");
+        assert_eq!(MatchType::ByBlock.name(), "block");
+
+        let cobble = vec![Stack::of("minecraft:cobblestone", 1)];
+        let only_stone = Filter::new(true, vec!["minecraft:stone".to_string()]);
+        assert_eq!(
+            break_decision(&cobble, &only_stone, MatchType::ByBlock, "minecraft:stone"),
+            Some(cobble.clone()),
+            "BLOCK mode tests the block item, which is stone"
+        );
+        let only_cobble = Filter::new(true, vec!["minecraft:cobblestone".to_string()]);
+        assert_eq!(
+            break_decision(&cobble, &only_cobble, MatchType::ByBlock, "minecraft:stone"),
+            None,
+            "BLOCK mode refuses a drop-name filter on the same stone"
+        );
+        assert_eq!(
+            break_decision(&cobble, &only_cobble, MatchType::ByItem, "minecraft:stone"),
+            Some(cobble.clone()),
+            "ITEM mode is the opposite of BLOCK on the same stone"
+        );
+    }
+
+    #[test]
+    fn a_breakers_inbound_floor_requires_amount_above_the_buffer() {
+        // `isRegulationOK(router, true)` is `amount > count` (the opposite of the
+        // placer's `amount < count`): a buffer already at the amount breaks nothing.
+        assert!(break_allowed(0, 0));
+        assert!(
+            break_allowed(3, 4),
+            "an amount above the buffer permits a break"
+        );
+        assert!(
+            !break_allowed(4, 4),
+            "a buffer at the amount breaks nothing"
+        );
+        assert!(
+            !break_allowed(8, 4),
+            "a buffer above the amount breaks nothing"
+        );
+
+        let breaker = Module::new(ModuleKind::Breaker, Relative::Front, Filter::any());
+        assert_eq!(
+            breaker.breaker().pickaxe,
+            "minecraft:stone_pickaxe",
+            "IPickaxeUser.DEFAULT_PICK"
+        );
+        assert_eq!(breaker.breaker().match_type, MatchType::ByItem);
+        assert_eq!(breaker.augment_limit(&AugmentKind::Stack), 0);
+        assert_eq!(breaker.augment_limit(&AugmentKind::Regulator), 1);
+        assert_eq!(
+            break_decision(
+                &[],
+                &Filter::any(),
+                breaker.breaker().match_type,
+                "minecraft:glass"
+            ),
+            Some(Vec::new())
+        );
     }
 }
