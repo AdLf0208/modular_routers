@@ -1,6 +1,6 @@
 # Modular Routers for Horizon
 
-A router block that runs item-transfer modules every 20 ticks, ten modules of
+A router block that runs item-transfer modules every 20 ticks, eleven modules of
 the original mod — a **Puller Module Mk1** that takes items from the container
 beside the router into its one-slot buffer, a **Puller Module Mk2** that takes
 them from the container you select with it, up to 12 blocks away (24 with Range
@@ -17,7 +17,10 @@ throws them the same way but with the speed, pitch and yaw you set on it, a
 **Placer Module** that puts one item from the buffer back into the world as a block
 in the block its direction names, a **Breaker Module** that breaks the block in
 its direction with its saved pickaxe and sends the drops that match into the
-buffer, and a **Vacuum Module**
+buffer, an **Extruder Module Mk1** that joins the placer and breaker into one
+redstone-driven arm — powered, it puts one buffered block at the next position
+along its direction and withdraws it when the signal is gone, breaking it with
+the saved pickaxe and sending the drops into the buffer — and a **Vacuum Module**
 that fills the buffer from the dropped items on the ground around it, six blocks in
 every direction (or in front of it only, when it is given a direction), the
 buffer's own item deciding what it collects — the two upgrades the
@@ -59,7 +62,9 @@ Craft the router (4 per recipe), a blank module (6), then a puller (blank module
 +(blank module + lava bucket, which leaves its bucket). A dropper module is a
 blank module and a vanilla dropper; a flinger module is a dropper module and
 +gunpowder; a placer module is a blank module, a dispenser and dirt; a breaker
-+module is a blank module and an iron pickaxe; a vacuum
++module is a blank module and an iron pickaxe; an extruder Mk1 is a blank module,
++a placer module and a breaker module (the breaker's pickaxe is the one it uses,
++set with `/modularrouters pickaxe`); a vacuum
 +module is a blank module, a hopper and an ender eye. A blank
 +upgrade takes
 4 paper, 3 gold nuggets and a lapis; a Speed Upgrade (3) is redstone, gold and
@@ -117,7 +122,16 @@ no matching drop stops the break. A Regulator Augment's amount is the buffer's
 **floor** here: the count must be below it for the breaker to run. Its harvest
 level follows the saved tool: a stick is treated as a stone pickaxe (upstream's
 fallback), so it cannot break a block that needs iron, while an iron pickaxe can.
-A **Vacuum Module** reads the world instead of a container: it pulls the dropped
+An **Extruder Module Mk1** is that pair joined into a piston-like arm by a
+distance it keeps for each direction. With a redstone signal behind the router it
+places the buffer's block one position further out on every operation (16 blocks
+of reach, up to 32 with Range Up Augments); with no signal it breaks the last one
+back and collects the drops into the buffer, using the pickaxe saved on it (a
+`minecraft:stone_pickaxe` by default), so a stick cannot withdraw diamond ore but
+an iron pickaxe can. Its filter decides both which block may be placed and which
+drops are kept; a `dir=none` extruder has no arm at all. It is a **block mover**,
+not a container transfer: the block leaves the buffer into the world and comes
+back into the buffer on withdrawal. A **Vacuum Module** reads the world instead of a container: it pulls the dropped
 items inside a box six blocks in every direction around the router into its
 buffer, one item per operation (more with a Stack Upgrade or Augment), and only
 items its buffer already holds — or any item while the buffer is empty — that its
@@ -144,7 +158,7 @@ no more — and a vacuum stops filling its buffer at it. The buffer is the
 block's item container on every side, so hoppers
 and pipes can fill or empty it.
 
-The screen, the other 12 modules, the other 8 upgrades, the other 7 augments
+The screen, the other 11 modules, the other 8 upgrades, the other 7 augments
 (Mimic, Pickup Delay, …) and smart filters are not ported yet — see
 `notes.md`.
 
@@ -157,8 +171,8 @@ not implement installs like any other, is listed by `/modularrouters info`,
 keeps its slot, direction and filter in the router's saved data across a
 relaunch, and `/modularrouters remove` takes it out; its behaviour is the owning
 mod's to run. A held item that is not a module this build runs (both pullers,
-both senders, the void, the dropper, the flinger, the placer, the breaker and
-the vacuum module) and is not in the tag is
+both senders, the void, the dropper, the flinger, the placer, the breaker, the
+extruder Mk1 and the vacuum module) and is not in the tag is
 refused (`Unknown module '…'`).
 
 The tag is a data file (`data/modularrouters/tags/item/modules.json`). At SDK

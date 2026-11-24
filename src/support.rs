@@ -28,13 +28,14 @@ use mod_api::{
 
 use crate::runtime::{
     AUGMENT_SLOTS, Augment, AugmentKind, Augments, BUFFER_SLOTS, Break, DEFAULT_PICKAXE, Dropped,
-    FACE_NAMES, Face, Facing, Filter, Flinger, MAX_FILTER_ITEMS, MODULE_SLOTS, MatchType, Module,
-    ModuleKind, Pos, Relative, Slot, Stack, Target, UPGRADE_SLOTS, Upgrade, UpgradeKind, Upgrades,
-    VacuumOp, break_allowed, break_decision, buffer_after_pull, buffer_after_send, drop_point,
-    face_of_normal, facing_for_placement, facing_of_state, fling_velocity, in_range,
-    is_operation_tick, items_per_operation, parse_pos, phase_of, pick_drop, pick_place, pick_pull,
-    pick_send, pick_void, scan_positions, send_quota, side_towards, step, tick_rate, tool_tier,
-    vacuum_box, vacuum_centre,
+    EXTRUDER1_BASE_RANGE, FACE_COUNT, FACE_NAMES, Face, Facing, Filter, Flinger, MAX_FILTER_ITEMS,
+    MODULE_SLOTS, MatchType, Module, ModuleKind, Pos, Relative, Slot, Stack, Target, UPGRADE_SLOTS,
+    Upgrade, UpgradeKind, Upgrades, VacuumOp, break_allowed, break_decision, buffer_after_pull,
+    buffer_after_send, drop_point, extruder_break_offset, extruder_place_offset,
+    extruder_should_extend, face_of_normal, facing_for_placement, facing_of_state, fling_velocity,
+    in_range, is_operation_tick, items_per_operation, parse_pos, phase_of, pick_drop, pick_place,
+    pick_pull, pick_send, pick_void, scan_positions, send_quota, side_towards, step, tick_rate,
+    tool_tier, vacuum_box, vacuum_centre,
 };
 
 /// The router block (and its item).
@@ -48,6 +49,11 @@ const KEY_MODULES: &str = "Modules";
 /// Upstream's own key for the five upgrade slots (`NBT_UPGRADES`): a list of
 /// `{item, count}` slots, the port's shape for what Java stores as an item list.
 const KEY_UPGRADES: &str = "Upgrades";
+/// `CompiledExtruderModule1.NBT_EXTRUDER_DIST`, held in the router's
+/// `getExtensionData()`: how far the Mk1 arm is currently extended **per absolute
+/// facing** (upstream's key is `"ExtruderDist" + facing`). A block entity's saved
+/// data lives in its compound here, so the six arms travel with the router.
+const KEY_EXTENSION: &str = "ExtruderDist";
 const MODULE_ITEM: &str = "item";
 const MODULE_DIR: &str = "dir";
 const MODULE_WHITELIST: &str = "whitelist";
@@ -434,7 +440,9 @@ fn write_modules(nbt: &mut Compound, modules: &[Module]) {
             if matches!(module.kind, ModuleKind::Flinger) {
                 write_flinger(&mut entry, module.flinger());
             }
-            if matches!(module.kind, ModuleKind::Breaker) {
+            // The Extruder is an `IPickaxeUser` too: its Breaker-derived pickaxe
+            // decides what its arm can harvest on the way back in.
+            if matches!(module.kind, ModuleKind::Breaker | ModuleKind::Extruder1) {
                 write_breaker(&mut entry, module.breaker());
             }
             if let Some(target) = &module.target {
@@ -541,6 +549,36 @@ fn write_upgrades(nbt: &mut Compound, upgrades: &Upgrades) {
         })
         .collect();
     nbt.insert(KEY_UPGRADES.into(), Tag::List(entries));
+}
+
+/// The Mk1 Extruders' current extension, one int per absolute face
+/// (`CompiledExtruderModule1.distance`, keyed by `NBT_EXTRUDER_DIST + facing`).
+/// A missing or malformed entry is zero: no arm is out.
+fn read_extension(nbt: &Compound) -> [i32; FACE_COUNT] {
+    let mut out = [0; FACE_COUNT];
+    let Some(Tag::Compound(saved)) = nbt.get(&KEY_EXTENSION.into()) else {
+        return out;
+    };
+    for (face, name) in FACE_NAMES.iter().enumerate() {
+        out[face] = int(saved, name).unwrap_or(0).max(0);
+    }
+    out
+}
+
+/// Write the extension data back. A zero length is omitted, as upstream never
+/// writes one; a save with no extended arm carries no `ExtruderDist` at all.
+fn write_extension(nbt: &mut Compound, extension: &[i32; FACE_COUNT]) {
+    let mut saved = Compound::new();
+    for (face, name) in FACE_NAMES.iter().enumerate() {
+        if extension[face] > 0 {
+            saved.insert((*name).into(), Tag::Int(extension[face]));
+        }
+    }
+    if saved.is_empty() {
+        nbt.remove(&KEY_EXTENSION.into());
+    } else {
+        nbt.insert(KEY_EXTENSION.into(), Tag::Compound(saved));
+    }
 }
 
 /// The component key that makes two stacks of one item different resources (an
@@ -984,10 +1022,9 @@ fn drop_from_buffer(
 fn place_from_buffer(
     host: &mut dyn ServerHost,
     level: LevelRef,
-    pos: Pos,
+    target: Pos,
     module: &Module,
     entity: &mut mod_api::ModBlockEntityView<'_>,
-    face: Face,
 ) -> bool {
     let Some(stack) = entity
         .items
@@ -1001,7 +1038,6 @@ fn place_from_buffer(
     let Some(count) = pick_place(Some(&buffer), &module.filter, module.regulation_amount()) else {
         return false;
     };
-    let target = step(pos, face);
     // `BlockUtil.tryPlaceAsBlock`: the item's block form, the destination's
     // replaceability, and a write that reports the change. Each refusal is no
     // operation at all — the buffer keeps its stack, as upstream's `return false`
@@ -1067,10 +1103,9 @@ fn tool_refuses_block(host: &dyn Host, pickaxe: &str, block_id: &str) -> bool {
 fn break_from_buffer(
     host: &mut dyn ServerHost,
     level: LevelRef,
-    pos: Pos,
+    target: Pos,
     module: &Module,
     entity: &mut mod_api::ModBlockEntityView<'_>,
-    face: Face,
 ) -> bool {
     // `isRegulationOK(router, true)`: an amount above the buffer count is
     // required, so a buffer already at the amount does nothing.
@@ -1095,7 +1130,6 @@ fn break_from_buffer(
     let Some(tool) = ItemStack::new(item, 1) else {
         return false;
     };
-    let target = step(pos, face);
     let Some(block) = level.block(&*host, target) else {
         return false;
     };
@@ -1156,6 +1190,106 @@ fn break_from_buffer(
     }
     write_buffer(entity, current);
     true
+}
+
+/// `pos` moved `n` blocks through `face` (`relative(dir, n)`). `n` is non-negative
+/// for an extruder arm: `distance + 1` on extend, `distance` on retract.
+fn step_by(pos: Pos, face: Face, n: i32) -> Pos {
+    let mut out = pos;
+    for _ in 0..n {
+        out = step(out, face);
+    }
+    out
+}
+
+/// The strongest signal reaching the router, as `getRedstonePower` reads it.
+/// Upstream walks the six faces with `getSignal(pos.relative(facing), facing)` and
+/// skips a face the arm is currently extended into, so a block the arm placed
+/// cannot lock the router on. `LevelRef::signal` is that getter at the pin.
+fn extruder_power(
+    host: &dyn Host,
+    level: LevelRef,
+    pos: Pos,
+    extension: &[i32; FACE_COUNT],
+) -> i32 {
+    let mut power = 0;
+    for (face, &distance) in extension.iter().enumerate() {
+        if distance > 0 {
+            continue;
+        }
+        let p = level
+            .signal(host, step(pos, face), Direction::ALL[face])
+            .unwrap_or(0);
+        if p >= 15 {
+            return 15;
+        }
+        power = power.max(p);
+    }
+    power
+}
+
+/// `world.isEmptyBlock(breakPos) || oldBlock instanceof LiquidBlock`: a gap in
+/// the extended line (or a liquid in it) still retracts the arm, just without a
+/// block break. The ids cover 26.3's air variants and the two liquids.
+fn extruder_retract_gap(id: &str) -> bool {
+    id == "minecraft:air"
+        || id.ends_with("_air")
+        || id == "minecraft:water"
+        || id == "minecraft:lava"
+}
+
+/// The one arm's mutable state for an operation: how far it is out and the
+/// signal the router reads. Grouped so the operation's signature stays short.
+struct ExtruderState<'a> {
+    distance: &'a mut i32,
+    power: i32,
+}
+
+/// One Extruder Mk1 operation: `CompiledExtruderModule1.execute`.
+///
+/// Unlike the brief's "pass-through", the artefact is a piston-like arm with a
+/// persistent distance per face. Powered (`shouldExtend`, default ALWAYS) it puts
+/// one buffered block at `distance + 1` and grows; unpowered it breaks the block
+/// at `distance` with the module's pickaxe and shrinks. Both halves reuse the
+/// Placer's and Breaker's proven operations; only the target position and the
+/// distance bookkeeping are the extruder's own.
+fn extruder1_operation(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: Pos,
+    module: &Module,
+    entity: &mut mod_api::ModBlockEntityView<'_>,
+    face: Face,
+    state: &mut ExtruderState<'_>,
+) -> bool {
+    let range = module.current_range().unwrap_or(EXTRUDER1_BASE_RANGE);
+    if extruder_should_extend(state.power) {
+        if *state.distance >= range {
+            return false;
+        }
+        let target = step_by(pos, face, extruder_place_offset(*state.distance));
+        if !place_from_buffer(host, level, target, module, entity) {
+            return false;
+        }
+        *state.distance += 1;
+        true
+    } else {
+        if *state.distance <= 0 {
+            return false;
+        }
+        let target = step_by(pos, face, extruder_break_offset(*state.distance));
+        if let Some(block) = level.block(&*host, target)
+            && extruder_retract_gap(&block.id(&*host))
+        {
+            *state.distance -= 1;
+            return false;
+        }
+        if !break_from_buffer(host, level, target, module, entity) {
+            return false;
+        }
+        *state.distance -= 1;
+        true
+    }
 }
 
 /// Put a stack in the buffer slot, growing the list when the entity has none.
@@ -1360,6 +1494,8 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
         return;
     }
     let modules = read_modules(&event.entity.nbt);
+    let mut extension = read_extension(&event.entity.nbt);
+    let extruder_power = extruder_power(&*host, level, pos, &extension);
     let facing = facing_at(&*host, level, pos);
     let router_items = items_per_operation(upgrades.stack());
     let dimension = level.dimension().id(&*host).unwrap_or_default();
@@ -1461,19 +1597,38 @@ fn run_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
                     // A placer takes the adjacent block its direction names and
                     // writes one buffered item into it as a block.
                     ModuleKind::Placer => {
-                        place_from_buffer(host, level, pos, module, &mut event.entity, face)
+                        place_from_buffer(host, level, step(pos, face), module, &mut event.entity)
                     }
                     // A breaker acts on the block its direction names, with its
                     // saved pickaxe; a `dir=none` module has no target and skips.
                     ModuleKind::Breaker => {
-                        break_from_buffer(host, level, pos, module, &mut event.entity, face)
+                        break_from_buffer(host, level, step(pos, face), module, &mut event.entity)
                     }
+                    // The Mk1 extruder is the breaker + placer pair joined by a
+                    // distance: powered it places one further out, unpowered it
+                    // breaks the last one it placed. Its distance is per face.
+                    ModuleKind::Extruder1 => extruder1_operation(
+                        host,
+                        level,
+                        pos,
+                        module,
+                        &mut event.entity,
+                        face,
+                        &mut ExtruderState {
+                            distance: &mut extension[face],
+                            power: extruder_power,
+                        },
+                    ),
                     _ => false,
                 }
             }
         };
         worked |= ran;
     }
+    // The arm lengths are part of the router's save (upstream's extension data):
+    // write them back whatever happened this tick, so an extended bridge survives
+    // a relaunch and a withdrawn one leaves no stale distance behind.
+    write_extension(&mut event.entity.nbt, &extension);
     show_active(host, level, pos, worked);
 }
 
@@ -2083,6 +2238,7 @@ fn module_line(
                 settings.match_type.name()
             )
         }
+        ModuleKind::Extruder1 => format!(" pickaxe={}", module.breaker().pickaxe),
         _ => String::new(),
     };
     // `CompiledModule.getItemsPerTick`: a module holding Stack Augments moves a
@@ -2861,8 +3017,9 @@ fn set_fling(
     }
 }
 
-/// `/modularrouters pickaxe`: save the item in a Breaker Module's pickaxe slot —
-/// the module screen's field, which this port replaces with a command.
+/// `/modularrouters pickaxe`: save the item in a Breaker Module's or Extruder
+/// Mk1's pickaxe slot — both are `IPickaxeUser`, and the module screen's field
+/// this port replaces with a command.
 fn set_pickaxe(
     host: &mut dyn ServerHost,
     level: LevelRef,
@@ -2878,7 +3035,7 @@ fn set_pickaxe(
     let mut is_breaker = false;
     let applied = edit_module(host, level, pos, slot, |module| {
         found = true;
-        if !matches!(module.kind, ModuleKind::Breaker) {
+        if !matches!(module.kind, ModuleKind::Breaker | ModuleKind::Extruder1) {
             return false;
         }
         is_breaker = true;
@@ -3881,6 +4038,17 @@ mod tests {
             lines[1],
             "module 0 at 241,100,0: modularrouters:placer_module dir=front target=north \
              filter blacklist none"
+        );
+    }
+
+    #[test]
+    fn an_extruder_modules_line_names_its_direction() {
+        let extruder = Module::new(ModuleKind::Extruder1, Relative::Front, Filter::any());
+        let lines = describe([281, 100, 0], Facing::North, false, &[extruder], None, 0, 0);
+        assert_eq!(
+            lines[1],
+            "module 0 at 281,100,0: modularrouters:extruder_module_1 dir=front target=north \
+             range=16 pickaxe=minecraft:stone_pickaxe filter blacklist none"
         );
     }
 }

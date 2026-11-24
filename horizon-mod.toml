@@ -1,6 +1,6 @@
 id = "modularrouters"
 name = "Modular Routers"
-version = "0.2.16"
+version = "0.2.17"
 description = """A port of Modular Routers for Horizon: a router block entity with nine module slots, five upgrade
 slots and a one-slot buffer that runs its installed modules every 20 ticks — a Puller Mk1 takes an item
 from the container beside it into the buffer, a Puller Mk2 takes from the container you select up to
@@ -10,7 +10,7 @@ Void Module destroys what its filter accepts in the buffer, a Dropper Module thr
 accepts into the block in its direction, a Flinger Module throws it the same way with the speed, pitch
 and yaw you set on it, a Placer Module puts one item from the buffer back into the world as a block in
 the block its direction names, a Breaker Module breaks the block its direction names with its saved
-pickaxe (matching drops or the block itself) and puts the drops into the buffer, a Vacuum Module fills the buffer from the dropped items in
+pickaxe (matching drops or the block itself) and puts the drops into the buffer, an Extruder Module Mk1 joins placer and breaker into one redstone-driven arm that places buffered blocks along its direction while powered and breaks them back with its saved pickaxe while unpowered, a Vacuum Module fills the buffer from the dropped items in
 a box six blocks in every direction around it (the buffer's own item deciding what it collects, or
 in front of it only when it is given a direction), a Speed Upgrade shortens the interval by
 two ticks, a Stack Upgrade doubles the items per operation, the Range Augments move a module's reach

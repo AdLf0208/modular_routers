@@ -3,10 +3,10 @@
 Class **content**, tier **machines**, core, priority P0.
 Ported from **Modular Routers** `modularrouters` 13.2.7+mc1.21.1
 (<https://github.com/desht/ModularRouters>, **MIT**, rank 0), Minecraft Java
-1.21.1 NeoForge. Status: `ported-partial` — sixteen slices, gaps recorded below.
+1.21.1 NeoForge. Status: `ported-partial` — seventeen slices, gaps recorded below.
 
 **Format since 2026-11-18: the Horizon SDK package** (`horizon-mod.toml` with `api = "0.2"`, one
-`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.16** — 0.2.0 was the SDK
+`src/lib.rs` `impl Hooks`, content at the package root), version **0.2.17** — 0.2.0 was the SDK
 migration that superseded the closed `.hnmod` submission **PR #870**, 0.2.1 the review fixes, 0.2.2
 the recipe/loot repair of 2026-11-21, 0.2.3 the registered-module path of 2026-11-21, 0.2.4 the
 Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged Puller Mk2
@@ -15,7 +15,7 @@ Speed/Stack upgrade items with the router's five upgrade slots, 0.2.5 the ranged
 Module, 0.2.10 the targeted Sender Mk2, 0.2.11 the Regulator Augment's **sender** half,
 0.2.12 the Dropper Module, 0.2.13 the Vacuum Module and 0.2.14 the Flinger Module with the
 vacuum's review fix (all on 2026-11-23), 0.2.15 the Placer Module (2026-11-23) and
-0.2.16 the Breaker Module (2026-11-24). Pin: SDK
+0.2.16 the Breaker Module and 0.2.17 the Extruder Module Mk1 (both 2026-11-24). Pin: SDK
 nightly `0a875da91dbbfdcb7ba8c42c11341aa229af51a` (2026-11-20), horizon-mixins
 `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3 (0.2.0/0.2.1 were built at `0b14f8a`; the
 package reports `0b14f8a  fits`). The retired 0.1.0 tree — the
@@ -2796,7 +2796,8 @@ Every family the jar carries, against what this port does with it. `tested` name
 | a module kind this port does not implement (registered by the tag, or carried by a save) | tested | E2E K (install, `info` readback, direction, remove; `minecraft:stick` survives a save + relaunch; `example:foreign_module` written with `/data merge` survives the rewrite an install performs) |
 | **`sender_module_3`** (a targeted sender with `isRangeLimited()` false: no distance limit, the target in the router's world *or* a permitted dimension) | `blocked(cross-level-capability)` — probed in game, not shipped | the probe (§ *Blocked: the Sender Module Mk3*): the Mk3 kind installs, its readout prints **no `range=`** where the Mk2's prints `range=24`, and a same-level target **60 blocks** out receives all eight — but a target in the Overworld is unreachable from an End tick: `{loaded: 1b, in_place: 0b, capability: 0b, merge: "stale"}`, buffer 8 kept; the Mk2 keeps its 8 too (the differential) and a blacklisted dimension is refused |
 | **Flinger Module (the Dropper Module with a velocity: the same filtered stack thrown the same way, given the module's saved speed, pitch and yaw)** | **tested** | E2E V — eight stone in a flinger's buffer with `dir=front` on an east-facing router at **speed 1** land as **eight stone in a column past the adjacent block** with the buffer **0**; the identical flinger at **speed 0** leaves them in the **adjacent** block, exactly as a dropper does (the speed differential); a `dir=up` flinger (base pitch 90°) throws them **above the router** with **none east**; a **pitch 90** throw on a horizontal aim goes straight up and back into the adjacent block with none in the far column; a **yaw 60** throw lands **north** of the row and none in it; and a flinger whose whitelist names dirt keeps all **8** and throws **0** (the filter); its readout is `modularrouters:flinger_module dir=front target=east fling=speed=1 pitch=0 yaw=0`; `runtime::tests` cover `fling_velocity` for every quadrant, the speed scale and zero, ±pitch, ±yaw, the router-facing base of a tilted up/down fling and the spawn point, `Flinger::validated` at every bound, at infinity and at NaN, the shared `pick_drop` rule, and the save round trip (an out-of-range save reads as the default triple); `support::tests` the readout and the save |
-| other modules not named above (`extruder_1`/`_2`, `detector`, `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`, `player`, `activator`, `creative`) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
+| **Extruder Module Mk1 (a redstone arm: powered it places the buffer's block one further along its direction per operation, unpowered it breaks the last one with its saved pickaxe and collects the drops into the buffer; reach 16, up to 32 with Range Augments)** | **tested** | E2E Y — one stone in the buffer with a redstone block behind a north-facing router puts `minecraft:stone` at `(281,100,-1)` and leaves the buffer **0**; the same rig with **no signal**, with a **dirt whitelist** and with **`dir=none`** places nothing and keeps its one stone; at a forced distance of 1 a **stone-tier stick refuses diamond ore** while an iron pickaxe takes one diamond; removing the signal returns the block to **air** and puts **1 cobblestone** in the buffer; readout names `range=16 pickaxe=…`, and its three-ingredient recipe crafts in a real table with the breaker consumed and a stick control empty. `runtime::tests` cover the kind, the 16/32 range and its clamp, the power rule and both offsets; `support::tests` the readout |
+| other modules not named above (`extruder_module_2`, `detector`, `distributor`, `energy_distributor`, `energy_output`, `fluid`/`fluid_2`, `player`, `activator`, `creative`) | not ported (a foreign/other id is carried and shown, never run) | gap 1 |
 | **Placer Module (buffer → one block in the module's direction: the item's block form is written into a replaceable state, one item per placement, down to the module's regulation amount)** | **tested** | E2E W — eight stone in a placer's buffer with `dir=front` on a north-facing router become **one stone block** at `(x,100,-1)`, the buffer **7**, and every later operation is refused because the block is occupied (the artefact's one-destination rule; the brief's "buffer 0 after eight operations" is arithmetically impossible and was not coded as a claim); the identical placer with **no direction** places nothing (buffer 8, air unchanged), a buffer of **stick** places nothing (no block form, buffer 8), a whitelist naming **dirt** places nothing (buffer 8), a placer whose destination **already holds stone** places nothing (buffer 8, block unchanged), `dir=up` places **above** the router with none north (buffer 7), and a Regulator Augment at **3** refuses a buffer of exactly three (buffer 3, air) and places one of **four** (buffer 3, stone) — the buffer's floor; the **Stack Augment is refused on the module itself** and its rig still takes exactly one item for its one placement, which is the row that was `blocked(module-kind)` until this slice; its readout is `modularrouters:placer_module dir=front target=north`, with `regulate=3 augments regulator` once augmented; `runtime::tests` cover `pick_place` (one per operation, the floor at/below the count, the filter, the empty buffer and no count parameter), the kind and its augment limits (none of the Stack Augment, one Regulator), the direction (`dir=none` has no face) and the target block; `support::tests` the readout lines |
 | **Breaker Module (block → buffer: the block in the module's direction is broken with its saved pickaxe and the drops that pass the filter go into the buffer)** | **tested** | E2E X — ten rigs at x=241…268: iron on stone reads **air** with **1 cobblestone** in the buffer; a dirt whitelist leaves the stone and the buffer at 0; glass breaks to air for no drops (the artefact's no-drops + blacklist branch); a **Regulator Augment amount 4 with a buffer already at 4** breaks nothing (`amount > count` is required), while X1's empty buffer breaks; `MatchType BLOCK` with a stone filter breaks and a cobble filter refuses the same stone while `MatchType ITEM` does the opposite; a **stick** in the pickaxe slot is the artefact's `Tiers.STONE` fallback and refuses diamond ore (`incorrect_for_stone_tool`) while an iron pickaxe takes **1 diamond**; `dir=none` breaks nothing; its readout names `pickaxe=` and `match=`, its recipe crafts in a real table with the pickaxe consumed and a stick control empty, and J2 gives and reads back the item; `runtime::tests` cover `break_decision` (drop-pass, no-drop/whitelist, the block-item match, the empty-whitelist refusal), `break_allowed` (inbound floor at/below/above), `MatchType`'s serialized names and `tool_tier`'s stone fallback, `support::tests` the readout and the saved settings |
 | **Speed Upgrade + Stack Upgrade items, and the router's five upgrade slots** (insert rules, per-slot limits, removal, the save) | **tested** | E2E L — right-click install changes `2 item(s) every 20 ticks` and a per-step `+2` against an un-upgraded router's `+1`; one Speed → `18 ticks`, four → `12 ticks`; a 360-tick window delivers 60 against 18; `upgrade … remove` hands the item back and the readout follows; a 5 × 9-speed save is `45 speed` at the 2-tick floor and a sixth upgrade is refused; a tagged upgrade this build does not run is refused; the slots survive a relaunch; `runtime::tests` cover the limits, the cut-to-five read and the carried foreign id |
@@ -2875,6 +2876,16 @@ binary does not list the port's own tests.
    tests the drops or the block, the harvest-level tier is the pin's
    `incorrect_for_<tier>_tool` tag with upstream's stone fallback, and its
    Regulator amount is the buffer's inbound floor (`amount > count`).
+   **`extruder_module_1` ships** (slice 17, E2E Y): a redstone-driven arm with a
+   distance per absolute face — powered it places one buffered block at
+   `distance + 1` and grows (reach 16, up to 32 with Range Augments), unpowered it
+   breaks the block at `distance` with the pickaxe saved on it (the Breaker's,
+   copied by the crafting recipe) and puts the passing drops into the buffer. Its
+   filter decides both the placement and the drops; `dir=none` has no arm. Only
+   `RedstoneBehaviour.ALWAYS` (the artefact's default) runs — HIGH/LOW/PULSE need
+   the module screen (gap 4/6). The block is placed at its default state, not by
+   the item's `useOn` (the Placer's deviation). **`extruder_module_2`** (a template
+   buffer of ghost blocks) remains a gap.
    **`sender_module_3` is `blocked(cross-level-capability)`**: probed in game on 2026-11-23 (see
    *Blocked: the Sender Module Mk3*). The kind, its unlimited target rule and its no-`range=` readout
    all work and a same-level target 60 blocks out receives items, but an End tick cannot reach an
@@ -3145,7 +3156,162 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Package 0.2.16: **166,365 B**, SHA-256 `c584f8ebbf5c46fc1bd318bac89bb0ec507206a1e96ee02acb01354accb64d98`,
 136 entries, no `Cargo.lock`.
 
+## Slice 17 (2026-11-24) — the Extruder Module Mk1 (0.2.17)
+
+Pin: SDK nightly `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` + mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3. Slice 17 is gap 1's next entry,
+the one after the breaker — *"**Modules**: `sender_module_3` (**blocked**), `flinger`,
+`placer`, `breaker`, `extruder_1`/`_2`, …"* — at the ledger's tier **machines**: the
+module reads the router's one-slot buffer, a saved pickaxe, its filter and a saved
+distance per face, and writes one block position. No new machine, block entity or
+renderer. `sender_module_3` stays `blocked(cross-level-capability)` and was not
+re-attempted. The full design, including the brief/artefact disagreement, is in
+[`PLAN-0.2.17.md`](PLAN-0.2.17.md).
+
+### The brief's premise was wrong; the artefact won
+
+The brief and this file's old *Next slice* described `CompiledExtruderModule1` as
+joining placer + breaker into **one pass through a block**: stone at `(x,100,-1)`
+should end at `(x,100,-2)` with the buffer empty. Read first at the campaign commit
+`a26024345ee5d565bb79bf48e5a7fe37a27bba90`, the artefact is **not** that. Its
+patchouli entry says it *"extends and withdraws a row of blocks (from the router's
+buffer) in the module's configured direction… extends blocks when the router has a
+redstone signal, and withdraws them when the router has no signal"* — a piston-like
+drawbridge arm, not a pass-through. The brief itself ordered the artefact read
+first (*"Do not infer it from 'placer + breaker' alone"*), so this slice implements
+the artefact and records the correction; Slice 5's Puller Mk2 set the precedent.
+
+| upstream (`a2602434…`) | what it says | used for |
+|---|---|---|
+| `CompiledExtruderModule1.execute:44–87` | `distance` per absolute facing in `getExtensionData()`; powered: `placePos = relative(dir, distance+1)`, `tryPlaceAsBlock` → `extractBuffer(1)` → `distance++`; unpowered: `breakPos = relative(dir, distance)`, `tryBreakBlock(..., matchByBlock=false)` → `distance--`; empty/liquid retract still decrements | `ExtruderDist` compound, `extruder1_operation`, `extruder_place_offset`/`extruder_break_offset` |
+| `shouldExtend` / `RedstoneBehaviour.ALWAYS` | extend while `getRedstonePower() > 0`, retract while 0; HIGH/LOW/PULSE need the module screen (gap 4/6) | `extruder_should_extend(power)`; only the default runs |
+| `CommonConfig.extruder1BaseRange/MaxRange` | **16 / 32** (the book's 12/24 is stale) | `EXTRUDER1_BASE_RANGE`/`MAX_RANGE`, `extruder_range(boost)`; Range Augments move the arm |
+| `getRedstonePower` / `calculateIncomingRedstonePower` | strongest neighbour `getSignal`, ignoring a face already extended into | `extruder_power` via `LevelRef::signal` on the six faces |
+| `PickaxeModuleRecipe.ExtruderModule1Recipe` | blank module + placer + breaker; `assemble` copies the Breaker's pickaxe into the result | the carried recipe; `/modularrouters pickaxe` stands in for the component transfer |
+| `BlockUtil.tryBreakBlock(..., false)` | filter tests **drops** (the Breaker's `MatchType ITEM`), harvest-level tier limit | `break_from_buffer` reused unchanged for withdrawal |
+
+### How it works here
+
+- `runtime.rs`: `ModuleKind::Extruder1` (+ `EXTRUDER1`), ranged with 16/32, and the
+  four pure rules. `NO_STACK_AUGMENT` already named this id, so it takes no Stack
+  Augment, and it takes one Regulator Augment — both already unit-tested.
+- `support.rs`: `ExtruderDist` (one int per absolute face) in the router's saved
+  compound, read/written in the tick; `extruder_power` reads the six neighbour
+  signals, skipping extended faces; `extruder1_operation` reuses `place_from_buffer`
+  (extend) and `break_from_buffer` (withdraw) with an explicit `Pos` target. Only
+  the default `ALWAYS` mode is implemented; HIGH/LOW/PULSE stay a gap. The readout
+  names `range=16 pickaxe=…`; `/modularrouters pickaxe` accepts an Extruder too.
+- Content: the item definition, model, the jar's own texture (byte-identical, MIT
+  rank 0), the three-ingredient recipe, the `modules` tag, lang and creative tab.
+
+### Deviations, stated
+
+- **A real redstone signal decides extend vs withdraw.** Upstream reads
+  `getSignal(pos.relative(face), face)` per face; the SDK's `LevelRef::signal` is
+  that getter. Only `RedstoneBehaviour.ALWAYS` (the artefact's default) is
+  implemented; the other three modes need the module screen (gap 4/6).
+- **Placement is the block's default state**, not the item's `useOn` — the same
+  deviation the Placer records (no item-use hook callable from a tick).
+
+### TDD, in the order the ruling asks for
+
+1. **Unit red** — two `runtime` and one `support` test written before the names
+   existed (`slice17-test-red.log`, 22 errors, exit 101):
+
+   ```
+   error[E0599]: no variant or associated item named `Extruder1` found for enum `runtime::ModuleKind` in the current scope
+   error[E0425]: cannot find function `extruder_should_extend` in this scope
+   error: could not compile `modularrouters` (lib test) due to 22 previous errors
+   ```
+
+2. **In-game red** — phase Y run on the shipped **0.2.16** game
+   (`modularrouters-e2e/e2e-red-extruder-focused.log`, package `c584f8eb…64d98`):
+
+   ```
+   Unknown module 'modularrouters:extruder_module_1': modularrouters:puller_module_1, modularrouters:sender_module_1 or an item in #modularrouters:modules
+   FAIL: expected the reply to say 'Modular Router: modularrouters:extruder_module_1 in slot 0'
+   EXIT:1
+   ```
+
+3. **In-game green** — the artefact's arm, not the brief's pass-through
+   (`modularrouters-e2e/e2e-0.2.17-extruder-focused.log`, `EXIT:0`):
+
+   ```
+   == Y: the Extruder Mk1 — a redstone arm that places and withdraws one block ==
+   module 0 at 281,100,0: modularrouters:extruder_module_1 dir=front target=north range=16 pickaxe=minecraft:stone_pickaxe filter blacklist none
+   Y1 (powered, 1 stone):        block minecraft:stone, buffer 0 stone
+   Y2 (no signal):               block minecraft:air, buffer 1 stone
+   Y3 (dirt whitelist):          block minecraft:air, buffer 1 stone
+   Y4 (iron, distance 1):        block minecraft:air, buffer 1 diamond
+   Y5 (dir=none, powered):       block minecraft:air, buffer 1 stone
+   Y1 after withdraw:            block minecraft:air, buffer 1 cobblestone
+   extruder Mk1: a blank module, a placer and a breaker, shapeless -> {"count": 1, "item": "modularrouters:extruder_module_1", "slot": 200}
+   ```
+
+   **Why the assertions can fail, five ways.** (1) The 0.2.16 run above is phase Y's
+   own refuse (`EXIT:1`). (2) Y2 is the **power** differential: the same module,
+   buffer and column, no redstone behind the router, nothing placed. (3) Y3 is the
+   **filter** (a dirt whitelist refuses the stone) and Y5 the **direction**
+   (`dir=none` has no arm), both against Y1. (4) Y4 is the **harvest tier** at a
+   forced distance of 1: a stick (stone fallback) refuses diamond ore, then an iron
+   pickaxe takes one diamond. (5) Y1's **withdrawal** proves the arm's other half —
+   the block returns to air and its cobble drop lands in the buffer. `SELFTEST=extruder`
+   inverts Y1's placement and ends `EXIT:1`; the unmodded control game fails its
+   first `give` at `EXIT:1`.
+
+### Harness findings worth recording
+
+1. **A one-item buffer makes the arm's count unambiguous.** With eight stone the
+   arm places one per operation for as long as it is powered, so a bounded window
+   cannot assert "one block" cleanly. One stone → exactly one placement, buffer 0.
+2. **The rigs' chunk must be re-loaded inside phase Y.** `arena()` teleports home
+   at its end; placing the far routers before teleporting out silently failed
+   (`That position is not loaded`). Phase Y now teleports and waits on two floor
+   blocks before any `setblock`.
+3. **X4's buffer must be written before its target block.** The breaker runs on an
+   empty buffer between two `ctl` commands (the P3 lesson); phase X now merges the
+   four stone into the slot first, so `amount > count` refuses the break.
+
+### Ladder (every compile step in a `build-slot.sh` lease; Rust steps forwarded to AdLf-PC)
+
+| Step | Command | Result | Log |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | **22 errors**, exit 101 | `slice17-test-red.log` |
+| red, in game | phase Y on the **0.2.16** game | `Unknown module 'modularrouters:extruder_module_1'`, `EXIT:1` | `modularrouters-e2e/e2e-red-extruder-focused.log` |
+| tests | `cargo test --offline` | **97 passed**, 0 failed | `sdk-test.log` |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings | `slice17-clippy.log` |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice17-fmt.log` |
+| manifest bump | `launcher-game.sh build modularrouters` (stale `native-0a875da-2df53970267b` removed first) | `Compiling modularrouters (1 of 1)`; export names **0.2.17** | `modularrouters-e2e/game-build-0.2.17.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second `cmp`-identical, **172,418 B**, sha256 `8e4f8606…147ea` | `slice17-build.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.17 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, `172418 bytes, SHA-256 8e4f8606…147ea`, exit 0 | `slice17-check-fits.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, exit 0 | `slice17-check-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `slice17-check-fits.log` |
+| recipes / data shape | `check-recipe-types.py`, `tools/data_shape.py` | `modularrouters: ok`; 26 recipe/loot files, all 26.3 dialect | `slice17-{recipe-types,data-shape}.log` |
+| package contents | `unzip -Z1`, packed `README.md` vs the tree | **141 entries**, no `Cargo.lock`, README byte-identical | the gate below |
+| the gate | `verify-sdk-package.py modularrouters` | **1/1** (97 tests, package = tree, no lock, R9) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` (phases A–Y, J1–J4) | `modularrouters-e2e/e2e-launcher-0.2.17.log` |
+| the counterfactual | `SELFTEST=1` / `SELFTEST=extruder tools/e2e.sh` | `FAIL` + `EXIT:1` each | `modularrouters-e2e/e2e-{selftest,selftest-extruder}-0.2.17.log` |
+| the control | `GAME=$CONTROL_GAME tools/e2e.sh` | `FAIL` + `EXIT:1` | `modularrouters-e2e/e2e-control-0.2.17.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | 0 missing/bad exit lines | — |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+Package 0.2.17: **172,418 B**, SHA-256 `8e4f86067d6fd3d7e74492e7d066d4bec2ff58eece5b077772aee09b99e147ea`,
+141 entries, no `Cargo.lock`.
+
 ## Next slice
+
+Gap 1's entry after the Extruder Mk1: `extruder_module_2` (the Mk1 arm with a
+template buffer of ghost blocks instead of the router's buffer — a different
+family, a menu and a component, outside this slice) or `detector_module` (the
+redstone-emitting counter, which needs gap 6's redstone output). The next
+faithful, tier-fitting entry is gap 1's `detector_module`, whose assertion would
+place a detector facing a chest and read its emitted signal after a bounded
+window — but gap 6 (redstone modes / `can_emit`) must be opened first, so the
+recommended next slice is a re-check of `sender_module_3`'s cross-level
+capability at the next pin before either.
+
+### Historical (superseded) next-slice text
 
 Gap 1's entry after the breaker: `extruder_1`/`_2`. The Mk1 Extruder is the
 breaker + placer pair joined through one block (upstream's

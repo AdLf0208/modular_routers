@@ -58,6 +58,11 @@ pub const PULLER_MAX_RANGE: i32 = 24;
 pub const VACUUM_BASE_RANGE: i32 = 6;
 /// `CommonConfig.module.vacuumMaxRange`: up to 12 with Range Augments.
 pub const VACUUM_MAX_RANGE: i32 = 12;
+/// `CommonConfig.module.extruder1BaseRange`: the Extruder Mk1 arm starts at 16
+/// blocks. The patchouli book's 12 is stale; the shipped config says 16.
+pub const EXTRUDER1_BASE_RANGE: i32 = 16;
+/// `CommonConfig.module.extruder1MaxRange`: up to 32 with Range Augments.
+pub const EXTRUDER1_MAX_RANGE: i32 = 32;
 /// `FlingerModule.MIN_SPEED` / `MAX_SPEED`: the speed a flinger's item leaves
 /// with, in blocks per tick (`Vec3.scale(speed)` on the unit aim vector).
 pub const FLINGER_MIN_SPEED: f32 = 0.0;
@@ -324,6 +329,10 @@ pub enum ModuleKind {
     /// `modularrouters:breaker_module`: breaks the block its direction names with
     /// its saved pickaxe, putting the drops that pass its filter into the buffer.
     Breaker,
+    /// `modularrouters:extruder_module_1`: a redstone-driven arm that places the
+    /// buffer's item one block further out while the router is powered and breaks
+    /// the last block it placed while it is not, with the Breaker's pickaxe.
+    Extruder1,
     /// A module this port does not implement, carried by its id.
     Registered(String),
 }
@@ -339,6 +348,7 @@ impl ModuleKind {
     pub const FLINGER: &'static str = "modularrouters:flinger_module";
     pub const PLACER: &'static str = "modularrouters:placer_module";
     pub const BREAKER: &'static str = "modularrouters:breaker_module";
+    pub const EXTRUDER1: &'static str = "modularrouters:extruder_module_1";
 
     /// The kind an item id names: one of the modules this port runs, or a
     /// registered kind that keeps the id unchanged.
@@ -355,6 +365,7 @@ impl ModuleKind {
             Self::FLINGER => ModuleKind::Flinger,
             Self::PLACER => ModuleKind::Placer,
             Self::BREAKER => ModuleKind::Breaker,
+            Self::EXTRUDER1 => ModuleKind::Extruder1,
             other => ModuleKind::Registered(other.to_string()),
         }
     }
@@ -374,6 +385,7 @@ impl ModuleKind {
                 | ModuleKind::Flinger
                 | ModuleKind::Placer
                 | ModuleKind::Breaker
+                | ModuleKind::Extruder1
         )
     }
 
@@ -407,6 +419,7 @@ impl ModuleKind {
             ModuleKind::Flinger => Self::FLINGER,
             ModuleKind::Placer => Self::PLACER,
             ModuleKind::Breaker => Self::BREAKER,
+            ModuleKind::Extruder1 => Self::EXTRUDER1,
             ModuleKind::Registered(item) => item,
         }
     }
@@ -420,6 +433,7 @@ impl ModuleKind {
             ModuleKind::SenderMk1 => Some(SENDER_BASE_RANGE),
             ModuleKind::SenderMk2 => Some(SENDER2_BASE_RANGE),
             ModuleKind::Vacuum => Some(VACUUM_BASE_RANGE),
+            ModuleKind::Extruder1 => Some(EXTRUDER1_BASE_RANGE),
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
@@ -438,6 +452,7 @@ impl ModuleKind {
             ModuleKind::SenderMk1 => Some(SENDER_MAX_RANGE),
             ModuleKind::SenderMk2 => Some(SENDER2_MAX_RANGE),
             ModuleKind::Vacuum => Some(VACUUM_MAX_RANGE),
+            ModuleKind::Extruder1 => Some(EXTRUDER1_MAX_RANGE),
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
@@ -771,6 +786,7 @@ impl Module {
             ModuleKind::SenderMk1 => Some(sender_range(boost)),
             ModuleKind::SenderMk2 => Some(sender2_range(boost)),
             ModuleKind::Vacuum => Some(vacuum_range(boost)),
+            ModuleKind::Extruder1 => Some(extruder_range(boost)),
             ModuleKind::PullerMk1
             | ModuleKind::Void
             | ModuleKind::Dropper
@@ -1382,6 +1398,32 @@ pub fn puller_range(boost: i32) -> i32 {
 /// half-width of the box it sweeps.
 pub fn vacuum_range(boost: i32) -> i32 {
     (VACUUM_BASE_RANGE + boost).clamp(1, VACUUM_MAX_RANGE)
+}
+
+/// An Extruder Mk1's arm length: `max(1, min(32, 16 + range_up − range_down))`
+/// (`IRangedModule.getCurrentRange` with `extruder1BaseRange`/`extruder1MaxRange`).
+/// This is how far the arm can extend, not a scan range.
+pub fn extruder_range(boost: i32) -> i32 {
+    (EXTRUDER1_BASE_RANGE + boost).clamp(1, EXTRUDER1_MAX_RANGE)
+}
+
+/// `CompiledExtruderModule1.shouldExtend` for the default
+/// `RedstoneBehaviour.ALWAYS`: put blocks out while the router reads a signal,
+/// withdraw them while it does not. The other modes (HIGH/LOW/PULSE) are the
+/// module screen's, which this port stands in for (gap 4/6).
+pub fn extruder_should_extend(power: i32) -> bool {
+    power > 0
+}
+
+/// `router.getBlockPos().relative(dir, distance + 1)`: the next block the arm
+/// places, one further out than the one it last placed.
+pub fn extruder_place_offset(distance: i32) -> i32 {
+    distance + 1
+}
+
+/// `router.getBlockPos().relative(dir, distance)`: the block the arm withdraws.
+pub fn extruder_break_offset(distance: i32) -> i32 {
+    distance
 }
 
 /// Whether `target` is within `range` blocks of `from`, as
@@ -4222,5 +4264,38 @@ mod tests {
             ),
             Some(Vec::new())
         );
+    }
+
+    #[test]
+    fn an_extruder_mk1_is_a_ranged_module_with_the_artefacts_range() {
+        assert_eq!(ModuleKind::EXTRUDER1, "modularrouters:extruder_module_1");
+        assert_eq!(ModuleKind::of(ModuleKind::EXTRUDER1), ModuleKind::Extruder1);
+        assert!(ModuleKind::Extruder1.is_known());
+        assert_eq!(
+            ModuleKind::Extruder1.base_range(),
+            Some(EXTRUDER1_BASE_RANGE)
+        );
+        assert_eq!(ModuleKind::Extruder1.max_range(), Some(EXTRUDER1_MAX_RANGE));
+        assert_eq!(EXTRUDER1_BASE_RANGE, 16);
+        assert_eq!(EXTRUDER1_MAX_RANGE, 32);
+        // `IRangedModule.getCurrentRange` = clamp(base + boost, 1, hardMax)
+        assert_eq!(extruder_range(0), 16);
+        assert_eq!(extruder_range(8), 24);
+        assert_eq!(extruder_range(32), 32);
+        assert_eq!(extruder_range(-20), 1);
+    }
+
+    #[test]
+    fn an_extruder_extends_only_while_the_router_is_powered() {
+        // `CompiledExtruderModule1.shouldExtend` for the default ALWAYS mode:
+        // power > 0 extends, power == 0 withdraws.
+        assert!(!extruder_should_extend(0));
+        assert!(extruder_should_extend(1));
+        assert!(extruder_should_extend(15));
+        // `placePos = relative(dir, distance + 1)`, `breakPos = relative(dir, distance)`
+        assert_eq!(extruder_place_offset(0), 1);
+        assert_eq!(extruder_place_offset(3), 4);
+        assert_eq!(extruder_break_offset(1), 1);
+        assert_eq!(extruder_break_offset(4), 4);
     }
 }

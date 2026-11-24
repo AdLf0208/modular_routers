@@ -52,6 +52,7 @@ VACUUM_MODULE = "modularrouters:vacuum_module"
 FLINGER_MODULE = "modularrouters:flinger_module"
 PLACER_MODULE = "modularrouters:placer_module"
 BREAKER_MODULE = "modularrouters:breaker_module"
+EXTRUDER1_MODULE = "modularrouters:extruder_module_1"
 
 
 def main() -> int:
@@ -441,6 +442,20 @@ def main() -> int:
         ],
         BREAKER_MODULE, 1, "minecraft:iron_pickaxe",
     )
+    # The Extruder Mk1 is `PickaxeModuleRecipe.ExtruderModule1Recipe`: a blank
+    # module, a placer module and a breaker module, shapeless. Upstream's special
+    # serializer copies the Breaker's pickaxe into the Extruder; here the
+    # `pickaxe` command stands in for that component transfer (phase Y).
+    check(
+        "extruder Mk1: a blank module, a placer and a breaker, shapeless",
+        [(BLANK, 1), (PLACER_MODULE, 1), (BREAKER_MODULE, 1)],
+        [
+            (BLANK, every(GRID["tl"])),
+            (PLACER_MODULE, every(GRID["mm"])),
+            (BREAKER_MODULE, every(GRID["br"])),
+        ],
+        EXTRUDER1_MODULE, 1, BREAKER_MODULE,
+    )
 
     # --- controls: a wrong ingredient leaves the result empty ----------------
     empty_control(
@@ -588,6 +603,15 @@ def main() -> int:
         "breaker module with a stick where the iron pickaxe goes",
         [(BLANK, 1), ("minecraft:stick", 1)],
         [(BLANK, every(GRID["tl"])), ("minecraft:stick", every(GRID["mm"]))],
+    )
+    empty_control(
+        "extruder Mk1 with a stick where the breaker goes",
+        [(BLANK, 1), (PLACER_MODULE, 1), ("minecraft:stick", 1)],
+        [
+            (BLANK, every(GRID["tl"])),
+            (PLACER_MODULE, every(GRID["mm"])),
+            ("minecraft:stick", every(GRID["br"])),
+        ],
     )
     empty_control(
         "vacuum module with a stick where the ender eye goes",

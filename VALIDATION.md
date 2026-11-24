@@ -1,5 +1,66 @@
 # Modular Routers — validation ladder
 
+## 0.2.17 — the Extruder Module Mk1 (2026-11-24)
+
+Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**, for game 26.3. Slice 17: the Extruder
+Mk1. **The brief's "one pass through a block" is not the artefact** — at
+`a26024345ee5d565bb79bf48e5a7fe37a27bba90` `CompiledExtruderModule1` is a redstone-driven
+extending/withdrawing arm with a distance per face, reach 16/32, reusing the Placer's
+`place_from_buffer` and the Breaker's `break_from_buffer`. The pickaxe comes from the
+Breaker Module in its recipe. Full rule table, deviations, red/green transcript and
+coverage row: `notes.md` § *Slice 17* and `PLAN-0.2.17.md`. No new machine, block entity
+or renderer; `sender_module_3` stays `blocked(cross-level-capability)`.
+
+Every compile step ran inside a `ports/tools/build-slot.sh` lease (Rust steps forwarded
+to AdLf-PC, no `BUILD_LOCAL=1`) with `CARGO_INCREMENTAL=0`; logs are in
+`ports/_shared/evidence/modularrouters/` and `ports/_shared/evidence/modularrouters-e2e/`.
+
+| Step | Command | Result | Evidence |
+|---|---|---|---|
+| red, unit | `cargo test --offline` before the names existed | 22 errors (`Extruder1`, `extruder_should_extend`), exit 101 | `slice17-test-red.log` |
+| red, in game | phase Y on the shipped **0.2.16** game | `Unknown module 'modularrouters:extruder_module_1'`, `FAIL`, `EXIT:1` | `modularrouters-e2e/e2e-red-extruder-focused.log` |
+| tests | `cargo test --offline` | **97 passed**, 0 failed | `sdk-test.log` |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** | `slice17-clippy.log` |
+| format | `rustfmt --edition 2024 src/{lib,support,runtime}.rs` + `cargo fmt --check` | exit 0, empty diff | `slice17-fmt.log` |
+| manifest bump | `launcher-game.sh build modularrouters` (stale `native-0a875da-2df53970267b` removed first) | `Compiling modularrouters (1 of 1)`; export names **0.2.17** | `modularrouters-e2e/game-build-0.2.17.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` (twice) | second `cmp`-identical, **172,418 B**, sha256 `8e4f8606…147ea` | `slice17-build.log` |
+| registry check | `cargo horizon-mod check modularrouters.hmod` | `modularrouters 0.2.17 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, `172418 bytes, SHA-256 8e4f8606…147ea`, exit 0 | `slice17-check-fits.log` |
+| fits the pin | `… --build 0a875da` | `0a875da  made for`, exit 0 | `slice17-check-fits.log` |
+| fits the previous build | `… --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `slice17-check-fits.log` |
+| recipes / data shape | `check-recipe-types.py`, `tools/data_shape.py` | `modularrouters: ok`; 26 recipe/loot files in the 26.3 dialect | `slice17-{recipe-types,data-shape}.log` |
+| the gate | `verify-sdk-package.py modularrouters` | **1/1** (97 tests, package = tree, no lock, R9) | `verify-sdk-package.log` |
+| the leg | `tools/e2e.sh` | `PASS` + `EXIT:0` (phases A–Y, J1–J4) | `modularrouters-e2e/e2e-launcher-0.2.17.log` |
+| counterfactual / control | `SELFTEST=1`, `SELFTEST=extruder`, `GAME=$CONTROL_GAME` | `FAIL` + `EXIT:1` each | `modularrouters-e2e/e2e-{selftest,selftest-extruder,control}-0.2.17.log` |
+| the logs | `check-e2e-logs.py modularrouters-e2e --strict` | 0 missing/bad exit lines | — |
+
+The first full-leg attempt exited `5` mid-phase N on a transient harness read:
+`ctl container 54 100 -12` returned no `slots` field under a loaded queue and `jq`
+died on `null` (`e2e-launcher-0.2.17.log` was overwritten by the retry). No module
+assertion failed and no source changed; the re-run passed `PASS` + `EXIT:0`.
+
+### What phase Y proves (parity rule)
+
+Five rigs at x = 281…293 on an eastward row of the End arena, each with one stone in
+its buffer, installed and configured before power is applied:
+
+| Rig | Module | After the window |
+|---|---|---|
+| Y1 | powered, one stone | `(281,100,-1)` **stone**, buffer **0** — one block left the buffer into the world |
+| Y2 | no signal | **air**, buffer **1** (the power differential) |
+| Y3 | powered, dirt whitelist | **air**, buffer **1** (the filter) |
+| Y4 | distance 1, diamond ore, stick then iron | ore stays with the stick, **air + 1 diamond** with iron (the tier) |
+| Y5 | powered, `dir=none` | **air**, buffer **1** (no arm without a direction) |
+
+Removing Y1's signal then reads **air** at `(281,100,-1)` with **1 cobblestone** in the
+buffer: the arm's withdrawal half, which a pass-through port would not have. The
+recipe crafts in J1 (blank module + placer + breaker, breaker consumed, stick control
+empty) and J2 gives and reads the item back.
+
+**Skills:** superpowers/using-superpowers, brainstorming, writing-plans,
+test-driven-development, systematic-debugging, verification-before-completion;
+BeautifulRust/rust-best-practices
+
 ## 0.2.16 — the Breaker Module (2026-11-24)
 
 Pin: SDK nightly **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (2026-11-20), mixins

@@ -21,6 +21,7 @@
     "modularrouters:dropper_module",
     "modularrouters:flinger_module",
     "modularrouters:placer_module",
-    "modularrouters:breaker_module"
+    "modularrouters:breaker_module",
+    "modularrouters:extruder_module_1"
   ]
 }
